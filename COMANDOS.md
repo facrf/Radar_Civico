@@ -187,7 +187,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cd web && npm run build`  
   *Commit:* `feat(web): cria componente visual de dossie do politico`
 
-- [ ] 039. Integrar visualizador interativo de grafos (Cytoscape.js) colorindo nós por categoria e destacando arestas com anomalia[cite: 1].  
+- [x] 039. Integrar visualizador interativo de grafos (Cytoscape.js) colorindo nós por categoria e destacando arestas com anomalia[cite: 1].  
   *Validação:* `cd web && npm run build`  
   *Commit:* `feat(web): implementa componente interativo de grafos com cytoscape`
 
