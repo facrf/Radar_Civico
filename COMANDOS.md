@@ -115,7 +115,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p ingestion -- pncp`  
   *Commit:* `feat(ingestion): implementa extrator de contratos do pncp`
 
-- [ ] 024. Implementar cliente sob demanda para o Querido Diário com busca restrita por doador, termos de nomeação e município[cite: 1].  
+- [x] 024. Implementar cliente sob demanda para o Querido Diário com busca restrita por doador, termos de nomeação e município[cite: 1].  
   *Validação:* `cargo test -p ingestion -- querido_diario`  
   *Commit:* `feat(ingestion): implementa consulta on demand do querido diario`
 
