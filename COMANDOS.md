@@ -135,7 +135,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p graph -- builder`  
   *Commit:* `feat(graph): implementa construcao de grafo direcionado a partir do sqlite`
 
-- [ ] 028. Implementar algoritmo de travessia e detecção de ciclos para rastrear conexões indiretas entre políticos e empresas em até 3 graus[cite: 1].  
+- [x] 028. Implementar algoritmo de travessia e detecção de ciclos para rastrear conexões indiretas entre políticos e empresas em até 3 graus[cite: 1].  
   *Validação:* `cargo test -p graph -- travessia`  
   *Commit:* `feat(graph): adiciona algoritmo de busca de caminhos em ate 3 graus`
 
