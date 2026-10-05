@@ -31,7 +31,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): implementa conexao sqlite com pragmas de alta performance`
 
-- [ ] 005. Criar `crates/storage/src/migrations/mod.rs` e implementar migração para criação das tabelas `politicos` (com `foto_blob` binário), `candidaturas` e `bens_candidato`[cite: 1].  
+- [x] 005. Criar `crates/storage/src/migrations/mod.rs` e implementar migração para criação das tabelas `politicos` (com `foto_blob` binário), `candidaturas` e `bens_candidato`[cite: 1].  
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas politicos, candidaturas e bens`
 
