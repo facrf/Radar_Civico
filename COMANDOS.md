@@ -23,7 +23,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
 
 ## Fase 2: Storage & Mini Data Lake SQLite (`crates/storage`)
 
-- [ ] 003. Criar `crates/storage/Cargo.toml` com `rusqlite` (features `bundled`, `blob`), `tokio`, `thiserror`, `serde` e `serde_json`[cite: 1].  
+- [x] 003. Criar `crates/storage/Cargo.toml` com `rusqlite` (features `bundled`, `blob`), `tokio`, `thiserror`, `serde` e `serde_json`[cite: 1].  
   *Validação:* `cargo check -p storage`  
   *Commit:* `feat(storage): define dependencias basicas da crate storage`
 
