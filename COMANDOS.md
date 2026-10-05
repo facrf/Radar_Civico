@@ -179,7 +179,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
 
 ## Fase 7: Frontend Web & Visualização (`web/`)
 
-- [ ] 037. Inicializar projeto SvelteKit/Tailwind em `web/` com estrutura de componentes para painel, dossiê e busca.  
+- [x] 037. Inicializar projeto SvelteKit/Tailwind em `web/` com estrutura de componentes para painel, dossiê e busca.  
   *Validação:* `cd web && npm run check`  
   *Commit:* `feat(web): inicializa esqueleto do frontend sveltekit com tailwind`
 
