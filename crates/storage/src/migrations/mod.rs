@@ -300,6 +300,19 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_hist_sinc_data ON historico_sincronizacao(data_inicio DESC);
         ",
     },
+    Migration {
+        version: 9,
+        name: "create_configuracoes_sistema",
+        sql: "
+            CREATE TABLE IF NOT EXISTS configuracoes_sistema (
+                chave TEXT PRIMARY KEY,
+                valor_texto TEXT,
+                valor_blob BLOB,
+                mime_type TEXT,
+                atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -637,4 +650,30 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_migrations_configuracoes_sistema() -> Result<()> {
+        let mut conn = Connection::open_in_memory()?;
+        run_migrations(&mut conn)?;
+
+        let mock_icon_blob = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        conn.execute(
+            "INSERT INTO configuracoes_sistema (chave, valor_texto, valor_blob, mime_type)
+             VALUES ('app_icon', 'icone_custom.png', ?1, 'image/png')",
+            [&mock_icon_blob],
+        )?;
+
+        let (chave, mime, blob): (String, String, Vec<u8>) = conn.query_row(
+            "SELECT chave, mime_type, valor_blob FROM configuracoes_sistema WHERE chave = 'app_icon'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+
+        assert_eq!(chave, "app_icon");
+        assert_eq!(mime, "image/png");
+        assert_eq!(blob, mock_icon_blob);
+
+        Ok(())
+    }
 }
+
