@@ -183,7 +183,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cd web && npm run check`  
   *Commit:* `feat(web): inicializa esqueleto do frontend sveltekit com tailwind`
 
-- [ ] 038. Criar componente de dossiê do político exibindo foto oficial do TSE, cartões de métricas, histórico de patrimônio e tabela de doadores[cite: 1].  
+- [x] 038. Criar componente de dossiê do político exibindo foto oficial do TSE, cartões de métricas, histórico de patrimônio e tabela de doadores[cite: 1].  
   *Validação:* `cd web && npm run build`  
   *Commit:* `feat(web): cria componente visual de dossie do politico`
 
