@@ -103,7 +103,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p ingestion -- tse`  
   *Commit:* `feat(ingestion): implementa parser streaming de receitas do tse`
 
-- [ ] 021. Implementar parser para os arquivos de prestação de contas de despesas eleitorais (`despesas_candidatos`) do TSE[cite: 1].  
+- [x] 021. Implementar parser para os arquivos de prestação de contas de despesas eleitorais (`despesas_candidatos`) do TSE[cite: 1].  
   *Validação:* `cargo test -p ingestion -- despesas_tse`  
   *Commit:* `feat(ingestion): implementa parser de despesas eleitorais`
 
