@@ -34,3 +34,7 @@ path = "../../tests/e2e_pipeline.rs"
 [[test]]
 name = "config_pipeline"
 path = "../../tests/config_pipeline.rs"
+
+[[test]]
+name = "camara_pipeline"
+path = "../../tests/camara_pipeline.rs"

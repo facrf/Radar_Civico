@@ -287,6 +287,6 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cd web && npm run build`  
   *Commit:* `feat(web): cria controles de sincronizacao estatica e api da camara`
 
-- [ ] 061. Criar teste de integração ponta a ponta simulando carga de lote de notas fiscais da Câmara e verificação na tabela `despesas_parlamentares`.  
+- [x] 061. Criar teste de integração ponta a ponta simulando carga de lote de notas fiscais da Câmara e verificação na tabela `despesas_parlamentares`.  
   *Validação:* `cargo test --test camara_pipeline`  
   *Commit:* `test(e2e): valida ingestao dual da camara com persistencia no sqlite`
