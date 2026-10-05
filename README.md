@@ -79,11 +79,88 @@ Para rodar a varredura das regras determinísticas diretamente no terminal:
 cargo run -p server -- auditar
 ```
 
-### 4. Execução em Containers Docker
-```bash
-docker compose up --build -d
-docker compose ps
+### 4. Execução com Docker Compose (Porta 28080)
+
+O sistema já vem configurado por padrão para subir na porta **`28080`** no host (mapeando internamente para a porta `8080` do container):
+
+```yaml
+# docker-compose.yml
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: radar_civico
+    ports:
+      - "28080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DATA_DIR=/app/data
+      - PORT=8080
+      - RUST_LOG=info
+    restart: unless-stopped
 ```
+
+Para construir a imagem e iniciar em segundo plano:
+```bash
+# Iniciar o container
+docker compose up --build -d
+
+# Verificar status e logs
+docker compose ps
+docker compose logs -f
+
+# Testar endpoint de saúde
+curl -i http://localhost:28080/health
+```
+
+Acesse no navegador: 👉 **`http://localhost:28080`**
+
+---
+
+### 5. Implantação no Portainer (Stack Compose)
+
+Para implantar via **Portainer**:
+1. Acesse o painel do Portainer (`http://seu-servidor:9000` ou `9443`).
+2. Navegue até **Stacks** ➔ **Add stack**.
+3. Defina o nome (ex: `radar-civico`) e selecione o método **Web editor**.
+4. Cole o modelo YAML abaixo:
+
+```yaml
+version: '3.8'
+
+services:
+  radar_civico:
+    image: radar_civico:latest # ou informe o caminho da imagem no seu registry
+    # Caso use repositório Git diretamente no Portainer:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: radar_civico
+    restart: unless-stopped
+    ports:
+      - "28080:8080"
+    volumes:
+      - radar_civico_data:/app/data
+    environment:
+      - DATA_DIR=/app/data
+      - PORT=8080
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  radar_civico_data:
+    driver: local
+```
+
+5. Clique em **Deploy the stack**.
+6. Acesse a aplicação em **`http://<ip-do-servidor>:28080`**.
 
 ---
 
