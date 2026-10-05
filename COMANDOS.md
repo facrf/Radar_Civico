@@ -171,7 +171,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p server -- investigar`  
   *Commit:* `feat(server): adiciona rota de disparos sob demanda de diarios e oab`
 
-- [ ] 036. Montar o binário executável (`crates/server/src/main.rs`) que aplica migrações no arranque, instancia o pool de conexões e sobe a API com graceful shutdown[cite: 1].  
+- [x] 036. Montar o binário executável (`crates/server/src/main.rs`) que aplica migrações no arranque, instancia o pool de conexões e sobe a API com graceful shutdown[cite: 1].  
   *Validação:* `cargo run -p server -- --version`  
   *Commit:* `feat(server): consolida ponto de entrada principal e inicializacao da api`
 

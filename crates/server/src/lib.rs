@@ -21,3 +21,27 @@ pub use investigar::{
 pub use politico::{
     carregar_dossie, politico_dossie_handler, BemItem, CandidaturaItem, DoadorItem, DossiePolitico,
 };
+
+use axum::routing::get;
+use axum::Router;
+use storage::DbPool;
+use tower_http::compression::CompressionLayer;
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
+
+pub fn criar_router(pool: DbPool) -> Router {
+    Router::new()
+        .route("/health", get(|| async { "OK" }))
+        .route("/api/v1/busca", get(busca_handler))
+        .route("/api/v1/politico/:id", get(politico_dossie_handler))
+        .route("/api/v1/grafo/:id", get(grafo_subgrafo_handler))
+        .route("/api/v1/auditoria/alertas", get(alertas_handler))
+        .route(
+            "/api/v1/investigar/nomeacao/:doador_id",
+            get(investigar_nomeacao_handler),
+        )
+        .layer(CorsLayer::permissive())
+        .layer(CompressionLayer::new())
+        .layer(TraceLayer::new_for_http())
+        .with_state(pool)
+}
