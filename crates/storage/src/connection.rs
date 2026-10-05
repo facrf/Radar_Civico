@@ -120,6 +120,21 @@ impl DbPool {
         })
     }
 
+    pub fn file_path(&self) -> Option<PathBuf> {
+        match &self.target {
+            DbTarget::File(p) => Some(p.clone()),
+            DbTarget::SharedMemory(_) => None,
+        }
+    }
+
+    pub fn backup_to_file<P: AsRef<Path>>(&self, dst_path: P) -> Result<()> {
+        let src_conn = self.get()?;
+        let mut dst_conn = Connection::open(dst_path.as_ref())?;
+        let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)?;
+        backup.run_to_completion(100, std::time::Duration::from_millis(5), None)?;
+        Ok(())
+    }
+
     pub fn get(&self) -> Result<PooledConnection> {
         let mut pool_guard = self.pool.lock().map_err(|_| {
             StorageError::Pool("Poisoned connection pool lock".to_string())
@@ -215,6 +230,29 @@ mod tests {
 
         drop(conn);
         let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn test_backup_to_file() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        {
+            let conn = pool.get()?;
+            conn.execute("CREATE TABLE teste_bkp (id INTEGER PRIMARY KEY, item TEXT);", [])?;
+            conn.execute("INSERT INTO teste_bkp (item) VALUES ('backup_valido');", [])?;
+        }
+
+        let temp_dir = std::env::temp_dir();
+        let backup_path = temp_dir.join(format!("test_bkp_{}.db", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+
+        pool.backup_to_file(&backup_path)?;
+        assert!(backup_path.exists());
+
+        let dst_conn = Connection::open(&backup_path)?;
+        let item: String = dst_conn.query_row("SELECT item FROM teste_bkp WHERE id = 1;", [], |r| r.get(0))?;
+        assert_eq!(item, "backup_valido");
+
+        let _ = std::fs::remove_file(backup_path);
         Ok(())
     }
 }

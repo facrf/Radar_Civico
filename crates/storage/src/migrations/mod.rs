@@ -283,6 +283,23 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_alertas_auditoria_tipo ON alertas_auditoria(tipo);
         ",
     },
+    Migration {
+        version: 8,
+        name: "create_historico_sincronizacao",
+        sql: "
+            CREATE TABLE IF NOT EXISTS historico_sincronizacao (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fonte TEXT NOT NULL,
+                status TEXT NOT NULL,
+                detalhes TEXT,
+                registros_afetados INTEGER DEFAULT 0,
+                data_inicio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                data_fim TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_hist_sinc_data ON historico_sincronizacao(data_inicio DESC);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -593,6 +610,30 @@ mod tests {
             |r| r.get(0),
         )?;
         assert_eq!(found_fornecedor, "AUTO POSTO ALVORADA");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_historico_sincronizacao() -> Result<()> {
+        let mut conn = Connection::open_in_memory()?;
+        run_migrations(&mut conn)?;
+
+        conn.execute(
+            "INSERT INTO historico_sincronizacao (fonte, status, detalhes, registros_afetados)
+             VALUES ('TSE', 'CONCLUIDO', '150 registros ingeridos', 150)",
+            [],
+        )?;
+
+        let (fonte, status, afetados): (String, String, i64) = conn.query_row(
+            "SELECT fonte, status, registros_afetados FROM historico_sincronizacao ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+
+        assert_eq!(fonte, "TSE");
+        assert_eq!(status, "CONCLUIDO");
+        assert_eq!(afetados, 150);
 
         Ok(())
     }

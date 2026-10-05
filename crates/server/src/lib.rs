@@ -1,14 +1,21 @@
 pub mod alertas;
 pub mod busca;
+pub mod config;
 pub mod grafo;
 pub mod investigar;
 pub mod politico;
+pub mod routes;
 
 pub use alertas::{
     alertas_handler, carregar_alertas, registrar_alerta, sincronizar_alertas_sistema, AlertaItem,
     AlertasQueryParams, AlertasResponse, NovoAlerta,
 };
 pub use busca::{busca_handler, BuscaParams, ItemBuscaUnificada, RespostaBusca};
+pub use config::{
+    executar_ingestao_handler, exportar_banco_handler, exportar_tabela_handler, job_status_handler,
+    status_handler, upload_arquivo_handler, ConfigStatusResponse, ExecutarIngestaoRequest,
+    ExecutarIngestaoResponse, JobInfo, TotalRegistros, UploadResponse,
+};
 pub use grafo::{
     formatar_subgrafo, grafo_subgrafo_handler, CytoscapeEdge, CytoscapeEdgeData,
     CytoscapeElements, CytoscapeNode, CytoscapeNodeData, EchartsCategory, EchartsGraph,
@@ -23,7 +30,7 @@ pub use politico::{
 };
 
 use std::path::Path;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use storage::DbPool;
 use tower_http::compression::CompressionLayer;
@@ -41,7 +48,16 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route(
             "/api/v1/investigar/nomeacao/:doador_id",
             get(investigar_nomeacao_handler),
-        );
+        )
+        .route("/api/v1/config/status", get(status_handler))
+        .route("/api/v1/config/ingestao/executar", post(executar_ingestao_handler))
+        .route("/api/v1/config/ingestao/status/:job_id", get(job_status_handler))
+        .route("/api/v1/config/jobs/:job_id", get(job_status_handler))
+        .route("/api/v1/config/tse/verificar/:ano", get(config::verificar_tse_ano_handler))
+        .route("/api/v1/config/tse/sincronizar", post(config::sincronizar_tse_handler))
+        .route("/api/v1/config/ingestao/upload", post(upload_arquivo_handler))
+        .route("/api/v1/config/exportar/banco", get(exportar_banco_handler))
+        .route("/api/v1/config/exportar/tabela/:nome_tabela", get(exportar_tabela_handler));
 
     let web_dir = std::env::var("WEB_DIR").unwrap_or_else(|_| "web/build".to_string());
     if Path::new(&web_dir).exists() {
