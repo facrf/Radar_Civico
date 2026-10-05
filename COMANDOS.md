@@ -75,7 +75,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p auditor -- ubiquidade`  
   *Commit:* `feat(auditor): implementa detector de inconsistencia geotemporal`
 
-- [ ] 015. Implementar módulo `crates/auditor/src/conflito_oab.rs` para verificação de incompatibilidade de secretários municipais ativos com OAB em situação "Regular" (Art. 28 da Lei 8.906/94)[cite: 1].  
+- [x] 015. Implementar módulo `crates/auditor/src/conflito_oab.rs` para verificação de incompatibilidade de secretários municipais ativos com OAB em situação "Regular" (Art. 28 da Lei 8.906/94)[cite: 1].  
   *Validação:* `cargo test -p auditor -- conflito_oab`  
   *Commit:* `feat(auditor): implementa regra do art 28 da oab para secretarios`
 
