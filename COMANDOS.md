@@ -27,7 +27,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo check -p storage`  
   *Commit:* `feat(storage): define dependencias basicas da crate storage`
 
-- [ ] 004. Implementar `crates/storage/src/connection.rs` com pool de conexões aplicando os PRAGMAs obrigatórios: `WAL`, `synchronous = NORMAL`, `cache_size = -64000`, `temp_store = MEMORY` e `mmap_size = 30000000000`[cite: 1].  
+- [x] 004. Implementar `crates/storage/src/connection.rs` com pool de conexões aplicando os PRAGMAs obrigatórios: `WAL`, `synchronous = NORMAL`, `cache_size = -64000`, `temp_store = MEMORY` e `mmap_size = 30000000000`[cite: 1].  
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): implementa conexao sqlite com pragmas de alta performance`
 
