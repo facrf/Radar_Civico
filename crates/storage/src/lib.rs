@@ -7,3 +7,4 @@ pub use batch::{batch_insert_despesas, batch_insert_receitas, NovaDespesa, NovaR
 pub use connection::{apply_pragmas, DbPool, PooledConnection};
 pub use error::{Result, StorageError};
 pub use migrations::run_migrations;
+pub use rusqlite;

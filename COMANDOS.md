@@ -99,7 +99,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p ingestion -- normalizer`  
   *Commit:* `feat(ingestion): implementa normalizacao de documentos e encodings`
 
-- [ ] 020. Implementar `crates/ingestion/src/tse_streaming.rs` para descompactar e processar streams de CSVs do TSE (`consulta_cand` e `receitas_candidatos`) sem carregar arquivos na RAM[cite: 1].  
+- [x] 020. Implementar `crates/ingestion/src/tse_streaming.rs` para descompactar e processar streams de CSVs do TSE (`consulta_cand` e `receitas_candidatos`) sem carregar arquivos na RAM[cite: 1].  
   *Validação:* `cargo test -p ingestion -- tse`  
   *Commit:* `feat(ingestion): implementa parser streaming de receitas do tse`
 
