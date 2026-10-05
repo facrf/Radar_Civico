@@ -236,15 +236,15 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p server -- config_exportar`  
   *Commit:* `feat(server): adiciona endpoints de exportacao do banco e tabelas em stream`
 
-- [ ] 049. Criar rota `web/src/routes/configuracoes/+page.svelte` estruturando os cards de diagnóstico: tamanho do banco, contagem de registros e lista de anos já sincronizados.  
+- [x] 049. Criar rota `web/src/routes/configuracoes/+page.svelte` estruturando os cards de diagnóstico: tamanho do banco, contagem de registros e lista de anos já sincronizados.  
   *Validação:* `cd web && npm run check`  
   *Commit:* `feat(web): cria tela de configuracoes com dashboard de diagnostico do banco`
 
-- [ ] 050. Implementar seletor dinâmico de ano eleitoral (com checagem online via botão "Verificar Disponibilidade") e barra de progresso em tempo real consumindo o polling de jobs no SvelteKit.  
+- [x] 050. Implementar seletor dinâmico de ano eleitoral (com checagem online via botão "Verificar Disponibilidade") e barra de progresso em tempo real consumindo o polling de jobs no SvelteKit.  
   *Validação:* `cd web && npm run build`  
   *Commit:* `feat(web): adiciona seletor atemporal e monitoramento visual de ingestao`
 
-- [ ] 051. Adicionar na interface de configurações os botões de exportação de dados (`.sqlite` e `.csv`) e dropzone de contingência para upload manual de arquivos locais.  
+- [x] 051. Adicionar na interface de configurações os botões de exportação de dados (`.sqlite` e `.csv`) e dropzone de contingência para upload manual de arquivos locais.  
   *Validação:* `cd web && npm run build`  
   *Commit:* `feat(web): implementa acoes de exportacao de dados e upload manual`
 
