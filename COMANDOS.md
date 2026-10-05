@@ -167,7 +167,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p server -- alertas`  
   *Commit:* `feat(server): adiciona endpoint de listagem de anomalias detectadas`
 
-- [ ] 035. Implementar rota sob demanda para investigação de nomeações e conselhos de classe (`/api/v1/investigar/nomeacao/{doador_id}`)[cite: 1].  
+- [x] 035. Implementar rota sob demanda para investigação de nomeações e conselhos de classe (`/api/v1/investigar/nomeacao/{doador_id}`)[cite: 1].  
   *Validação:* `cargo test -p server -- investigar`  
   *Commit:* `feat(server): adiciona rota de disparos sob demanda de diarios e oab`
 

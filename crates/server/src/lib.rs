@@ -1,6 +1,7 @@
 pub mod alertas;
 pub mod busca;
 pub mod grafo;
+pub mod investigar;
 pub mod politico;
 
 pub use alertas::{
@@ -12,6 +13,10 @@ pub use grafo::{
     formatar_subgrafo, grafo_subgrafo_handler, CytoscapeEdge, CytoscapeEdgeData,
     CytoscapeElements, CytoscapeNode, CytoscapeNodeData, EchartsCategory, EchartsGraph,
     EchartsLink, EchartsNode, GrafoParams, SubgrafoResponse,
+};
+pub use investigar::{
+    executar_investigacao, identificar_doador, investigar_nomeacao_handler, DoadorIdentificado,
+    InvestigacaoNomeacaoResponse, InvestigarParams,
 };
 pub use politico::{
     carregar_dossie, politico_dossie_handler, BemItem, CandidaturaItem, DoadorItem, DossiePolitico,
