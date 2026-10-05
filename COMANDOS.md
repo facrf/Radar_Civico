@@ -191,7 +191,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cd web && npm run build`  
   *Commit:* `feat(web): implementa componente interativo de grafos com cytoscape`
 
-- [ ] 040. Criar painel de alertas do auditor exibindo discrepâncias de combustível, incompatibilidade de OAB e contratos pós-eleição[cite: 1].  
+- [x] 040. Criar painel de alertas do auditor exibindo discrepâncias de combustível, incompatibilidade de OAB e contratos pós-eleição[cite: 1].  
   *Validação:* `cd web && npm run build`  
   *Commit:* `feat(web): adiciona tela de ranking de anomalias com filtros`
 
