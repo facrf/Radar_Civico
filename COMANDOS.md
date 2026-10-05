@@ -51,7 +51,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas de diários oficiais e conselhos de classe`
 
-- [ ] 010. Implementar tabelas virtuais FTS5 (`politicos_fts` e `fornecedores_fts`) e triggers de sincronização automática[cite: 1].  
+- [x] 010. Implementar tabelas virtuais FTS5 (`politicos_fts` e `fornecedores_fts`) e triggers de sincronização automática[cite: 1].  
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): configura tabelas virtuais fts5 para busca textual`
 

@@ -215,6 +215,48 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_alertas_gestor ON alertas_incompatibilidade(politico_ou_gestor_id);
         ",
     },
+    Migration {
+        version: 6,
+        name: "create_fts5_tables_and_triggers",
+        sql: "
+            CREATE VIRTUAL TABLE IF NOT EXISTS politicos_fts USING fts5(
+                politico_id UNINDEXED,
+                nome_completo,
+                nome_urna,
+                sq_candidato
+            );
+
+            CREATE TRIGGER IF NOT EXISTS trg_politicos_ai AFTER INSERT ON politicos BEGIN
+                INSERT INTO politicos_fts(politico_id, nome_completo, nome_urna, sq_candidato)
+                VALUES (new.id, new.nome_completo, new.nome_urna, new.sq_candidato);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_politicos_ad AFTER DELETE ON politicos BEGIN
+                DELETE FROM politicos_fts WHERE politico_id = old.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_politicos_au AFTER UPDATE ON politicos BEGIN
+                DELETE FROM politicos_fts WHERE politico_id = old.id;
+                INSERT INTO politicos_fts(politico_id, nome_completo, nome_urna, sq_candidato)
+                VALUES (new.id, new.nome_completo, new.nome_urna, new.sq_candidato);
+            END;
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS fornecedores_fts USING fts5(
+                fornecedor_cpf_cnpj,
+                fornecedor_nome
+            );
+
+            CREATE TRIGGER IF NOT EXISTS trg_despesas_campanha_fornecedores_ai AFTER INSERT ON despesas_campanha BEGIN
+                INSERT INTO fornecedores_fts(fornecedor_cpf_cnpj, fornecedor_nome)
+                VALUES (new.fornecedor_cpf_cnpj, new.fornecedor_nome);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_despesas_parlamentares_fornecedores_ai AFTER INSERT ON despesas_parlamentares BEGIN
+                INSERT INTO fornecedores_fts(fornecedor_cpf_cnpj, fornecedor_nome)
+                VALUES (new.fornecedor_cnpj_cpf, new.fornecedor_nome);
+            END;
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -460,6 +502,71 @@ mod tests {
         assert_eq!(cache_count, 1);
         assert_eq!(reg_count, 1);
         assert_eq!(alerta_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_fts5_and_triggers() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+
+        run_migrations(&mut conn)?;
+
+        // Insert into politicos and verify automatic trigger sync to politicos_fts
+        conn.execute(
+            "INSERT INTO politicos (sq_candidato, nome_completo, nome_urna)
+             VALUES ('SQ999', 'CARLOS EDUARDO SILVA', 'DUDU')",
+            [],
+        )?;
+        let pol_id = conn.last_insert_rowid();
+
+        // Search politicos_fts
+        let found_id: i64 = conn.query_row(
+            "SELECT politico_id FROM politicos_fts WHERE politicos_fts MATCH 'DUDU*'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(found_id, pol_id);
+
+        // Update politicos and check updated fts
+        conn.execute(
+            "UPDATE politicos SET nome_urna = 'CORONEL' WHERE id = ?1",
+            [pol_id],
+        )?;
+
+        let count_old: i64 = conn.query_row(
+            "SELECT count(*) FROM politicos_fts WHERE politicos_fts MATCH 'DUDU*'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count_old, 0);
+
+        let count_new: i64 = conn.query_row(
+            "SELECT count(*) FROM politicos_fts WHERE politicos_fts MATCH 'CORONEL*'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count_new, 1);
+
+        // Insert into despesas_parlamentares and verify trigger sync to fornecedores_fts
+        conn.execute(
+            "INSERT INTO despesas_parlamentares (
+                casa_legislativa, parlamentar_nome, data_emissao, categoria_despesa,
+                fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido
+             ) VALUES (
+                'CAMARA', 'DEPUTADO TESTE', '2024-05-10', 'COMBUSTIVEIS',
+                'AUTO POSTO ALVORADA', '12345678000199', 200.0
+             )",
+            [],
+        )?;
+
+        let found_fornecedor: String = conn.query_row(
+            "SELECT fornecedor_nome FROM fornecedores_fts WHERE fornecedores_fts MATCH 'ALVORADA*'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(found_fornecedor, "AUTO POSTO ALVORADA");
 
         Ok(())
     }
