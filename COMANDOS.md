@@ -83,7 +83,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p auditor -- triangulacao`  
   *Commit:* `feat(auditor): implementa detector de triangulacao doacao x contrato direto`
 
-- [ ] 017. Implementar `crates/auditor/src/fornecedores_fantasmas.rs` para sinalizar fornecedores recém-criados (< 30 dias) ou com situação cadastral inapta na Receita[cite: 1].  
+- [x] 017. Implementar `crates/auditor/src/fornecedores_fantasmas.rs` para sinalizar fornecedores recém-criados (< 30 dias) ou com situação cadastral inapta na Receita[cite: 1].  
   *Validação:* `cargo test -p auditor -- fantasmas`  
   *Commit:* `feat(auditor): implementa verificador de fornecedores inaptos e recentes`
 

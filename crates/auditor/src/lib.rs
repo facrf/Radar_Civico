@@ -1,6 +1,7 @@
 pub mod combustivel;
 pub mod conflito_oab;
 pub mod error;
+pub mod fornecedores_fantasmas;
 pub mod triangulacao;
 pub mod ubiquidade;
 
@@ -13,6 +14,10 @@ pub use conflito_oab::{
     OcupanteCargo, RegistroOab,
 };
 pub use error::{AuditorError, Result};
+pub use fornecedores_fantasmas::{
+    auditar_fornecedores_fantasmas, AlertaFornecedorFantasma, FornecedorReceita, PagamentoFornecedor,
+    TipoIrregularidadeFornecedor, DIAS_LIMITE_RECEM_CRIADA,
+};
 pub use triangulacao::{
     auditar_triangulacao, AlertaTriangulacao, ContratoPublico, DoadorCampanha, SocioEmpresa,
     JANELA_DIAS_POSSE,
