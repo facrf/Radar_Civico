@@ -15,7 +15,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo check`  
   *Commit:* `chore: inicializa cargo workspace com crates modulares`
 
-- [ ] 002. Criar `Dockerfile` multi-stage (builder em Debian/Rust Slim e runner com `ca-certificates` e SQLite) e `docker-compose.yml` mapeando o volume persistente `./data:/app/data` e a porta `8080`[cite: 1].  
+- [x] 002. Criar `Dockerfile` multi-stage (builder em Debian/Rust Slim e runner com `ca-certificates` e SQLite) e `docker-compose.yml` mapeando o volume persistente `./data:/app/data` e a porta `8080`[cite: 1].  
   *Validação:* `docker compose config`  
   *Commit:* `chore(infra): configura dockerfile multi-stage e docker-compose`
 
