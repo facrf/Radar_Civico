@@ -111,7 +111,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p ingestion -- ceap`  
   *Commit:* `feat(ingestion): adiciona integracao com dados abertos da camara para ceap`
 
-- [ ] 023. Implementar cliente assíncrono para a API aberta do PNCP (Portal Nacional de Contratações Públicas) para busca de contratos por CNPJ[cite: 1].  
+- [x] 023. Implementar cliente assíncrono para a API aberta do PNCP (Portal Nacional de Contratações Públicas) para busca de contratos por CNPJ[cite: 1].  
   *Validação:* `cargo test -p ingestion -- pncp`  
   *Commit:* `feat(ingestion): implementa extrator de contratos do pncp`
 
