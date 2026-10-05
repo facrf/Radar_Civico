@@ -107,7 +107,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p ingestion -- despesas_tse`  
   *Commit:* `feat(ingestion): implementa parser de despesas eleitorais`
 
-- [ ] 022. Implementar consumidor da API de Dados Abertos da Câmara dos Deputados para extração dos registros anuais da CEAP[cite: 1].  
+- [x] 022. Implementar consumidor da API de Dados Abertos da Câmara dos Deputados para extração dos registros anuais da CEAP[cite: 1].  
   *Validação:* `cargo test -p ingestion -- ceap`  
   *Commit:* `feat(ingestion): adiciona integracao com dados abertos da camara para ceap`
 

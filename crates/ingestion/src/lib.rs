@@ -1,8 +1,10 @@
+pub mod ceap;
 pub mod despesas_tse;
 pub mod error;
 pub mod normalizer;
 pub mod tse_streaming;
 
+pub use ceap::{CeapApiResponse, CeapClient, CeapItemApi};
 pub use despesas_tse::{
     ingerir_despesas_tse_em_lotes, processar_stream_despesas_tse, DespesaTseCsvRecord,
 };

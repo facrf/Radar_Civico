@@ -5,6 +5,9 @@ pub enum IngestionError {
     #[error("Storage error: {0}")]
     Storage(#[from] storage::StorageError),
 
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] storage::rusqlite::Error),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
