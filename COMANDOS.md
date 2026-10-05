@@ -63,7 +63,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
 
 ## Fase 3: Motor de Auditoria & Heurísticas (`crates/auditor`)
 
-- [ ] 012. Criar `crates/auditor/Cargo.toml` com dependências para `crates/storage`, `chrono`, `serde`, `thiserror` e `anyhow`.  
+- [x] 012. Criar `crates/auditor/Cargo.toml` com dependências para `crates/storage`, `chrono`, `serde`, `thiserror` e `anyhow`.  
   *Validação:* `cargo check -p auditor`  
   *Commit:* `feat(auditor): configura crate de auditoria e analise deterministica`
 
