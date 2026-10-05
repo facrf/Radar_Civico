@@ -155,7 +155,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p server -- busca`  
   *Commit:* `feat(server): adiciona endpoint de busca unificada via fts5`
 
-- [ ] 032. Implementar rota de dossiê do político (`/api/v1/politico/{id}`), incluindo histórico de bens, doadores e foto em base64/blob[cite: 1].  
+- [x] 032. Implementar rota de dossiê do político (`/api/v1/politico/{id}`), incluindo histórico de bens, doadores e foto em base64/blob[cite: 1].  
   *Validação:* `cargo test -p server -- politico`  
   *Commit:* `feat(server): adiciona rota de dossie consolidado do candidato`
 
