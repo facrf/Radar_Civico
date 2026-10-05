@@ -79,7 +79,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p auditor -- conflito_oab`  
   *Commit:* `feat(auditor): implementa regra do art 28 da oab para secretarios`
 
-- [ ] 016. Implementar módulo `crates/auditor/src/triangulacao.rs` para identificar contratos diretos (PNCP) com empresas de doadores PF em até 180 dias após a posse[cite: 1].  
+- [x] 016. Implementar módulo `crates/auditor/src/triangulacao.rs` para identificar contratos diretos (PNCP) com empresas de doadores PF em até 180 dias após a posse[cite: 1].  
   *Validação:* `cargo test -p auditor -- triangulacao`  
   *Commit:* `feat(auditor): implementa detector de triangulacao doacao x contrato direto`
 

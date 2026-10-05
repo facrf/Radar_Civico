@@ -1,6 +1,7 @@
 pub mod combustivel;
 pub mod conflito_oab;
 pub mod error;
+pub mod triangulacao;
 pub mod ubiquidade;
 
 pub use combustivel::{
@@ -12,6 +13,10 @@ pub use conflito_oab::{
     OcupanteCargo, RegistroOab,
 };
 pub use error::{AuditorError, Result};
+pub use triangulacao::{
+    auditar_triangulacao, AlertaTriangulacao, ContratoPublico, DoadorCampanha, SocioEmpresa,
+    JANELA_DIAS_POSSE,
+};
 pub use ubiquidade::{
     auditar_ubiquidade, calcular_distancia_km, AlertaUbiquidade, DespesaPresencial,
     LIMITE_VELOCIDADE_KMH,
