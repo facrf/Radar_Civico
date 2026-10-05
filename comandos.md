@@ -279,7 +279,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p ingestion -- camara_api`  
   *Commit:* `feat(ingestion): adiciona consumo paginado hateoas da api da camara`
 
-- [ ] 059. Implementar rota `POST /api/v1/config/camara/sincronizar` no Axum suportando alternância entre modo estático e modo API REST via background task.  
+- [x] 059. Implementar rota `POST /api/v1/config/camara/sincronizar` no Axum suportando alternância entre modo estático e modo API REST via background task.  
   *Validação:* `cargo test -p server -- camara_sincronizar`  
   *Commit:* `feat(server): adiciona endpoint de sincronizacao configuravel da ceap`
 

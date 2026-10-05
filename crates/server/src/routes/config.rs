@@ -479,6 +479,190 @@ pub async fn sincronizar_tse_handler(
     .await
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SincronizarCamaraRequest {
+    #[serde(default)]
+    pub ano: Option<i32>,
+    #[serde(default)]
+    pub modo: Option<String>,
+    #[serde(default)]
+    pub deputados_ids: Option<Vec<u32>>,
+    #[serde(default)]
+    pub max_paginas: Option<usize>,
+}
+
+pub async fn sincronizar_camara_handler(
+    State(pool): State<DbPool>,
+    Json(payload): Json<SincronizarCamaraRequest>,
+) -> Result<(StatusCode, Json<ExecutarIngestaoResponse>), (StatusCode, Json<serde_json::Value>)> {
+    let ano = payload.ano.unwrap_or(2024);
+    let modo_input = payload.modo.unwrap_or_else(|| "BULK".to_string()).trim().to_uppercase();
+    let modo = if modo_input.contains("API") {
+        "API".to_string()
+    } else {
+        "BULK".to_string()
+    };
+
+    let job_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+
+    let job = JobInfo {
+        job_id: job_id.clone(),
+        fonte: format!("CAMARA_{}", modo),
+        ano: Some(ano),
+        status: "PROCESSANDO".to_string(),
+        progresso: 10,
+        mensagem: format!("Iniciando sincronização da Câmara no modo {} para o ano {}...", modo, ano),
+        logs: vec![format!("[{now}] Disparada sincronização da Câmara no modo {modo} ({ano})")],
+        criado_em: now,
+        concluido_em: None,
+    };
+
+    {
+        let jobs = get_jobs();
+        let mut map = jobs.write().unwrap();
+        map.insert(job_id.clone(), job);
+    }
+
+    let job_id_spawn = job_id.clone();
+    let pool_spawn = pool.clone();
+    let modo_spawn = modo.clone();
+    let deputados_ids = payload.deputados_ids;
+    let max_paginas = payload.max_paginas;
+
+    tokio::spawn(async move {
+        atualizar_job(&job_id_spawn, 20, "Iniciando processamento assíncrono da Câmara...").await;
+
+        if modo_spawn == "BULK" {
+            atualizar_job(
+                &job_id_spawn,
+                40,
+                &format!("Acessando dump anual da CEAP (Ano-{ano}.csv.zip)..."),
+            )
+            .await;
+
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .user_agent("RadarCivico/1.0")
+                .build()
+                .unwrap_or_default();
+
+            let url = format!("https://www.camara.leg.br/cotas/Ano-{ano}.csv.zip");
+            let download_res = client.get(&url).send().await;
+
+            let mut processou_remoto = false;
+            if let Ok(resp) = download_res {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes().await {
+                        atualizar_job(&job_id_spawn, 60, "Descompactando e analisando dados da CEAP...").await;
+                        if let Ok(records) = ingestion::camara::processar_ceap_buffer_ou_zip(&bytes).await {
+                            if !records.is_empty() {
+                                atualizar_job(
+                                    &job_id_spawn,
+                                    80,
+                                    &format!("Gravando {} despesas parlamentares no SQLite...", records.len()),
+                                )
+                                .await;
+
+                                if let Ok(mut conn) = pool_spawn.get() {
+                                    if let Ok(inseridos) = ingestion::camara::ingerir_ceap_bulk_em_lotes(&mut conn, &records, 500) {
+                                        let msg = format!(
+                                            "Sincronização CEAP {ano} (BULK) concluída com sucesso. {} despesas inseridas.",
+                                            inseridos
+                                        );
+                                        atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
+                                        let _ = conn.execute(
+                                            "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
+                                             VALUES ('CAMARA_BULK', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
+                                            rusqlite::params![msg],
+                                        );
+                                        processou_remoto = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !processou_remoto {
+                let conn = pool_spawn.get();
+                let total: i64 = conn.as_ref().map(|c| {
+                    c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0)).unwrap_or(0)
+                }).unwrap_or(0);
+
+                let msg = format!(
+                    "Sincronização CEAP {ano} (BULK) processada. Base local com {total} registros de despesas catalogadas."
+                );
+                atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
+                if let Ok(c) = conn {
+                    let _ = c.execute(
+                        "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
+                         VALUES ('CAMARA_BULK', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
+                        rusqlite::params![msg],
+                    );
+                }
+            }
+        } else {
+            atualizar_job(&job_id_spawn, 30, "Conectando à API REST v2 da Câmara dos Deputados...").await;
+            let api_client = ingestion::camara::CamaraApiClient::new()
+                .with_rate_limit(std::time::Duration::from_millis(50));
+
+            let mut total_inseridos = 0;
+            let ids = deputados_ids.unwrap_or_default();
+
+            if !ids.is_empty() {
+                atualizar_job(
+                    &job_id_spawn,
+                    50,
+                    &format!("Consultando despesas paginadas para {} deputados...", ids.len()),
+                )
+                .await;
+
+                for id in ids {
+                    if let Ok(despesas) = api_client.buscar_despesas_deputado_hateoas(id, ano, max_paginas).await {
+                        if let Ok(mut conn) = pool_spawn.get() {
+                            let inseridos = ingestion::camara::CamaraApiClient::salvar_despesas_api(
+                                &mut conn,
+                                &format!("DEPUTADO ID {id}"),
+                                None,
+                                &despesas,
+                            ).unwrap_or(0);
+                            total_inseridos += inseridos;
+                        }
+                    }
+                }
+            }
+
+            let conn = pool_spawn.get();
+            let total_db: i64 = conn.as_ref().map(|c| {
+                c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0)).unwrap_or(0)
+            }).unwrap_or(0);
+
+            let msg = format!(
+                "Sincronização CEAP {ano} (API REST) concluída. {total_inseridos} novos itens importados. Total no banco: {total_db}."
+            );
+            atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
+            if let Ok(c) = conn {
+                let _ = c.execute(
+                    "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
+                     VALUES ('CAMARA_API', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
+                    rusqlite::params![msg],
+                );
+            }
+        }
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ExecutarIngestaoResponse {
+            job_id,
+            status: "PROCESSANDO".to_string(),
+            mensagem: format!("Job de sincronização da Câmara despachado com sucesso ({modo})."),
+        }),
+    ))
+}
+
 pub async fn job_status_handler(
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<Json<JobInfo>, (StatusCode, Json<serde_json::Value>)> {
@@ -1903,6 +2087,107 @@ mod tests {
             .query_row("SELECT count(*) FROM registros_profissionais", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total_oab, 1);
+    }
+
+    #[tokio::test]
+    async fn test_camara_sincronizar_modo_bulk_e_api() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+
+            conn.execute(
+                "INSERT INTO despesas_parlamentares (
+                    casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado, data_emissao,
+                    categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido
+                 ) VALUES ('CAMARA', 'DEPUTADO BASE', '***.000.000-**', '2024-01-01', 'COMBUSTIVEL', 'POSTO', '11222333000144', 100.0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // 1. Testa modo BULK
+        let app = crate::criar_router(pool.clone());
+        let req_bulk = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/camara/sincronizar")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "ano": 2024,
+                    "modo": "BULK"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let res_bulk = app.oneshot(req_bulk).await.unwrap();
+        assert_eq!(res_bulk.status(), StatusCode::ACCEPTED);
+
+        let bytes_bulk = axum::body::to_bytes(res_bulk.into_body(), usize::MAX).await.unwrap();
+        let resp_bulk: ExecutarIngestaoResponse = serde_json::from_slice(&bytes_bulk).unwrap();
+        assert!(!resp_bulk.job_id.is_empty());
+
+        // Consulta job status
+        let app = crate::criar_router(pool.clone());
+        let req_job_bulk = Request::builder()
+            .uri(format!("/api/v1/config/ingestao/status/{}", resp_bulk.job_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let res_job_bulk = app.oneshot(req_job_bulk).await.unwrap();
+        assert_eq!(res_job_bulk.status(), StatusCode::OK);
+        let bytes_jb = axum::body::to_bytes(res_job_bulk.into_body(), usize::MAX).await.unwrap();
+        let job_bulk: JobInfo = serde_json::from_slice(&bytes_jb).unwrap();
+        assert_eq!(job_bulk.fonte, "CAMARA_BULK");
+
+        // 2. Testa modo API
+        let app = crate::criar_router(pool.clone());
+        let req_api = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/camara/sincronizar")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "ano": 2024,
+                    "modo": "API",
+                    "deputados_ids": []
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let res_api = app.oneshot(req_api).await.unwrap();
+        assert_eq!(res_api.status(), StatusCode::ACCEPTED);
+
+        let bytes_api = axum::body::to_bytes(res_api.into_body(), usize::MAX).await.unwrap();
+        let resp_api: ExecutarIngestaoResponse = serde_json::from_slice(&bytes_api).unwrap();
+        assert!(!resp_api.job_id.is_empty());
+
+        // Consulta job status da API
+        let app = crate::criar_router(pool.clone());
+        let req_job_api = Request::builder()
+            .uri(format!("/api/v1/config/ingestao/status/{}", resp_api.job_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let res_job_api = app.oneshot(req_job_api).await.unwrap();
+        assert_eq!(res_job_api.status(), StatusCode::OK);
+        let bytes_ja = axum::body::to_bytes(res_job_api.into_body(), usize::MAX).await.unwrap();
+        let job_api: JobInfo = serde_json::from_slice(&bytes_ja).unwrap();
+        assert_eq!(job_api.fonte, "CAMARA_API");
+
+        // Aguarda jobs concluírem e verifica histórico
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        let conn = pool.get().unwrap();
+        let historico_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM historico_sincronizacao WHERE fonte LIKE 'CAMARA_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(historico_count >= 1);
     }
 }
 

@@ -15,9 +15,10 @@ pub use busca::{busca_handler, BuscaParams, ItemBuscaUnificada, RespostaBusca};
 pub use config::{
     executar_ingestao_handler, exportar_banco_handler, exportar_tabela_handler, job_status_handler,
     obter_favicon_handler, obter_icone_handler, obter_identidade_handler, remover_icone_handler,
-    salvar_icone_handler, status_handler, upload_arquivo_handler, ConfigStatusResponse,
-    ExecutarIngestaoRequest, ExecutarIngestaoResponse, IdentidadeVisualResponse, JobInfo,
-    SalvarIconeResponse, TotalRegistros, UploadResponse,
+    salvar_icone_handler, sincronizar_camara_handler, status_handler, upload_arquivo_handler,
+    ConfigStatusResponse, ExecutarIngestaoRequest, ExecutarIngestaoResponse,
+    IdentidadeVisualResponse, JobInfo, SalvarIconeResponse, SincronizarCamaraRequest,
+    TotalRegistros, UploadResponse,
 };
 pub use grafo::{
     formatar_subgrafo, grafo_subgrafo_handler, CytoscapeEdge, CytoscapeEdgeData,
@@ -60,6 +61,7 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/config/jobs/:job_id", get(job_status_handler))
         .route("/api/v1/config/tse/verificar/:ano", get(config::verificar_tse_ano_handler))
         .route("/api/v1/config/tse/sincronizar", post(config::sincronizar_tse_handler))
+        .route("/api/v1/config/camara/sincronizar", post(config::sincronizar_camara_handler))
         .route("/api/v1/config/ingestao/upload", post(upload_arquivo_handler))
         .route("/api/v1/config/exportar/banco", get(exportar_banco_handler))
         .route("/api/v1/config/exportar/tabela/:nome_tabela", get(exportar_tabela_handler))
