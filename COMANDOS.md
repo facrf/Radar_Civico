@@ -139,7 +139,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p graph -- travessia`  
   *Commit:* `feat(graph): adiciona algoritmo de busca de caminhos em ate 3 graus`
 
-- [ ] 029. Implementar algoritmo de detecção de Fornecedor "Hub" calculando centralidade de intermediação (*Betweenness Centrality*) e concentração por coligação[cite: 1].  
+- [x] 029. Implementar algoritmo de detecção de Fornecedor "Hub" calculando centralidade de intermediação (*Betweenness Centrality*) e concentração por coligação[cite: 1].  
   *Validação:* `cargo test -p graph -- hub`  
   *Commit:* `feat(graph): implementa algoritmo de deteccao de fornecedores hub`
 
