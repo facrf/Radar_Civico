@@ -43,7 +43,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas de despesas ceap/ceaps e contratos publicos`
 
-- [ ] 008. Implementar migração para as tabelas de grafo relacional: `nos_rede` e `conexoes_rede` com índices bidirecionais (`idx_conexoes_origem`, `idx_conexoes_destino`, `idx_conexoes_busca`)[cite: 1].  
+- [x] 008. Implementar migração para as tabelas de grafo relacional: `nos_rede` e `conexoes_rede` com índices bidirecionais (`idx_conexoes_origem`, `idx_conexoes_destino`, `idx_conexoes_busca`)[cite: 1].  
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas e indices para modelagem de grafos`
 

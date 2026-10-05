@@ -132,6 +132,41 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_contratos_fornecedor ON contratos_publicos(fornecedor_cnpj);
         ",
     },
+    Migration {
+        version: 4,
+        name: "create_nos_rede_conexoes_rede",
+        sql: "
+            CREATE TABLE IF NOT EXISTS nos_rede (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT UNIQUE NOT NULL,
+                tipo TEXT NOT NULL,
+                documento TEXT,
+                nome TEXT NOT NULL,
+                esfera TEXT,
+                uf TEXT,
+                municipio TEXT,
+                metadata_json TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS conexoes_rede (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                origem_id INTEGER REFERENCES nos_rede(id),
+                destino_id INTEGER REFERENCES nos_rede(id),
+                tipo_relacao TEXT NOT NULL,
+                valor REAL DEFAULT 0.0,
+                ano INTEGER NOT NULL,
+                data_evento TEXT,
+                fonte_dado TEXT NOT NULL,
+                metadata_json TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conexoes_origem ON conexoes_rede(origem_id);
+            CREATE INDEX IF NOT EXISTS idx_conexoes_destino ON conexoes_rede(destino_id);
+            CREATE INDEX IF NOT EXISTS idx_conexoes_busca ON conexoes_rede(tipo_relacao, ano);
+            CREATE INDEX IF NOT EXISTS idx_nos_documento ON nos_rede(documento);
+            CREATE INDEX IF NOT EXISTS idx_nos_tipo ON nos_rede(tipo);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -298,6 +333,42 @@ mod tests {
         assert_eq!(desp_count, 1);
         assert_eq!(litros, 85.5);
         assert_eq!(cont_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_nos_rede_conexoes_rede() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+
+        run_migrations(&mut conn)?;
+
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, documento, nome, esfera, uf, municipio)
+             VALUES ('node-1', 'POLITICO', '***123***', 'POLITICO ALVO', 'MUNICIPAL', 'SP', 'CAMPINAS')",
+            [],
+        )?;
+        let id1 = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, documento, nome, esfera, uf, municipio)
+             VALUES ('node-2', 'EMPRESA', '11222333000199', 'EMPRESA FORNECEDORA', 'MUNICIPAL', 'SP', 'CAMPINAS')",
+            [],
+        )?;
+        let id2 = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO conexoes_rede (origem_id, destino_id, tipo_relacao, valor, ano, fonte_dado)
+             VALUES (?1, ?2, 'CONTRATO_PUBLICO', 50000.0, 2024, 'PNCP')",
+            (id1, id2),
+        )?;
+
+        let nos_count: i64 = conn.query_row("SELECT count(*) FROM nos_rede", [], |r| r.get(0))?;
+        let conexoes_count: i64 = conn.query_row("SELECT count(*) FROM conexoes_rede", [], |r| r.get(0))?;
+
+        assert_eq!(nos_count, 2);
+        assert_eq!(conexoes_count, 1);
 
         Ok(())
     }
