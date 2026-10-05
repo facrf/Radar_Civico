@@ -45,9 +45,12 @@ pub fn criar_router(pool: DbPool) -> Router {
 
     let web_dir = std::env::var("WEB_DIR").unwrap_or_else(|_| "web/build".to_string());
     if Path::new(&web_dir).exists() {
+        tracing::info!("Servindo arquivos estáticos da interface web a partir de: {}", web_dir);
         let index_file = format!("{}/index.html", web_dir);
         let serve_dir = ServeDir::new(&web_dir).fallback(ServeFile::new(index_file));
         router = router.fallback_service(serve_dir);
+    } else {
+        tracing::warn!("Diretório web '{}' não encontrado. Servidor executando apenas API REST.", web_dir);
     }
 
     router

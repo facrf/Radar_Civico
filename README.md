@@ -98,6 +98,7 @@ services:
     environment:
       - DATA_DIR=/app/data
       - PORT=8080
+      - WEB_DIR=/app/web/build
       - RUST_LOG=info
     restart: unless-stopped
 ```
@@ -146,6 +147,7 @@ services:
     environment:
       - DATA_DIR=/app/data
       - PORT=8080
+      - WEB_DIR=/app/web/build
       - RUST_LOG=info
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]

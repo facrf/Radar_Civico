@@ -11,5 +11,6 @@ services:
     environment:
       - DATA_DIR=/app/data
       - PORT=8080
+      - WEB_DIR=/app/web/build
       - RUST_LOG=info
     restart: unless-stopped
