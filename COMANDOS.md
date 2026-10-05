@@ -11,7 +11,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
 
 ## Fase 1: Setup do Workspace e Infraestrutura Docker
 
-- [ ] 001. Criar `Cargo.toml` raiz configurando o Cargo Workspace com os membros `crates/storage`, `crates/ingestion`, `crates/auditor`, `crates/graph` e `crates/server`[cite: 1].  
+- [x] 001. Criar `Cargo.toml` raiz configurando o Cargo Workspace com os membros `crates/storage`, `crates/ingestion`, `crates/auditor`, `crates/graph` e `crates/server`[cite: 1].  
   *Validação:* `cargo check`  
   *Commit:* `chore: inicializa cargo workspace com crates modulares`
 
