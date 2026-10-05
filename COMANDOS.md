@@ -119,7 +119,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p ingestion -- querido_diario`  
   *Commit:* `feat(ingestion): implementa consulta on demand do querido diario`
 
-- [ ] 025. Implementar scraper sob demanda para consulta de status no Cadastro Nacional dos Advogados (CNA/OAB) salvando payload em cache[cite: 1].  
+- [x] 025. Implementar scraper sob demanda para consulta de status no Cadastro Nacional dos Advogados (CNA/OAB) salvando payload em cache[cite: 1].  
   *Validação:* `cargo test -p ingestion -- oab`  
   *Commit:* `feat(ingestion): implementa consulta sob demanda ao cna da oab`
 

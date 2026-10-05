@@ -2,6 +2,7 @@ pub mod ceap;
 pub mod despesas_tse;
 pub mod error;
 pub mod normalizer;
+pub mod oab;
 pub mod pncp;
 pub mod querido_diario;
 pub mod tse_streaming;
@@ -14,6 +15,7 @@ pub use error::{IngestionError, Result};
 pub use normalizer::{
     converter_latin1_para_utf8, extrair_cnpj_raiz, limpar_apenas_digitos, limpar_cnpj, mascarar_cpf,
 };
+pub use oab::{CnaItemPayload, OabConsultaResult, OabScraperClient};
 pub use pncp::{PncpClient, PncpConsultaResponse, PncpContratoItem, PncpOrgao};
 pub use querido_diario::{ExcerptDiario, QueridoDiarioApiResponse, QueridoDiarioClient};
 pub use tse_streaming::{
