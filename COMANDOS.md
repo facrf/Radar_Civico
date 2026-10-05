@@ -91,7 +91,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
 
 ## Fase 4: Ingestão em Streaming & Normalização (`crates/ingestion`)
 
-- [ ] 018. Criar `crates/ingestion/Cargo.toml` com `csv-async`, `async-zip`, `reqwest`, `tokio`, `crates/storage`, `encoding_rs` e `serde`[cite: 1].  
+- [x] 018. Criar `crates/ingestion/Cargo.toml` com `csv-async`, `async-zip`, `reqwest`, `tokio`, `crates/storage`, `encoding_rs` e `serde`[cite: 1].  
   *Validação:* `cargo check -p ingestion`  
   *Commit:* `feat(ingestion): configura crate de ingestao assincrona`
 
