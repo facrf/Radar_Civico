@@ -55,7 +55,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): configura tabelas virtuais fts5 para busca textual`
 
-- [ ] 011. Implementar métodos de inserção em lote (`batch_insert_receitas`, `batch_insert_despesas`) utilizando transações explícitas `BEGIN`/`COMMIT`[cite: 1].  
+- [x] 011. Implementar métodos de inserção em lote (`batch_insert_receitas`, `batch_insert_despesas`) utilizando transações explícitas `BEGIN`/`COMMIT`[cite: 1].  
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): implementa rotinas de batch insert com transacao`
 
