@@ -275,7 +275,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p ingestion -- camara_bulk`  
   *Commit:* `feat(ingestion): implementa extrator em streaming de dumps anuais da ceap`
 
-- [ ] 058. Implementar cliente assíncrono com suporte a paginação HATEOAS (`links.next`) e rate-limit para a API REST v2 da Câmara em `crates/ingestion/src/camara/api.rs`.  
+- [x] 058. Implementar cliente assíncrono com suporte a paginação HATEOAS (`links.next`) e rate-limit para a API REST v2 da Câmara em `crates/ingestion/src/camara/api.rs`.  
   *Validação:* `cargo test -p ingestion -- camara_api`  
   *Commit:* `feat(ingestion): adiciona consumo paginado hateoas da api da camara`
 

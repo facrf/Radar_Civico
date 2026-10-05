@@ -15,7 +15,8 @@ pub use auxilio_emergencial::{
 };
 pub use camara::{
     extrair_e_processar_ceap_zip, ingerir_ceap_bulk_em_lotes, processar_ceap_buffer_ou_zip,
-    processar_stream_ceap_com_delimitador, processar_stream_ceap_csv, CeapBulkRecord,
+    processar_stream_ceap_com_delimitador, processar_stream_ceap_csv, CamaraApiClient,
+    CamaraDeputadoItem, CamaraDespesaItem, CeapBulkRecord,
 };
 pub use ceap::{CeapApiResponse, CeapClient, CeapItemApi};
 pub use despesas_tse::{
