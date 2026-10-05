@@ -42,6 +42,21 @@ pub struct CandidaturaItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AlertaAuxilioItem {
+    pub id: i64,
+    pub motivo: String,
+    pub detalhes: Option<String>,
+    pub valor_recebido: f64,
+    pub total_bens: Option<f64>,
+    pub cargo_ou_mandato: Option<String>,
+    pub ano_exercicio: Option<i32>,
+    pub status_analise: String,
+    pub mes_disponibilizacao: Option<String>,
+    pub parcela: Option<String>,
+    pub data_alerta: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DossiePolitico {
     pub id: i64,
     pub sq_candidato: Option<String>,
@@ -56,6 +71,8 @@ pub struct DossiePolitico {
     pub candidaturas: Vec<CandidaturaItem>,
     pub historico_bens: Vec<BemItem>,
     pub doadores: Vec<DoadorItem>,
+    #[serde(default)]
+    pub alertas_auxilio: Vec<AlertaAuxilioItem>,
 }
 
 pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossiePolitico>, storage::StorageError> {
@@ -87,6 +104,7 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
                 candidaturas: Vec::new(),
                 historico_bens: Vec::new(),
                 doadores: Vec::new(),
+                alertas_auxilio: Vec::new(),
             })
         })
         .ok();
@@ -182,6 +200,69 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
         for r in rows {
             if let Ok(doador) = r {
                 dossie.doadores.push(doador);
+            }
+        }
+    }
+
+    // 5. Alertas de Benefício Indevido (Auxílio Emergencial)
+    {
+        // Se ainda não houver alertas gravados mas o político tiver benefícios recebidos, tenta auditar
+        let count_alertas: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM alertas_beneficio_indevido WHERE politico_id = ?1",
+                [politico_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        if count_alertas == 0 {
+            if let Some(ref cpf) = dossie.cpf_mascarado {
+                if !cpf.is_empty() {
+                    let count_ben: i64 = conn
+                        .query_row(
+                            "SELECT count(*) FROM beneficios_emergenciais WHERE cpf_mascarado = ?1",
+                            [cpf],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(0);
+                    if count_ben > 0 {
+                        if let Ok(mut conn_mut) = pool.get() {
+                            let _ = auditor::executar_auditoria_auxilio_sqlite(&mut conn_mut);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut stmt_aux = conn.prepare(
+            "SELECT a.id, a.motivo, a.detalhes, a.valor_recebido, a.total_bens,
+                    a.cargo_ou_mandato, a.ano_exercicio, a.status_analise,
+                    b.mes_disponibilizacao, b.parcela, a.data_alerta
+             FROM alertas_beneficio_indevido a
+             LEFT JOIN beneficios_emergenciais b ON a.beneficio_id = b.id
+             WHERE a.politico_id = ?1
+             ORDER BY a.valor_recebido DESC, a.id DESC",
+        )?;
+
+        let rows = stmt_aux.query_map([politico_id], |row| {
+            Ok(AlertaAuxilioItem {
+                id: row.get(0)?,
+                motivo: row.get(1)?,
+                detalhes: row.get(2)?,
+                valor_recebido: row.get(3)?,
+                total_bens: row.get(4)?,
+                cargo_ou_mandato: row.get(5)?,
+                ano_exercicio: row.get(6)?,
+                status_analise: row.get(7)?,
+                mes_disponibilizacao: row.get(8)?,
+                parcela: row.get(9)?,
+                data_alerta: row.get(10)?,
+            })
+        })?;
+
+        for r in rows {
+            if let Ok(alerta) = r {
+                dossie.alertas_auxilio.push(alerta);
             }
         }
     }

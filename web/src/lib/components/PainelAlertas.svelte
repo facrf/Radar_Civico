@@ -128,6 +128,7 @@
 					<option value="FORNECEDOR_HUB">Fornecedor Hub (&gt;70%)</option>
 					<option value="FANTASMA">Fornecedor Inapto/Recente</option>
 					<option value="UBIQUIDADE">Inconsistência Geotemporal</option>
+					<option value="AUXILIO_EMERGENCIAL">Auxílio Emergencial Indevido</option>
 				</select>
 			</div>
 		</div>

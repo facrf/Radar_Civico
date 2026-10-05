@@ -7,8 +7,9 @@ pub mod politico;
 pub mod routes;
 
 pub use alertas::{
-    alertas_handler, carregar_alertas, registrar_alerta, sincronizar_alertas_sistema, AlertaItem,
-    AlertasQueryParams, AlertasResponse, NovoAlerta,
+    alertas_handler, auxilio_indevido_handler, carregar_alertas, registrar_alerta,
+    sincronizar_alertas_sistema, AlertaAuxilioResponseItem, AlertaItem, AlertasQueryParams,
+    AlertasResponse, AuxilioIndevidoQueryParams, AuxilioIndevidoResponse, NovoAlerta,
 };
 pub use busca::{busca_handler, BuscaParams, ItemBuscaUnificada, RespostaBusca};
 pub use config::{
@@ -28,7 +29,8 @@ pub use investigar::{
     InvestigacaoNomeacaoResponse, InvestigarParams,
 };
 pub use politico::{
-    carregar_dossie, politico_dossie_handler, BemItem, CandidaturaItem, DoadorItem, DossiePolitico,
+    carregar_dossie, politico_dossie_handler, AlertaAuxilioItem, BemItem, CandidaturaItem,
+    DoadorItem, DossiePolitico,
 };
 
 use std::path::Path;
@@ -47,6 +49,7 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/politico/:id", get(politico_dossie_handler))
         .route("/api/v1/grafo/:id", get(grafo_subgrafo_handler))
         .route("/api/v1/auditoria/alertas", get(alertas_handler))
+        .route("/api/v1/auditoria/auxilio-indevido", get(auxilio_indevido_handler))
         .route(
             "/api/v1/investigar/nomeacao/:doador_id",
             get(investigar_nomeacao_handler),

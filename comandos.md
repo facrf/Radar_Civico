@@ -265,6 +265,6 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p auditor -- auxilio_indevido`  
   *Commit:* `feat(auditor): implementa heuristica de recebimento indevido de auxilio`
 
-- [ ] 056. Adicionar rota `/api/v1/auditoria/auxilio-indevido` no Axum e exibir badge/cartão de benefício indevido no dossiê do político em SvelteKit.  
+- [x] 056. Adicionar rota `/api/v1/auditoria/auxilio-indevido` no Axum e exibir badge/cartão de benefício indevido no dossiê do político em SvelteKit.  
   *Validação:* `cargo check -p server && cd web && npm run build`  
   *Commit:* `feat(web): integra alertas de auxilio emergencial no dossie do politico`

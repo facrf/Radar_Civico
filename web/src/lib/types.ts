@@ -38,6 +38,20 @@ export interface CandidaturaItem {
 	total_bens_declarados: number;
 }
 
+export interface AlertaAuxilioItem {
+	id: number;
+	motivo: string;
+	detalhes: string | null;
+	valor_recebido: number;
+	total_bens: number | null;
+	cargo_ou_mandato: string | null;
+	ano_exercicio: number | null;
+	status_analise: string;
+	mes_disponibilizacao: string | null;
+	parcela: string | null;
+	data_alerta: string | null;
+}
+
 export interface DossiePolitico {
 	id: number;
 	sq_candidato: string | null;
@@ -52,6 +66,7 @@ export interface DossiePolitico {
 	candidaturas: CandidaturaItem[];
 	historico_bens: BemItem[];
 	doadores: DoadorItem[];
+	alertas_auxilio?: AlertaAuxilioItem[];
 }
 
 export interface AlertaItem {

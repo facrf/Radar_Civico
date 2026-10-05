@@ -50,6 +50,12 @@
 				{#if dossie.cpf_mascarado}
 					<span class="px-2.5 py-0.5 text-xs bg-slate-700/80 text-slate-300 rounded-full font-mono">{dossie.cpf_mascarado}</span>
 				{/if}
+				{#if dossie.alertas_auxilio && dossie.alertas_auxilio.length > 0}
+					<span class="px-3 py-1 text-xs bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-full font-semibold flex items-center gap-1.5 shadow-sm">
+						<span class="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
+						Alerta: Benefício Indevido ({dossie.alertas_auxilio.length})
+					</span>
+				{/if}
 			</div>
 
 			<p class="text-sm text-slate-400 mt-1 font-medium">{dossie.nome_completo}</p>
@@ -109,6 +115,71 @@
 			<span class="text-xs text-slate-500 mt-1 block">Candidaturas apuradas</span>
 		</div>
 	</div>
+
+	<!-- Alerta de Benefício Indevido (Auxílio Emergencial) -->
+	{#if dossie.alertas_auxilio && dossie.alertas_auxilio.length > 0}
+		<div class="bg-rose-950/20 border border-rose-500/40 rounded-2xl p-6 shadow-xl relative overflow-hidden backdrop-blur-sm">
+			<div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-rose-500/20 pb-4 mb-4">
+				<div class="flex items-center gap-3">
+					<div class="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400 text-lg font-bold">
+						⚠️
+					</div>
+					<div>
+						<h3 class="text-lg font-bold text-rose-200 flex items-center gap-2">
+							Alerta de Auditoria: Auxílio Emergencial Indevido
+							<span class="px-2 py-0.5 text-xs bg-rose-500/30 text-rose-200 rounded font-mono">
+								{dossie.alertas_auxilio.length} {dossie.alertas_auxilio.length === 1 ? 'registro' : 'registros'}
+							</span>
+						</h3>
+						<p class="text-xs text-rose-300/80 mt-0.5">
+							Identificado cruzamento determinístico com incompatibilidade legal (Lei 13.982/2020 / Base CGU).
+						</p>
+					</div>
+				</div>
+				<div class="bg-slate-900/80 px-3.5 py-1.5 rounded-lg border border-rose-500/30 text-right">
+					<span class="text-[10px] text-slate-400 block uppercase font-medium">Total de Benefício Flagrado</span>
+					<span class="font-mono text-base font-bold text-rose-400">
+						{formatarMoeda(dossie.alertas_auxilio.reduce((acc, a) => acc + a.valor_recebido, 0))}
+					</span>
+				</div>
+			</div>
+
+			<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+				{#each dossie.alertas_auxilio as alerta}
+					<div class="bg-slate-900/90 border border-rose-500/30 rounded-xl p-4 flex flex-col justify-between hover:border-rose-500/50 transition-colors">
+						<div>
+							<div class="flex items-center justify-between gap-2 flex-wrap">
+								<span class="px-2.5 py-0.5 text-xs font-bold rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">
+									{alerta.motivo.replace(/_/g, ' ')}
+								</span>
+								{#if alerta.mes_disponibilizacao}
+									<span class="text-xs text-slate-400 font-mono">
+										Mês: {alerta.mes_disponibilizacao} {alerta.parcela ? `(${alerta.parcela})` : ''}
+									</span>
+								{/if}
+							</div>
+							<p class="text-xs text-slate-300 mt-2.5 leading-relaxed">
+								{alerta.detalhes || 'Recebimento de benefício com mandato eletivo vigente ou patrimônio superior a R$ 300.000,00.'}
+							</p>
+						</div>
+
+						<div class="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+							<span class="text-slate-400">
+								{#if alerta.cargo_ou_mandato}
+									Mandato: <strong class="text-slate-200">{alerta.cargo_ou_mandato}</strong>
+								{:else if alerta.total_bens}
+									Bens Declarados: <strong class="text-amber-400">{formatarMoeda(alerta.total_bens)}</strong>
+								{/if}
+							</span>
+							<span class="font-mono font-bold text-rose-400 text-sm">
+								{formatarMoeda(alerta.valor_recebido)}
+							</span>
+						</div>
+					</div>
+				{/each}
+			</div>
+		</div>
+	{/if}
 
 	<!-- Candidaturas -->
 	<div class="bg-slate-800/60 border border-slate-700/60 rounded-xl p-6 shadow">

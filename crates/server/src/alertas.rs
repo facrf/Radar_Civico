@@ -57,6 +57,41 @@ pub struct AlertasResponse {
     pub alertas: Vec<AlertaItem>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuxilioIndevidoQueryParams {
+    pub politico_id: Option<i64>,
+    pub motivo: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AlertaAuxilioResponseItem {
+    pub id: i64,
+    pub politico_id: i64,
+    pub politico_nome: String,
+    pub cpf_mascarado: String,
+    pub beneficio_id: Option<i64>,
+    pub motivo: String,
+    pub detalhes: Option<String>,
+    pub valor_recebido: f64,
+    pub total_bens: Option<f64>,
+    pub cargo_ou_mandato: Option<String>,
+    pub ano_exercicio: Option<i32>,
+    pub status_analise: String,
+    pub mes_disponibilizacao: Option<String>,
+    pub parcela: Option<String>,
+    pub data_alerta: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AuxilioIndevidoResponse {
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub alertas: Vec<AlertaAuxilioResponseItem>,
+}
+
 pub fn registrar_alerta(conn: &Connection, alerta: &NovoAlerta) -> Result<i64, storage::StorageError> {
     conn.execute(
         "INSERT INTO alertas_auditoria (
@@ -219,6 +254,73 @@ pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::
         }
     }
 
+    // 3. Sincroniza alertas de auxílio indevido da tabela alertas_beneficio_indevido
+    {
+        let mut stmt = conn.prepare(
+            "SELECT a.id, p.nome_completo, p.cpf_mascarado, a.motivo, a.detalhes,
+                    a.valor_recebido, a.cargo_ou_mandato, a.ano_exercicio, b.uf, b.municipio
+             FROM alertas_beneficio_indevido a
+             JOIN politicos p ON a.politico_id = p.id
+             LEFT JOIN beneficios_emergenciais b ON a.beneficio_id = b.id",
+        )?;
+
+        let aux_alertas = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<i32>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+            ))
+        })?;
+
+        for a in aux_alertas {
+            let (id, nome, cpf, motivo, detalhes, valor, cargo, ano, uf, mun) = a?;
+            let chave_detalhes = format!("\"auxilio_alerta_id\":{}", id);
+            let ja_existe: bool = conn
+                .query_row(
+                    "SELECT 1 FROM alertas_auditoria WHERE tipo = 'AUXILIO_EMERGENCIAL' AND detalhes_json LIKE ?1 LIMIT 1",
+                    [format!("%{}%", chave_detalhes)],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !ja_existe {
+                let severidade = if motivo.contains("MANDATO") { "CRITICA" } else { "ALTA" };
+                let detalhes_obj = serde_json::json!({
+                    "auxilio_alerta_id": id,
+                    "motivo": motivo,
+                    "detalhes": detalhes,
+                    "cargo_ou_mandato": cargo,
+                });
+
+                registrar_alerta(
+                    conn,
+                    &NovoAlerta {
+                        tipo: "AUXILIO_EMERGENCIAL".to_string(),
+                        severidade: severidade.to_string(),
+                        titulo: format!("Auxílio Emergencial Indevido - {}", nome),
+                        descricao: detalhes.unwrap_or_else(|| format!("Recebimento irregular de benefício (motivo: {})", motivo)),
+                        alvo_nome: nome,
+                        alvo_documento: cpf,
+                        municipio: mun,
+                        uf,
+                        ano,
+                        valor_envolvido: Some(valor),
+                        fonte_dado: "CGU/BRASIL_IO".to_string(),
+                        detalhes_json: Some(detalhes_obj.to_string()),
+                    },
+                )?;
+                novos_inseridos += 1;
+            }
+        }
+    }
+
     Ok(novos_inseridos)
 }
 
@@ -342,6 +444,106 @@ pub async fn alertas_handler(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(response))
+}
+
+pub async fn auxilio_indevido_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<AuxilioIndevidoQueryParams>,
+) -> Result<Json<AuxilioIndevidoResponse>, StatusCode> {
+    let mut conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Se a tabela de alertas de auxilio estiver vazia, mas houver registros em beneficios, executa auditoria
+    let count_alertas: i64 = conn
+        .query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| r.get(0))
+        .unwrap_or(0);
+    if count_alertas == 0 {
+        let count_ben: i64 = conn
+            .query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| r.get(0))
+            .unwrap_or(0);
+        if count_ben > 0 {
+            let _ = auditor::executar_auditoria_auxilio_sqlite(&mut conn);
+        }
+    }
+
+    let mut sql = "
+        SELECT 
+            a.id,
+            a.politico_id,
+            p.nome_completo,
+            p.cpf_mascarado,
+            a.beneficio_id,
+            a.motivo,
+            a.detalhes,
+            a.valor_recebido,
+            a.total_bens,
+            a.cargo_ou_mandato,
+            a.ano_exercicio,
+            a.status_analise,
+            b.mes_disponibilizacao,
+            b.parcela,
+            a.data_alerta
+        FROM alertas_beneficio_indevido a
+        JOIN politicos p ON a.politico_id = p.id
+        LEFT JOIN beneficios_emergenciais b ON a.beneficio_id = b.id
+        WHERE 1=1
+    ".to_string();
+
+    let mut sql_params: Vec<Box<dyn ToSql>> = Vec::new();
+
+    if let Some(pid) = params.politico_id {
+        sql.push_str(&format!(" AND a.politico_id = ?{}", sql_params.len() + 1));
+        sql_params.push(Box::new(pid));
+    }
+
+    if let Some(ref m) = params.motivo {
+        sql.push_str(&format!(" AND a.motivo LIKE ?{}", sql_params.len() + 1));
+        sql_params.push(Box::new(format!("%{}%", m)));
+    }
+
+    sql.push_str(" ORDER BY a.valor_recebido DESC, a.id DESC");
+
+    let limit = params.limit.unwrap_or(50);
+    let offset = params.offset.unwrap_or(0);
+
+    sql.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+
+    let mut stmt = conn.prepare(&sql).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let param_refs: Vec<&dyn ToSql> = sql_params.iter().map(|p| p.as_ref()).collect();
+
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(AlertaAuxilioResponseItem {
+            id: row.get(0)?,
+            politico_id: row.get(1)?,
+            politico_nome: row.get(2)?,
+            cpf_mascarado: row.get(3)?,
+            beneficio_id: row.get(4)?,
+            motivo: row.get(5)?,
+            detalhes: row.get(6)?,
+            valor_recebido: row.get(7)?,
+            total_bens: row.get(8)?,
+            cargo_ou_mandato: row.get(9)?,
+            ano_exercicio: row.get(10)?,
+            status_analise: row.get(11)?,
+            mes_disponibilizacao: row.get(12)?,
+            parcela: row.get(13)?,
+            data_alerta: row.get(14)?,
+        })
+    }).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut alertas = Vec::new();
+    for r in rows {
+        if let Ok(item) = r {
+            alertas.push(item);
+        }
+    }
+
+    let total = alertas.len();
+    Ok(Json(AuxilioIndevidoResponse {
+        total,
+        limit,
+        offset,
+        alertas,
+    }))
 }
 
 #[cfg(test)]
@@ -541,5 +743,52 @@ mod tests {
         let json: AlertasResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(json.total, 1);
         assert_eq!(json.alertas[0].tipo, "UBIQUIDADE");
+    }
+
+    #[tokio::test]
+    async fn test_auxilio_indevido_endpoint_http() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado)
+             VALUES ('DEPUTADO BENEFICIARIO', 'BENEFICIARIO', '***.888.999-**')",
+            [],
+        ).unwrap();
+        let pol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO beneficios_emergenciais (cpf_mascarado, nome_beneficiario, municipio, uf, mes_disponibilizacao, parcela, valor)
+             VALUES ('***.888.999-**', 'DEPUTADO BENEFICIARIO', 'SAO PAULO', 'SP', '202004', '1', 600.0)",
+            [],
+        ).unwrap();
+        let ben_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO alertas_beneficio_indevido (politico_id, beneficio_id, motivo, detalhes, valor_recebido, total_bens, cargo_ou_mandato, ano_exercicio)
+             VALUES (?1, ?2, 'MANDATO_VIGENTE', 'Recebeu Auxilio ocupando mandato', 600.0, 500000.0, 'DEPUTADO', 2020)",
+            (pol_id, ben_id),
+        ).unwrap();
+
+        let app = Router::new()
+            .route("/api/v1/auditoria/auxilio-indevido", get(auxilio_indevido_handler))
+            .with_state(pool);
+
+        let req = Request::builder()
+            .uri(format!("/api/v1/auditoria/auxilio-indevido?politico_id={}", pol_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let json: AuxilioIndevidoResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.total, 1);
+        assert_eq!(json.alertas[0].politico_id, pol_id);
+        assert_eq!(json.alertas[0].politico_nome, "DEPUTADO BENEFICIARIO");
+        assert_eq!(json.alertas[0].motivo, "MANDATO_VIGENTE");
+        assert_eq!(json.alertas[0].valor_recebido, 600.0);
     }
 }

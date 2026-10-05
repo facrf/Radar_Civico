@@ -934,6 +934,7 @@
 						<option value="TSE_RECEITAS">TSE - Prestação de Contas (Receitas de Campanha)</option>
 						<option value="TSE_DESPESAS">TSE - Prestação de Contas (Despesas de Campanha)</option>
 						<option value="TSE_CANDIDATOS">TSE - Candidatos (consulta_cand)</option>
+						<option value="AUXILIO_EMERGENCIAL">Auxílio Emergencial / Benefícios (CGU / Brasil.IO)</option>
 					</select>
 				</div>
 			</div>
@@ -948,7 +949,7 @@
 					<svg class="w-3.5 h-3.5 transition-transform duration-200 {mostrarGuiaCabecalhos ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
 					</svg>
-					<span>{mostrarGuiaCabecalhos ? 'Ocultar Dicionário de Cabeçalhos Suportados' : 'Ver Dicionário de Cabeçalhos Suportados (QSA, OAB, PNCP, CEAP, TSE)'}</span>
+					<span>{mostrarGuiaCabecalhos ? 'Ocultar Dicionário de Cabeçalhos Suportados' : 'Ver Dicionário de Cabeçalhos Suportados (QSA, OAB, PNCP, CEAP, TSE, Auxílio)'}</span>
 				</button>
 
 				{#if mostrarGuiaCabecalhos}
@@ -983,6 +984,12 @@
 								<span class="font-semibold text-rose-400 block">TSE (Prestação de Contas):</span>
 								<p class="text-slate-400 text-[11px]">Receitas: <code class="text-slate-300">NR_CPF_CNPJ_DOADOR</code>, <code class="text-slate-300">NM_DOADOR</code>, <code class="text-slate-300">VR_RECEITA</code>, <code class="text-slate-300">DT_RECEITA</code></p>
 								<p class="text-slate-400 text-[11px]">Despesas: <code class="text-slate-300">NR_CPF_CNPJ_FORNECEDOR</code>, <code class="text-slate-300">NM_FORNECEDOR</code>, <code class="text-slate-300">VR_DESPESA</code>, <code class="text-slate-300">DT_DESPESA</code></p>
+							</div>
+
+							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
+								<span class="font-semibold text-rose-300 block">Auxílio Emergencial (CGU / Brasil.IO):</span>
+								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">CPF_BENEFICIARIO</code>, <code class="text-slate-300">NOME_BENEFICIARIO</code>, <code class="text-slate-300">VALOR_BENEFICIO</code>, <code class="text-slate-300">MES_DISPONIBILIZACAO</code>, <code class="text-slate-300">PARCELA</code>, <code class="text-slate-300">UF</code>, <code class="text-slate-300">MUNICIPIO</code></p>
+								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">beneficios_emergenciais</span></p>
 							</div>
 
 							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">

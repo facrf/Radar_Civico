@@ -78,6 +78,10 @@ pub struct TotalRegistros {
     pub empresas_qsa: i64,
     #[serde(default)]
     pub registros_profissionais: i64,
+    #[serde(default)]
+    pub beneficios_emergenciais: i64,
+    #[serde(default)]
+    pub alertas_beneficio_indevido: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +224,16 @@ pub async fn status_handler(
             r.get(0)
         })
         .unwrap_or(0);
+    let beneficios_emergenciais: i64 = conn
+        .query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
+            r.get(0)
+        })
+        .unwrap_or(0);
+    let alertas_beneficio_indevido: i64 = conn
+        .query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| {
+            r.get(0)
+        })
+        .unwrap_or(0);
 
     let ultimo_evento_sincronizacao: Option<String> = conn
         .query_row(
@@ -255,6 +269,8 @@ pub async fn status_handler(
             alertas_auditoria,
             empresas_qsa,
             registros_profissionais,
+            beneficios_emergenciais,
+            alertas_beneficio_indevido,
         },
         ultimo_evento_sincronizacao,
         versao_sistema: env!("CARGO_PKG_VERSION").to_string(),
@@ -548,6 +564,8 @@ fn detectar_tipo_por_cabecalho(headers: &csv::StringRecord) -> String {
         "TSE_CANDIDATOS".to_string()
     } else if header_str.contains("TERMO_PESQUISADO") || header_str.contains("MUNICIPIO_UF") || header_str.contains("QUERIDO_DIARIO") {
         "DIARIOS_OFICIAIS".to_string()
+    } else if header_str.contains("BENEFICIARIO") || header_str.contains("BENEFICIO") || header_str.contains("AUXILIO") {
+        "AUXILIO_EMERGENCIAL".to_string()
     } else {
         "CSV_GENERICO".to_string()
     }
@@ -821,6 +839,50 @@ fn processar_csv_records<R: std::io::Read>(
                 }
             }
             tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        "AUXILIO_EMERGENCIAL" | "BENEFICIOS_SOCIAIS" | "AUXILIO" | "CGU_AUXILIO" => {
+            let col_cpf = find_col(&headers, &["CPF_BENEFICIARIO", "CPF", "NR_CPF", "CPF_RESPONSAVEL"]);
+            let col_nome = find_col(&headers, &["NOME_BENEFICIARIO", "NOME", "NM_BENEFICIARIO", "BENEFICIARIO"]);
+            let col_mes = find_col(&headers, &["MES_DISPONIBILIZACAO", "MES_REFERENCIA", "MES", "REFERENCIA"]);
+            let col_uf = find_col(&headers, &["UF", "SG_UF", "ESTADO"]);
+            let col_mun = find_col(&headers, &["NOME_MUNICIPIO", "MUNICIPIO", "CIDADE"]);
+            let col_parcela = find_col(&headers, &["PARCELA", "NUMERO_PARCELA", "NR_PARCELA"]);
+            let col_valor = find_col(&headers, &["VALOR_BENEFICIO", "VALOR", "VR_BENEFICIO", "VR_PAGTO"]);
+            let col_enq = find_col(&headers, &["ENQUADRAMENTO", "TIPO_BENEFICIARIO", "TIPO"]);
+
+            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO beneficios_emergenciais (
+                        cpf_mascarado, nome_beneficiario, municipio, uf, mes_disponibilizacao, parcela, valor, enquadramento
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+                for record in reader.records().flatten() {
+                    let raw_cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    if raw_cpf.is_empty() {
+                        continue;
+                    }
+                    let cpf_mascarado = ingestion::mascarar_cpf(raw_cpf);
+                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("").trim().to_string();
+                    let mes = col_mes.and_then(|i| record.get(i)).unwrap_or("202004").trim().to_string();
+                    let uf = col_uf.and_then(|i| record.get(i)).map(|s| s.trim().to_uppercase());
+                    let mun = col_mun.and_then(|i| record.get(i)).map(|s| s.trim().to_string());
+                    let parcela = col_parcela.and_then(|i| record.get(i)).map(|s| s.trim().to_string());
+                    let val_str = col_valor.and_then(|i| record.get(i)).unwrap_or("0");
+                    let valor = parse_f64_valor(val_str);
+                    let enq = col_enq.and_then(|i| record.get(i)).map(|s| s.trim().to_string());
+
+                    let _ = stmt.execute(rusqlite::params![
+                        cpf_mascarado, nome, mun, uf, mes, parcela, valor, enq
+                    ]);
+                    count += 1;
+                }
+            }
+            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+            // Roda auditoria automática para criar alertas de auxilio indevido
+            let _ = auditor::executar_auditoria_auxilio_sqlite(conn);
         }
         _ => {
             for _ in reader.records().flatten() {
