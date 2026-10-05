@@ -261,7 +261,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p ingestion -- auxilio`  
   *Commit:* `feat(ingestion): implementa parser streaming de auxilio emergencial`
 
-- [ ] 055. Implementar regras em `crates/auditor` flagrando recebimento com mandato vigente ou bens declarados superiores a R$ 300.000,00.  
+- [x] 055. Implementar regras em `crates/auditor` flagrando recebimento com mandato vigente ou bens declarados superiores a R$ 300.000,00.  
   *Validação:* `cargo test -p auditor -- auxilio_indevido`  
   *Commit:* `feat(auditor): implementa heuristica de recebimento indevido de auxilio`
 

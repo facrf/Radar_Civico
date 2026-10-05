@@ -1,3 +1,4 @@
+pub mod auxilio_indevido;
 pub mod combustivel;
 pub mod conflito_oab;
 pub mod error;
@@ -5,6 +6,11 @@ pub mod fornecedores_fantasmas;
 pub mod triangulacao;
 pub mod ubiquidade;
 
+pub use auxilio_indevido::{
+    auditar_lote_auxilio_indevido, auditar_recebimento_auxilio, executar_auditoria_auxilio_sqlite,
+    AlertaAuxilioIndevido, MotivoAuxilioIndevido, PoliticoPerfilAuxilio, RegistroAuxilio,
+    LIMITE_BENS_AUXILIO,
+};
 pub use combustivel::{
     auditar_abastecimento, auditar_lote_abastecimentos, calcular_litros, Abastecimento,
     AlertaCombustivel, LIMITE_TANQUE_VEICULO_LEVE, PRECO_PADRAO_GASOLINA_ANP,

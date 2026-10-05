@@ -5,6 +5,9 @@ pub enum AuditorError {
     #[error("Storage error: {0}")]
     Storage(#[from] storage::StorageError),
 
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] storage::rusqlite::Error),
+
     #[error("Calculation error: {0}")]
     Calculation(String),
 
