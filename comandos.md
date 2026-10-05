@@ -283,7 +283,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p server -- camara_sincronizar`  
   *Commit:* `feat(server): adiciona endpoint de sincronizacao configuravel da ceap`
 
-- [ ] 060. Adicionar card de sincronização da Câmara no SvelteKit com alternância entre carga anual em massa e API REST paginada.  
+- [x] 060. Adicionar card de sincronização da Câmara no SvelteKit com alternância entre carga anual em massa e API REST paginada.  
   *Validação:* `cd web && npm run build`  
   *Commit:* `feat(web): cria controles de sincronizacao estatica e api da camara`
 

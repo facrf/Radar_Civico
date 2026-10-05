@@ -68,6 +68,10 @@
 	// Ingestão
 	let anoTse = 2024;
 	let anoCeap = 2024;
+	let modoCeap: 'BULK' | 'API' = 'BULK';
+	let sincronizandoCamara = false;
+	let idsDeputadosCeap = '';
+	let maxPaginasCeap = 5;
 	let anoPncp = 2024;
 	let disparandoFonte: string | null = null;
 	let verificandoTse = false;
@@ -247,6 +251,39 @@
 			alert(`Erro ao iniciar ingestão: ${e.message}`);
 		} finally {
 			disparandoFonte = null;
+		}
+	}
+
+	async function dispararSincronizacaoCamara() {
+		sincronizandoCamara = true;
+		try {
+			const parsedIds = idsDeputadosCeap
+				.split(',')
+				.map((s) => parseInt(s.trim()))
+				.filter((n) => !isNaN(n));
+
+			const res = await fetch('/api/v1/config/camara/sincronizar', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					ano: anoCeap,
+					modo: modoCeap,
+					deputados_ids: parsedIds.length > 0 ? parsedIds : undefined,
+					max_paginas: modoCeap === 'API' ? maxPaginasCeap : undefined
+				})
+			});
+
+			if (!res.ok) {
+				const err = await res.json();
+				throw new Error(err.erro || 'Falha ao sincronizar dados da Câmara');
+			}
+
+			const data = await res.json();
+			iniciarPollingJob(data.job_id);
+		} catch (e: any) {
+			alert(`Erro na sincronização da Câmara: ${e.message}`);
+		} finally {
+			sincronizandoCamara = false;
 		}
 	}
 
@@ -761,7 +798,7 @@
 				{/if}
 			</div>
 
-			<!-- Fonte 2: CEAP (Câmara dos Deputados) -->
+			<!-- Fonte 2: CEAP (Câmara dos Deputados - Ingestão Dual) -->
 			<div class="p-6 bg-slate-800/50 border border-slate-700/60 rounded-xl space-y-4">
 				<div class="flex items-center justify-between">
 					<div class="flex items-center gap-3">
@@ -769,20 +806,54 @@
 							CEAP
 						</div>
 						<div>
-							<h3 class="font-medium text-white">Câmara dos Deputados (CEAP)</h3>
-							<p class="text-xs text-slate-400">Reembolsos parlamentares, combustíveis e notas fiscais</p>
+							<h3 class="font-medium text-white flex items-center gap-2">
+								Câmara dos Deputados (CEAP)
+								<span class="text-[10px] font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+									Ingestão Dual
+								</span>
+							</h3>
+							<p class="text-xs text-slate-400">Reembolsos parlamentares, notas fiscais e limites físicos de combustível</p>
 						</div>
 					</div>
 				</div>
 
-				<div class="flex flex-wrap items-center gap-3 pt-2">
+				<!-- Seletor de Modo de Ingestão: BULK vs API REST -->
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+					<button
+						type="button"
+						on:click={() => (modoCeap = 'BULK')}
+						class="flex items-start gap-3 p-3 rounded-lg border text-left transition-all {modoCeap === 'BULK' ? 'bg-emerald-950/40 border-emerald-500/60 text-white shadow-sm' : 'bg-slate-900/60 border-slate-700/70 text-slate-400 hover:border-slate-600'}"
+					>
+						<span class="text-lg">📦</span>
+						<div>
+							<div class="text-xs font-semibold {modoCeap === 'BULK' ? 'text-emerald-400' : 'text-slate-300'}">Dump Anual (Zip/CSV)</div>
+							<p class="text-[11px] text-slate-400 mt-0.5 leading-snug">Carga em massa do consolidado anual direto dos arquivos estáticos da Câmara.</p>
+						</div>
+					</button>
+
+					<button
+						type="button"
+						on:click={() => (modoCeap = 'API')}
+						class="flex items-start gap-3 p-3 rounded-lg border text-left transition-all {modoCeap === 'API' ? 'bg-emerald-950/40 border-emerald-500/60 text-white shadow-sm' : 'bg-slate-900/60 border-slate-700/70 text-slate-400 hover:border-slate-600'}"
+					>
+						<span class="text-lg">🌐</span>
+						<div>
+							<div class="text-xs font-semibold {modoCeap === 'API' ? 'text-emerald-400' : 'text-slate-300'}">API REST v2 (HATEOAS)</div>
+							<p class="text-[11px] text-slate-400 mt-0.5 leading-snug">Consulta incremental paginada via links <code class="text-emerald-300">rel=next</code> com rate-limiting.</p>
+						</div>
+					</button>
+				</div>
+
+				<div class="flex flex-wrap items-center gap-3 pt-1">
 					<div class="flex items-center gap-2">
-						<label for="ano-ceap" class="text-xs text-slate-400">Ano Fiscal:</label>
+						<label for="ano-ceap" class="text-xs text-slate-400 font-medium">Ano Fiscal:</label>
 						<select
 							id="ano-ceap"
 							bind:value={anoCeap}
 							class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
 						>
+							<option value={2026}>2026</option>
+							<option value={2025}>2025</option>
 							<option value={2024}>2024</option>
 							<option value={2023}>2023</option>
 							<option value={2022}>2022</option>
@@ -791,12 +862,49 @@
 						</select>
 					</div>
 
+					{#if modoCeap === 'API'}
+						<div class="flex items-center gap-2">
+							<label for="deputados-ceap" class="text-xs text-slate-400 font-medium">IDs Deputados:</label>
+							<input
+								id="deputados-ceap"
+								type="text"
+								bind:value={idsDeputadosCeap}
+								placeholder="Ex: 204523, 204524 (opcional)"
+								class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 w-48 focus:ring-emerald-500 focus:border-emerald-500 placeholder-slate-500"
+							/>
+						</div>
+
+						<div class="flex items-center gap-2">
+							<label for="max-pags-ceap" class="text-xs text-slate-400 font-medium">Páginas Máx:</label>
+							<select
+								id="max-pags-ceap"
+								bind:value={maxPaginasCeap}
+								class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
+							>
+								<option value={1}>1 pág (~100 itens)</option>
+								<option value={5}>5 págs (~500 itens)</option>
+								<option value={10}>10 págs (~1000 itens)</option>
+								<option value={50}>50 págs</option>
+							</select>
+						</div>
+					{/if}
+
 					<button
-						on:click={() => dispararIngestao('CEAP', anoCeap)}
-						disabled={disparandoFonte === 'CEAP'}
-						class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50"
+						on:click={dispararSincronizacaoCamara}
+						disabled={sincronizandoCamara || activeJob?.status === 'PROCESSANDO'}
+						class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50 flex items-center gap-2 ml-auto"
 					>
-						{disparandoFonte === 'CEAP' ? 'Despachando...' : 'Puxar Notas Fiscais'}
+						{#if sincronizandoCamara}
+							<svg class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+							</svg>
+							<span>Disparando...</span>
+						{:else if modoCeap === 'BULK'}
+							<span>Sincronizar Dump Anual</span>
+						{:else}
+							<span>Sincronizar via API REST</span>
+						{/if}
 					</button>
 				</div>
 			</div>
