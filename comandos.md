@@ -251,3 +251,20 @@ Diretrizes para o agente autônomo (YOLO Mode):
 - [x] 052. Criar teste de integração em `tests/config_pipeline.rs` validando a verificação de ano, disparo de job em background e geração de exportação de snapshot.  
   *Validação:* `cargo test --test config_pipeline`  
   *Commit:* `test(e2e): valida pipeline completo de configuracao sincronizacao e exportacao`
+## Fase 10: Módulo de Benefícios Sociais e Auxílio Emergencial
+
+- [x] 053. Criar migração em `crates/storage` com tabelas `beneficios_emergenciais` e `alertas_beneficio_indevido`, incluindo índices de busca rápida.  
+  *Validação:* `cargo test -p storage -- beneficio`  
+  *Commit:* `feat(storage): adiciona tabelas para auditoria de auxilio emergencial`
+
+- [ ] 054. Implementar parser de streaming em `crates/ingestion` para arquivos de pagamentos de benefícios da CGU/Brasil.IO.  
+  *Validação:* `cargo test -p ingestion -- auxilio`  
+  *Commit:* `feat(ingestion): implementa parser streaming de auxilio emergencial`
+
+- [ ] 055. Implementar regras em `crates/auditor` flagrando recebimento com mandato vigente ou bens declarados superiores a R$ 300.000,00.  
+  *Validação:* `cargo test -p auditor -- auxilio_indevido`  
+  *Commit:* `feat(auditor): implementa heuristica de recebimento indevido de auxilio`
+
+- [ ] 056. Adicionar rota `/api/v1/auditoria/auxilio-indevido` no Axum e exibir badge/cartão de benefício indevido no dossiê do político em SvelteKit.  
+  *Validação:* `cargo check -p server && cd web && npm run build`  
+  *Commit:* `feat(web): integra alertas de auxilio emergencial no dossie do politico`

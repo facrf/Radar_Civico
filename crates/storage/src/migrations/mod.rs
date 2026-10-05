@@ -313,6 +313,47 @@ pub const MIGRATIONS: &[Migration] = &[
             );
         ",
     },
+    Migration {
+        version: 10,
+        name: "create_beneficios_emergenciais_alertas",
+        sql: "
+            CREATE TABLE IF NOT EXISTS beneficios_emergenciais (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cpf_mascarado TEXT NOT NULL,
+                nome_beneficiario TEXT NOT NULL,
+                municipio TEXT,
+                uf TEXT,
+                mes_disponibilizacao TEXT NOT NULL,
+                parcela TEXT,
+                valor REAL NOT NULL,
+                enquadramento TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS alertas_beneficio_indevido (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                politico_id INTEGER REFERENCES politicos(id),
+                beneficio_id INTEGER REFERENCES beneficios_emergenciais(id),
+                motivo TEXT NOT NULL,
+                detalhes TEXT,
+                valor_recebido REAL NOT NULL,
+                total_bens REAL,
+                cargo_ou_mandato TEXT,
+                ano_exercicio INTEGER,
+                status_analise TEXT DEFAULT 'PENDENTE',
+                data_alerta TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_beneficios_cpf ON beneficios_emergenciais(cpf_mascarado);
+            CREATE INDEX IF NOT EXISTS idx_beneficios_nome ON beneficios_emergenciais(nome_beneficiario);
+            CREATE INDEX IF NOT EXISTS idx_beneficios_uf_mun ON beneficios_emergenciais(uf, municipio);
+            CREATE INDEX IF NOT EXISTS idx_beneficios_mes ON beneficios_emergenciais(mes_disponibilizacao);
+
+            CREATE INDEX IF NOT EXISTS idx_alertas_beneficio_politico ON alertas_beneficio_indevido(politico_id);
+            CREATE INDEX IF NOT EXISTS idx_alertas_beneficio_beneficio ON alertas_beneficio_indevido(beneficio_id);
+            CREATE INDEX IF NOT EXISTS idx_alertas_beneficio_motivo ON alertas_beneficio_indevido(motivo);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -675,5 +716,44 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_migrations_beneficios_emergenciais() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado)
+             VALUES ('DEPUTADO FRAUDADOR', 'FRAUDADOR', '***.111.222-**')",
+            [],
+        )?;
+        let pol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO beneficios_emergenciais (cpf_mascarado, nome_beneficiario, municipio, uf, mes_disponibilizacao, parcela, valor, enquadramento)
+             VALUES ('***.111.222-**', 'DEPUTADO FRAUDADOR', 'BRASILIA', 'DF', '202005', '1ª PARCELA', 600.0, 'EXTRA CAD')",
+            [],
+        )?;
+        let ben_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO alertas_beneficio_indevido (politico_id, beneficio_id, motivo, detalhes, valor_recebido, total_bens, cargo_ou_mandato, ano_exercicio)
+             VALUES (?1, ?2, 'MANDATO_VIGENTE', 'Recebeu Auxilio Emergencial ocupando cargo eletivo', 600.0, 500000.0, 'DEPUTADO FEDERAL', 2020)",
+            (pol_id, ben_id),
+        )?;
+
+        let ben_count: i64 = conn.query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| r.get(0))?;
+        let alerta_count: i64 = conn.query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| r.get(0))?;
+
+        assert_eq!(ben_count, 1);
+        assert_eq!(alerta_count, 1);
+
+        // Verify idempotency of migration 10
+        run_migrations(&mut conn)?;
+
+        Ok(())
+    }
 }
+
 
