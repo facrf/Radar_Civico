@@ -9,6 +9,8 @@
 		despesas_parlamentares: number;
 		contratos_publicos: number;
 		alertas_auditoria: number;
+		empresas_qsa?: number;
+		registros_profissionais?: number;
 	}
 
 	interface ConfigStatus {
@@ -18,6 +20,13 @@
 		total_registros: TotalRegistros;
 		ultimo_evento_sincronizacao: string | null;
 		versao_sistema: string;
+	}
+
+	interface IdentidadeVisual {
+		tem_icone_customizado: boolean;
+		tem_favicon_customizado: boolean;
+		icone_url: string;
+		favicon_url: string;
 	}
 
 	interface JobInfo {
@@ -43,6 +52,18 @@
 	let status: ConfigStatus | null = null;
 	let loadingStatus = true;
 	let erroStatus: string | null = null;
+
+	// Identidade Visual & Ícones
+	let identidade: IdentidadeVisual | null = null;
+	let arquivoIcone: File | null = null;
+	let previewIconeUrl: string | null = null;
+	let alvoIcone: 'ambos' | 'icone' | 'favicon' = 'ambos';
+	let salvandoIcone = false;
+	let resetandoIcone = false;
+	let msgIconeSucesso: string | null = null;
+	let erroIcone: string | null = null;
+	let iconTimestamp = Date.now();
+	let mostrarGuiaCabecalhos = false;
 
 	// Ingestão
 	let anoTse = 2024;
@@ -78,11 +99,103 @@
 		{ id: 'contratos_publicos', nome: 'Contratos Públicos (PNCP)' },
 		{ id: 'alertas_auditoria', nome: 'Alertas de Auditoria' },
 		{ id: 'empresas_qsa', nome: 'Quadro Societário (QSA)' },
+		{ id: 'registros_profissionais', nome: 'Registros Profissionais (OAB)' },
 		{ id: 'bens_candidato', nome: 'Bens Declarados' },
 		{ id: 'nos_rede', nome: 'Nós do Grafo Relacional' },
 		{ id: 'conexoes_rede', nome: 'Arestas / Vínculos de Rede' },
-		{ id: 'historico_sincronizacao', nome: 'Histórico de Sincronizações' }
+		{ id: 'historico_sincronizacao', nome: 'Histórico de Sincronizações' },
+		{ id: 'configuracoes_sistema', nome: 'Configurações de Identidade' }
 	];
+
+	async function carregarIdentidade() {
+		try {
+			const res = await fetch('/api/v1/config/identidade');
+			if (res.ok) {
+				identidade = await res.json();
+			}
+		} catch (e) {
+			console.error('Erro ao carregar identidade visual:', e);
+		}
+	}
+
+	function handleIconSelect(e: Event) {
+		const target = e.target as HTMLInputElement;
+		if (target.files && target.files.length > 0) {
+			arquivoIcone = target.files[0];
+			erroIcone = null;
+			msgIconeSucesso = null;
+			if (previewIconeUrl) URL.revokeObjectURL(previewIconeUrl);
+			previewIconeUrl = URL.createObjectURL(arquivoIcone);
+		}
+	}
+
+	async function salvarIcone() {
+		if (!arquivoIcone) return;
+		salvandoIcone = true;
+		erroIcone = null;
+		msgIconeSucesso = null;
+
+		try {
+			const formData = new FormData();
+			formData.append('arquivo', arquivoIcone);
+			formData.append('alvo', alvoIcone);
+
+			const res = await fetch('/api/v1/config/icone', {
+				method: 'POST',
+				body: formData
+			});
+
+			if (!res.ok) {
+				const err = await res.json();
+				throw new Error(err.erro || 'Falha ao salvar ícone');
+			}
+
+			msgIconeSucesso = 'Identidade visual atualizada com sucesso!';
+			arquivoIcone = null;
+			if (previewIconeUrl) {
+				URL.revokeObjectURL(previewIconeUrl);
+				previewIconeUrl = null;
+			}
+			iconTimestamp = Date.now();
+			await carregarIdentidade();
+			window.dispatchEvent(new CustomEvent('radar-icon-updated'));
+		} catch (e: any) {
+			erroIcone = e.message || 'Erro ao enviar imagem';
+		} finally {
+			salvandoIcone = false;
+		}
+	}
+
+	async function restaurarIconePadrao() {
+		resetandoIcone = true;
+		erroIcone = null;
+		msgIconeSucesso = null;
+
+		try {
+			const res = await fetch('/api/v1/config/icone?alvo=ambos', {
+				method: 'DELETE'
+			});
+
+			if (!res.ok) {
+				const err = await res.json();
+				throw new Error(err.erro || 'Falha ao restaurar ícone');
+			}
+
+			msgIconeSucesso = 'Ícone restaurado para o padrão do Radar Cívico!';
+			arquivoIcone = null;
+			if (previewIconeUrl) {
+				URL.revokeObjectURL(previewIconeUrl);
+				previewIconeUrl = null;
+			}
+			iconTimestamp = Date.now();
+			await carregarIdentidade();
+			window.dispatchEvent(new CustomEvent('radar-icon-updated'));
+		} catch (e: any) {
+			erroIcone = e.message || 'Erro ao restaurar padrão';
+		} finally {
+			resetandoIcone = false;
+		}
+	}
 
 	async function carregarStatus() {
 		loadingStatus = true;
@@ -221,8 +334,10 @@
 
 	onMount(() => {
 		carregarStatus();
+		carregarIdentidade();
 		return () => {
 			if (pollingInterval) clearInterval(pollingInterval);
+			if (previewIconeUrl) URL.revokeObjectURL(previewIconeUrl);
 		};
 	});
 </script>
@@ -289,7 +404,7 @@
 			Diagnóstico do Mini Data Lake SQLite
 		</h2>
 
-		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
 			<!-- Card 1: Tamanho SQLite -->
 			<div class="p-5 bg-slate-800/70 border border-slate-700/60 rounded-xl flex items-center gap-4">
 				<div class="w-12 h-12 rounded-lg bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
@@ -329,12 +444,34 @@
 						{/if}
 					</p>
 					<p class="text-xs text-slate-400">
-						{(status?.total_registros.candidaturas ?? 0).toLocaleString('pt-BR')} candidaturas
+						{(status?.total_registros.candidaturas ?? 0).toLocaleString('pt-BR')} candidaturas ativas
 					</p>
 				</div>
 			</div>
 
-			<!-- Card 3: Receitas & Despesas -->
+			<!-- Card 3: Quadro Societário QSA -->
+			<div class="p-5 bg-slate-800/70 border border-slate-700/60 rounded-xl flex items-center gap-4">
+				<div class="w-12 h-12 rounded-lg bg-teal-500/10 border border-teal-500/30 flex items-center justify-center text-teal-400">
+					<svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+					</svg>
+				</div>
+				<div>
+					<p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Sócios & Empresas QSA</p>
+					<p class="text-2xl font-bold text-white mt-0.5">
+						{#if loadingStatus && !status}
+							<span class="text-slate-500 text-lg">...</span>
+						{:else}
+							{(status?.total_registros.empresas_qsa ?? 0).toLocaleString('pt-BR')}
+						{/if}
+					</p>
+					<p class="text-xs text-slate-400">
+						{(status?.total_registros.registros_profissionais ?? 0).toLocaleString('pt-BR')} registros OAB / CNA
+					</p>
+				</div>
+			</div>
+
+			<!-- Card 4: Receitas Eleitorais -->
 			<div class="p-5 bg-slate-800/70 border border-slate-700/60 rounded-xl flex items-center gap-4">
 				<div class="w-12 h-12 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
 					<svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -351,12 +488,34 @@
 						{/if}
 					</p>
 					<p class="text-xs text-slate-400">
-						{(status?.total_registros.despesas_campanha ?? 0).toLocaleString('pt-BR')} despesas de campanha
+						{(status?.total_registros.despesas_campanha ?? 0).toLocaleString('pt-BR')} despesas TSE
 					</p>
 				</div>
 			</div>
 
-			<!-- Card 4: Contratos & Anomalias -->
+			<!-- Card 5: Despesas CEAP -->
+			<div class="p-5 bg-slate-800/70 border border-slate-700/60 rounded-xl flex items-center gap-4">
+				<div class="w-12 h-12 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+					<svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+					</svg>
+				</div>
+				<div>
+					<p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Cotas CEAP (Câmara)</p>
+					<p class="text-2xl font-bold text-white mt-0.5">
+						{#if loadingStatus && !status}
+							<span class="text-slate-500 text-lg">...</span>
+						{:else}
+							{(status?.total_registros.despesas_parlamentares ?? 0).toLocaleString('pt-BR')}
+						{/if}
+					</p>
+					<p class="text-xs text-slate-400">
+						{(status?.total_registros.contratos_publicos ?? 0).toLocaleString('pt-BR')} contratos PNCP
+					</p>
+				</div>
+			</div>
+
+			<!-- Card 6: Contratos & Anomalias -->
 			<div class="p-5 bg-slate-800/70 border border-slate-700/60 rounded-xl flex items-center gap-4">
 				<div class="w-12 h-12 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
 					<svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -373,8 +532,168 @@
 						{/if}
 					</p>
 					<p class="text-xs text-slate-400">
-						{(status?.total_registros.contratos_publicos ?? 0).toLocaleString('pt-BR')} contratos PNCP
+						anomalias detectadas no auditor
 					</p>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- Seção: Identidade Visual e Personalização do Favicon e Ícone -->
+	<div>
+		<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+			<div>
+				<h2 class="text-base font-semibold text-slate-200 flex items-center gap-2">
+					<span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+					Identidade Visual & Ícones da Aplicação
+				</h2>
+				<p class="text-xs text-slate-400 mt-0.5">Altere o favicon do navegador e o logo/marca exibido no topo da aplicação</p>
+			</div>
+			{#if identidade?.tem_icone_customizado || identidade?.tem_favicon_customizado}
+				<span class="px-2.5 py-1 text-xs font-medium rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5 w-fit">
+					<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+					Ícone Personalizado Ativo
+				</span>
+			{:else}
+				<span class="px-2.5 py-1 text-xs font-medium rounded-full bg-slate-800 border border-slate-700 text-slate-400 w-fit">
+					Ícone Padrão do Radar
+				</span>
+			{/if}
+		</div>
+
+		<div class="bg-slate-800/40 border border-slate-700/60 rounded-xl p-6 space-y-6">
+			<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+				<!-- Preview Atual -->
+				<div class="p-5 bg-slate-900/60 border border-slate-800 rounded-xl space-y-4">
+					<span class="text-xs font-semibold text-slate-300 uppercase tracking-wider block">Pré-visualização</span>
+
+					<div class="flex items-center gap-4">
+						<div class="text-center">
+							<div class="w-16 h-16 rounded-xl bg-slate-950 border border-slate-700 flex items-center justify-center p-2 mx-auto overflow-hidden shadow-inner">
+								<img
+									src={previewIconeUrl || `/api/v1/config/icone?v=${iconTimestamp}`}
+									alt="Ícone Aplicação"
+									class="w-full h-full object-contain"
+								/>
+							</div>
+							<span class="text-[11px] text-slate-400 mt-1.5 block">Barra Superior</span>
+						</div>
+
+						<!-- Simulador de Aba de Navegador -->
+						<div class="flex-1">
+							<div class="bg-slate-950 border border-slate-800 rounded-lg p-2.5 shadow">
+								<div class="flex items-center gap-2 px-2 py-1 bg-slate-900 rounded border border-slate-800 max-w-[220px]">
+									<img
+										src={previewIconeUrl || `/api/v1/config/favicon?v=${iconTimestamp}`}
+										alt="Favicon"
+										class="w-4 h-4 object-contain flex-shrink-0"
+									/>
+									<span class="text-xs font-medium text-slate-300 truncate">Radar Cívico</span>
+								</div>
+							</div>
+							<span class="text-[11px] text-slate-400 mt-1.5 block">Aba do Navegador (Favicon)</span>
+						</div>
+					</div>
+
+					{#if previewIconeUrl}
+						<div class="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-300 text-xs flex items-center justify-between">
+							<span>Nova imagem selecionada</span>
+							<button
+								type="button"
+								on:click={() => {
+									if (previewIconeUrl) URL.revokeObjectURL(previewIconeUrl);
+									previewIconeUrl = null;
+									arquivoIcone = null;
+								}}
+								class="text-amber-400 hover:text-white underline text-[11px]"
+							>
+								Cancelar
+							</button>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Controles de Upload e Destino -->
+				<div class="lg:col-span-2 space-y-4">
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						<div>
+							<label for="alvo-icone" class="block text-xs font-medium text-slate-300 mb-1.5">
+								Onde aplicar o novo ícone:
+							</label>
+							<select
+								id="alvo-icone"
+								bind:value={alvoIcone}
+								class="w-full bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-2 focus:ring-emerald-500 focus:border-emerald-500"
+							>
+								<option value="ambos">Aplicar a Ambos (Ícone & Favicon)</option>
+								<option value="icone">Apenas Ícone da Barra Superior</option>
+								<option value="favicon">Apenas Favicon da Aba do Navegador</option>
+							</select>
+							<p class="text-[11px] text-slate-500 mt-1">Formato ideal: PNG transparente, SVG ou ICO quadrado</p>
+						</div>
+
+						<div>
+							<span class="block text-xs font-medium text-slate-300 mb-1.5">Selecionar Arquivo de Imagem:</span>
+							<input
+								type="file"
+								id="icon-file-input"
+								accept=".png,.ico,.svg,.jpg,.jpeg,.webp"
+								on:change={handleIconSelect}
+								class="hidden"
+							/>
+							<label
+								for="icon-file-input"
+								class="cursor-pointer w-full flex items-center justify-center gap-2 px-3 py-2 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white text-xs font-medium rounded-lg border border-slate-700 transition-colors"
+							>
+								<svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+								</svg>
+								<span class="truncate">{arquivoIcone ? arquivoIcone.name : 'Escolher Imagem (.png, .svg, .ico)'}</span>
+							</label>
+						</div>
+					</div>
+
+					<!-- Botões de Ação -->
+					<div class="flex flex-wrap items-center gap-3 pt-2">
+						<button
+							type="button"
+							on:click={salvarIcone}
+							disabled={!arquivoIcone || salvandoIcone}
+							class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50 flex items-center gap-2"
+						>
+							{#if salvandoIcone}
+								<svg class="w-3.5 h-3.5 animate-spin text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+								</svg>
+								<span>Salvando...</span>
+							{:else}
+								<span>Salvar Alterações de Ícone</span>
+							{/if}
+						</button>
+
+						<button
+							type="button"
+							on:click={restaurarIconePadrao}
+							disabled={resetandoIcone}
+							class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium rounded-lg border border-slate-700 transition-colors disabled:opacity-50"
+						>
+							{resetandoIcone ? 'Restaurando...' : 'Restaurar Padrão do Radar'}
+						</button>
+					</div>
+
+					{#if msgIconeSucesso}
+						<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-emerald-300 text-xs flex items-center gap-2">
+							<span>✅</span>
+							<span>{msgIconeSucesso}</span>
+						</div>
+					{/if}
+
+					{#if erroIcone}
+						<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg text-rose-300 text-xs flex items-center gap-2">
+							<span>❌</span>
+							<span>{erroIcone}</span>
+						</div>
+					{/if}
 				</div>
 			</div>
 		</div>
@@ -600,20 +919,80 @@
 				</div>
 
 				<div class="flex items-center gap-2">
-					<label for="tipo-doc-upload" class="text-xs text-slate-400">Destino:</label>
+					<label for="tipo-doc-upload" class="text-xs text-slate-400">Tipo de Documento:</label>
 					<select
 						id="tipo-doc-upload"
 						bind:value={tipoDocumentoUpload}
 						class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
 					>
-						<option value="AUTO">Detecção Automática de Cabeçalho</option>
+						<option value="AUTO">Detecção Automática de Cabeçalho (Recomendado)</option>
+						<option value="RECEITA_QSA">Receita Federal - Quadro Societário (QSA / Sócios)</option>
+						<option value="CONSELHOS_OAB">Conselhos de Classe / OAB (CNA)</option>
+						<option value="DIARIOS_OFICIAIS">Diários Oficiais / Atos de Nomeação</option>
+						<option value="PNCP_CONTRATOS">PNCP - Contratos e Licitações Públicas</option>
+						<option value="CEAP_NOTAS">Câmara dos Deputados - Cotas CEAP</option>
+						<option value="TSE_RECEITAS">TSE - Prestação de Contas (Receitas de Campanha)</option>
+						<option value="TSE_DESPESAS">TSE - Prestação de Contas (Despesas de Campanha)</option>
 						<option value="TSE_CANDIDATOS">TSE - Candidatos (consulta_cand)</option>
-						<option value="TSE_RECEITAS">TSE - Receitas de Campanha</option>
-						<option value="TSE_DESPESAS">TSE - Despesas de Campanha</option>
-						<option value="CEAP">Câmara - Notas Fiscais CEAP</option>
-						<option value="PNCP">PNCP - Contratos e Licitações</option>
 					</select>
 				</div>
+			</div>
+
+			<!-- Guia de Cabeçalhos Suportados Toggle -->
+			<div class="border-t border-slate-700/50 pt-3">
+				<button
+					type="button"
+					on:click={() => (mostrarGuiaCabecalhos = !mostrarGuiaCabecalhos)}
+					class="text-xs text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1.5"
+				>
+					<svg class="w-3.5 h-3.5 transition-transform duration-200 {mostrarGuiaCabecalhos ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+					</svg>
+					<span>{mostrarGuiaCabecalhos ? 'Ocultar Dicionário de Cabeçalhos Suportados' : 'Ver Dicionário de Cabeçalhos Suportados (QSA, OAB, PNCP, CEAP, TSE)'}</span>
+				</button>
+
+				{#if mostrarGuiaCabecalhos}
+					<div class="mt-3 p-4 bg-slate-900/80 border border-slate-800 rounded-lg text-xs space-y-3 animate-fade-in">
+						<p class="text-slate-300 font-medium">O motor de ingestão em streaming detecta automaticamente delimitadores (<code class="text-emerald-400">;</code> ou <code class="text-emerald-400">,</code>) e aceita as seguintes colunas:</p>
+						<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
+								<span class="font-semibold text-emerald-400 block">Receita Federal (QSA / Sócios):</span>
+								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">CNPJ_BASICO</code>, <code class="text-slate-300">RAZAO_SOCIAL</code>, <code class="text-slate-300">NOME_SOCIO</code>, <code class="text-slate-300">CPF_CNPJ_SOCIO</code>, <code class="text-slate-300">QUALIFICACAO_SOCIO</code></p>
+								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">empresas_qsa</span></p>
+							</div>
+
+							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
+								<span class="font-semibold text-cyan-400 block">Conselhos Profissionais / OAB:</span>
+								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">PESSOA_NOME</code>, <code class="text-slate-300">CPF_MASCARADO</code>, <code class="text-slate-300">ORGAO_EMISSOR</code>, <code class="text-slate-300">NUMERO_REGISTRO</code>, <code class="text-slate-300">SECCIONAL_UF</code>, <code class="text-slate-300">SITUACAO_REGISTRO</code></p>
+								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">registros_profissionais</span></p>
+							</div>
+
+							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
+								<span class="font-semibold text-purple-400 block">PNCP (Contratos Públicos):</span>
+								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">ORGAO_CONTRATANTE</code>, <code class="text-slate-300">FORNECEDOR_CNPJ</code>, <code class="text-slate-300">VALOR_CONTRATADO</code>, <code class="text-slate-300">OBJETO</code>, <code class="text-slate-300">DATA_ASSINATURA</code></p>
+								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">contratos_publicos</span></p>
+							</div>
+
+							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
+								<span class="font-semibold text-amber-400 block">Câmara dos Deputados (CEAP):</span>
+								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">TXNOMEPARLAMENTAR</code>, <code class="text-slate-300">CPF</code>, <code class="text-slate-300">DATANF</code>, <code class="text-slate-300">NUMDOCUMENTO</code>, <code class="text-slate-300">VLRLIQUIDO</code>, <code class="text-slate-300">FORNECEDOR</code>, <code class="text-slate-300">CNPJCPF</code></p>
+								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">despesas_parlamentares</span></p>
+							</div>
+
+							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
+								<span class="font-semibold text-rose-400 block">TSE (Prestação de Contas):</span>
+								<p class="text-slate-400 text-[11px]">Receitas: <code class="text-slate-300">NR_CPF_CNPJ_DOADOR</code>, <code class="text-slate-300">NM_DOADOR</code>, <code class="text-slate-300">VR_RECEITA</code>, <code class="text-slate-300">DT_RECEITA</code></p>
+								<p class="text-slate-400 text-[11px]">Despesas: <code class="text-slate-300">NR_CPF_CNPJ_FORNECEDOR</code>, <code class="text-slate-300">NM_FORNECEDOR</code>, <code class="text-slate-300">VR_DESPESA</code>, <code class="text-slate-300">DT_DESPESA</code></p>
+							</div>
+
+							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
+								<span class="font-semibold text-blue-400 block">Querido Diário / Nomeações:</span>
+								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">DOADOR_CPF_CNPJ</code>, <code class="text-slate-300">TERMO_PESQUISADO</code>, <code class="text-slate-300">MUNICIPIO_UF</code></p>
+								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">cache_consultas_diario</span></p>
+							</div>
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<!-- Dropzone Area -->

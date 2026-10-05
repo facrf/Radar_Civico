@@ -1,15 +1,44 @@
 <script lang="ts">
 	import '../app.css';
+	import { onMount } from 'svelte';
+
+	let brandTimestamp = Date.now();
+	let iconLoadFailed = false;
+
+	function atualizarIdentidade() {
+		brandTimestamp = Date.now();
+		iconLoadFailed = false;
+	}
+
+	onMount(() => {
+		window.addEventListener('radar-icon-updated', atualizarIdentidade);
+		return () => {
+			window.removeEventListener('radar-icon-updated', atualizarIdentidade);
+		};
+	});
 </script>
+
+<svelte:head>
+	<link rel="icon" href={`/api/v1/config/favicon?v=${brandTimestamp}`} />
+</svelte:head>
 
 <div class="min-h-screen flex flex-col bg-slate-900 text-slate-100 font-sans">
 	<header class="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-50">
 		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
 			<a href="/" class="flex items-center gap-3 group">
-				<div class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition-transform">
-					<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-					</svg>
+				<div class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition-transform overflow-hidden relative">
+					<img
+						src={`/api/v1/config/icone?v=${brandTimestamp}`}
+						alt="Radar Cívico Logo"
+						class="w-full h-full object-contain p-1"
+						on:error={() => (iconLoadFailed = true)}
+						class:hidden={iconLoadFailed}
+					/>
+					{#if iconLoadFailed}
+						<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+						</svg>
+					{/if}
 				</div>
 				<div>
 					<span class="text-lg font-bold tracking-tight text-white">Radar<span class="text-emerald-400">Cívico</span></span>
