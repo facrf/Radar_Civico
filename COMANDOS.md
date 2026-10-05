@@ -67,7 +67,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo check -p auditor`  
   *Commit:* `feat(auditor): configura crate de auditoria e analise deterministica`
 
-- [ ] 013. Implementar módulo `crates/auditor/src/combustivel.rs` com a heurística de capacidade volumétrica de veículos leves (> 80 litros) e cálculo de litros via preço ANP[cite: 1].  
+- [x] 013. Implementar módulo `crates/auditor/src/combustivel.rs` com a heurística de capacidade volumétrica de veículos leves (> 80 litros) e cálculo de litros via preço ANP[cite: 1].  
   *Validação:* `cargo test -p auditor -- combustivel`  
   *Commit:* `feat(auditor): implementa heuristica de anomalia de combustivel do fiat uno`
 

@@ -1,14 +1,8 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod combustivel;
+pub mod error;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use combustivel::{
+    auditar_abastecimento, auditar_lote_abastecimentos, calcular_litros, Abastecimento,
+    AlertaCombustivel, LIMITE_TANQUE_VEICULO_LEVE, PRECO_PADRAO_GASOLINA_ANP,
+};
+pub use error::{AuditorError, Result};
