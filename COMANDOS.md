@@ -39,7 +39,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas de receitas, despesas e qsa da receita`
 
-- [ ] 007. Implementar migração para as tabelas `despesas_parlamentares` (com campo `detalhes_litros`) e `contratos_publicos`[cite: 1].  
+- [x] 007. Implementar migração para as tabelas `despesas_parlamentares` (com campo `detalhes_litros`) e `contratos_publicos`[cite: 1].  
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas de despesas ceap/ceaps e contratos publicos`
 

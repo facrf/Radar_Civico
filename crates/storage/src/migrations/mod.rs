@@ -97,6 +97,41 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_qsa_socio ON empresas_qsa(socio_cpf_cnpj_mascarado);
         ",
     },
+    Migration {
+        version: 3,
+        name: "create_despesas_parlamentares_contratos_publicos",
+        sql: "
+            CREATE TABLE IF NOT EXISTS despesas_parlamentares (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                casa_legislativa TEXT NOT NULL,
+                parlamentar_nome TEXT NOT NULL,
+                parlamentar_cpf_mascarado TEXT,
+                data_emissao TEXT NOT NULL,
+                categoria_despesa TEXT NOT NULL,
+                fornecedor_nome TEXT NOT NULL,
+                fornecedor_cnpj_cpf TEXT NOT NULL,
+                valor_liquido REAL NOT NULL,
+                numero_documento TEXT,
+                url_nota_fiscal TEXT,
+                detalhes_litros REAL,
+                flag_anomalia BOOLEAN DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS contratos_publicos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                orgao_contratante TEXT NOT NULL,
+                fornecedor_cnpj TEXT NOT NULL,
+                valor_contratado REAL NOT NULL,
+                objeto TEXT,
+                data_assinatura TEXT,
+                data_termino TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_desp_parl_fornecedor ON despesas_parlamentares(fornecedor_cnpj_cpf);
+            CREATE INDEX IF NOT EXISTS idx_desp_parl_parlamentar ON despesas_parlamentares(parlamentar_nome);
+            CREATE INDEX IF NOT EXISTS idx_contratos_fornecedor ON contratos_publicos(fornecedor_cnpj);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -223,6 +258,46 @@ mod tests {
         assert_eq!(rec_count, 1);
         assert_eq!(desp_count, 1);
         assert_eq!(qsa_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_despesas_parlamentares_contratos_publicos() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+
+        run_migrations(&mut conn)?;
+
+        conn.execute(
+            "INSERT INTO despesas_parlamentares (
+                casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado, data_emissao,
+                categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido,
+                numero_documento, url_nota_fiscal, detalhes_litros, flag_anomalia
+             ) VALUES (
+                'CAMARA', 'DEPUTADO TESTE', '***.123.456-**', '2024-05-10',
+                'COMBUSTIVEIS E LUBRIFICANTES', 'POSTO CENTRAL', '00123456000100', 450.50,
+                'NF-1234', 'http://nfe.gov.br/1234', 85.5, 1
+             )",
+            [],
+        )?;
+
+        conn.execute(
+            "INSERT INTO contratos_publicos (
+                orgao_contratante, fornecedor_cnpj, valor_contratado, objeto, data_assinatura, data_termino
+             ) VALUES (
+                'PREFEITURA MUNICIPAL', '00123456000100', 150000.0, 'FORNECIMENTO DE COMBUSTIVEL', '2024-06-01', '2025-06-01'
+             )",
+            [],
+        )?;
+
+        let desp_count: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
+        let litros: f64 = conn.query_row("SELECT detalhes_litros FROM despesas_parlamentares WHERE id = 1", [], |r| r.get(0))?;
+        let cont_count: i64 = conn.query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))?;
+
+        assert_eq!(desp_count, 1);
+        assert_eq!(litros, 85.5);
+        assert_eq!(cont_count, 1);
 
         Ok(())
     }
