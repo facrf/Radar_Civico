@@ -47,7 +47,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas e indices para modelagem de grafos`
 
-- [ ] 009. Implementar migração para as tabelas `cache_consultas_diario`, `registros_profissionais` (OAB/CFM/CREA) e `alertas_incompatibilidade`[cite: 1].  
+- [x] 009. Implementar migração para as tabelas `cache_consultas_diario`, `registros_profissionais` (OAB/CFM/CREA) e `alertas_incompatibilidade`[cite: 1].  
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas de diários oficiais e conselhos de classe`
 

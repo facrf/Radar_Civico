@@ -167,6 +167,54 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_nos_tipo ON nos_rede(tipo);
         ",
     },
+    Migration {
+        version: 5,
+        name: "create_diario_registros_alertas",
+        sql: "
+            CREATE TABLE IF NOT EXISTS cache_consultas_diario (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doador_cpf_cnpj TEXT NOT NULL,
+                termo_pesquisado TEXT NOT NULL,
+                municipio_uf TEXT NOT NULL,
+                ocorrencias_encontradas INTEGER DEFAULT 0,
+                payload_json TEXT,
+                data_consulta TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cache_doador ON cache_consultas_diario(doador_cpf_cnpj);
+
+            CREATE TABLE IF NOT EXISTS registros_profissionais (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pessoa_nome TEXT NOT NULL,
+                cpf_mascarado TEXT,
+                orgao_emissor TEXT NOT NULL,
+                numero_registro TEXT NOT NULL,
+                seccional_uf TEXT NOT NULL,
+                situacao_registro TEXT NOT NULL,
+                tipo_inscricao TEXT,
+                data_consulta TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                payload_json TEXT,
+                UNIQUE(orgao_emissor, seccional_uf, numero_registro)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reg_prof_nome ON registros_profissionais(pessoa_nome);
+            CREATE INDEX IF NOT EXISTS idx_reg_prof_status ON registros_profissionais(orgao_emissor, situacao_registro);
+
+            CREATE TABLE IF NOT EXISTS alertas_incompatibilidade (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                registro_profissional_id INTEGER REFERENCES registros_profissionais(id),
+                politico_ou_gestor_id INTEGER REFERENCES nos_rede(id),
+                cargo_ocupado TEXT NOT NULL,
+                orgao_lotacao TEXT NOT NULL,
+                data_nomeacao TEXT NOT NULL,
+                motivo_incompatibilidade TEXT NOT NULL,
+                status_apuracao TEXT DEFAULT 'PENDENTE'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_alertas_registro ON alertas_incompatibilidade(registro_profissional_id);
+            CREATE INDEX IF NOT EXISTS idx_alertas_gestor ON alertas_incompatibilidade(politico_ou_gestor_id);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -369,6 +417,49 @@ mod tests {
 
         assert_eq!(nos_count, 2);
         assert_eq!(conexoes_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_diario_registros_alertas() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+
+        run_migrations(&mut conn)?;
+
+        conn.execute(
+            "INSERT INTO cache_consultas_diario (doador_cpf_cnpj, termo_pesquisado, municipio_uf, ocorrencias_encontradas, payload_json)
+             VALUES ('12345678901', 'JOAO DA SILVA', 'CAMPINAS-SP', 2, '{\"resumo\": \"nomeacao\"}')",
+            [],
+        )?;
+
+        conn.execute(
+            "INSERT INTO registros_profissionais (pessoa_nome, cpf_mascarado, orgao_emissor, numero_registro, seccional_uf, situacao_registro, tipo_inscricao)
+             VALUES ('JOAO DA SILVA', '***.456.789-**', 'OAB', '123456', 'SP', 'REGULAR', 'ADVOGADO')",
+            [],
+        )?;
+        let reg_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('gestor-1', 'POLITICO', 'SECRETARIO MUNICIPAL')",
+            [],
+        )?;
+        let gestor_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO alertas_incompatibilidade (registro_profissional_id, politico_ou_gestor_id, cargo_ocupado, orgao_lotacao, data_nomeacao, motivo_incompatibilidade)
+             VALUES (?1, ?2, 'SECRETARIO DE GOVERNO', 'PREFEITURA MUNICIPAL', '2024-01-02', 'Violacao Art. 28, III, Lei 8.906/94')",
+            (reg_id, gestor_id),
+        )?;
+
+        let cache_count: i64 = conn.query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| r.get(0))?;
+        let reg_count: i64 = conn.query_row("SELECT count(*) FROM registros_profissionais", [], |r| r.get(0))?;
+        let alerta_count: i64 = conn.query_row("SELECT count(*) FROM alertas_incompatibilidade", [], |r| r.get(0))?;
+
+        assert_eq!(cache_count, 1);
+        assert_eq!(reg_count, 1);
+        assert_eq!(alerta_count, 1);
 
         Ok(())
     }
