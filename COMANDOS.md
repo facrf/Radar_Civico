@@ -151,7 +151,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo check -p server`  
   *Commit:* `feat(server): define dependencias do servidor http axum`
 
-- [ ] 031. Implementar rotas de busca textual FTS5 (`/api/v1/busca?q=...`) retornando políticos, doadores e fornecedores em formato unificado[cite: 1].  
+- [x] 031. Implementar rotas de busca textual FTS5 (`/api/v1/busca?q=...`) retornando políticos, doadores e fornecedores em formato unificado[cite: 1].  
   *Validação:* `cargo test -p server -- busca`  
   *Commit:* `feat(server): adiciona endpoint de busca unificada via fts5`
 
