@@ -71,7 +71,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p auditor -- combustivel`  
   *Commit:* `feat(auditor): implementa heuristica de anomalia de combustivel do fiat uno`
 
-- [ ] 014. Implementar módulo `crates/auditor/src/ubiquidade.rs` para detecção de despesas presenciais em cidades distantes com velocidade teórica > 800 km/h[cite: 1].  
+- [x] 014. Implementar módulo `crates/auditor/src/ubiquidade.rs` para detecção de despesas presenciais em cidades distantes com velocidade teórica > 800 km/h[cite: 1].  
   *Validação:* `cargo test -p auditor -- ubiquidade`  
   *Commit:* `feat(auditor): implementa detector de inconsistencia geotemporal`
 
