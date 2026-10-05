@@ -35,7 +35,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas politicos, candidaturas e bens`
 
-- [ ] 006. Implementar migração para as tabelas `receitas_campanha`, `despesas_campanha` e `empresas_qsa` (Quadro de Sócios e Administradores)[cite: 1].  
+- [x] 006. Implementar migração para as tabelas `receitas_campanha`, `despesas_campanha` e `empresas_qsa` (Quadro de Sócios e Administradores)[cite: 1].  
   *Validação:* `cargo test -p storage`  
   *Commit:* `feat(storage): adiciona tabelas de receitas, despesas e qsa da receita`
 

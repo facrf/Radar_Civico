@@ -53,6 +53,50 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_bens_candidatura ON bens_candidato(candidatura_id);
         ",
     },
+    Migration {
+        version: 2,
+        name: "create_receitas_despesas_qsa",
+        sql: "
+            CREATE TABLE IF NOT EXISTS receitas_campanha (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidatura_id INTEGER REFERENCES candidaturas(id),
+                doador_cpf_cnpj TEXT NOT NULL,
+                doador_nome TEXT NOT NULL,
+                valor REAL NOT NULL,
+                data_receita TEXT,
+                tipo_origem TEXT,
+                descricao TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS despesas_campanha (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidatura_id INTEGER REFERENCES candidaturas(id),
+                fornecedor_cpf_cnpj TEXT NOT NULL,
+                fornecedor_nome TEXT NOT NULL,
+                valor REAL NOT NULL,
+                data_despesa TEXT,
+                tipo_despesa TEXT,
+                descricao TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS empresas_qsa (
+                cnpj_basico TEXT NOT NULL,
+                cnpj_ordem TEXT NOT NULL,
+                cnpj_dv TEXT NOT NULL,
+                razao_social TEXT NOT NULL,
+                socio_cpf_cnpj_mascarado TEXT NOT NULL,
+                socio_nome TEXT NOT NULL,
+                qualificacao_socio TEXT,
+                PRIMARY KEY (cnpj_basico, socio_cpf_cnpj_mascarado)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_receitas_candidatura ON receitas_campanha(candidatura_id);
+            CREATE INDEX IF NOT EXISTS idx_receitas_doador ON receitas_campanha(doador_cpf_cnpj);
+            CREATE INDEX IF NOT EXISTS idx_despesas_candidatura ON despesas_campanha(candidatura_id);
+            CREATE INDEX IF NOT EXISTS idx_despesas_fornecedor ON despesas_campanha(fornecedor_cpf_cnpj);
+            CREATE INDEX IF NOT EXISTS idx_qsa_socio ON empresas_qsa(socio_cpf_cnpj_mascarado);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -130,6 +174,55 @@ mod tests {
 
         // Verify idempotency
         run_migrations(&mut conn)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_receitas_despesas_qsa() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+
+        run_migrations(&mut conn)?;
+
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('CANDIDATO', 'CAND')",
+            [],
+        )?;
+        let pol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
+             VALUES (?1, 2024, 'VEREADOR', 'PART', 'SP')",
+            [pol_id],
+        )?;
+        let cand_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO receitas_campanha (candidatura_id, doador_cpf_cnpj, doador_nome, valor)
+             VALUES (?1, '11122233344', 'DOADOR SILVA', 5000.0)",
+            [cand_id],
+        )?;
+
+        conn.execute(
+            "INSERT INTO despesas_campanha (candidatura_id, fornecedor_cpf_cnpj, fornecedor_nome, valor)
+             VALUES (?1, '12345678000199', 'GRAFICA XYZ', 3000.0)",
+            [cand_id],
+        )?;
+
+        conn.execute(
+            "INSERT INTO empresas_qsa (cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome)
+             VALUES ('12345678', '0001', '99', 'GRAFICA XYZ LTDA', '***.222.333-**', 'SOCIO EMPRESA')",
+            [],
+        )?;
+
+        let rec_count: i64 = conn.query_row("SELECT count(*) FROM receitas_campanha", [], |r| r.get(0))?;
+        let desp_count: i64 = conn.query_row("SELECT count(*) FROM despesas_campanha", [], |r| r.get(0))?;
+        let qsa_count: i64 = conn.query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))?;
+
+        assert_eq!(rec_count, 1);
+        assert_eq!(desp_count, 1);
+        assert_eq!(qsa_count, 1);
 
         Ok(())
     }
