@@ -95,7 +95,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo check -p ingestion`  
   *Commit:* `feat(ingestion): configura crate de ingestao assincrona`
 
-- [ ] 019. Implementar `crates/ingestion/src/normalizer.rs` com funções para mascaramento de CPF, limpeza de raiz de CNPJ e conversão de encoding ISO-8859-1 para UTF-8[cite: 1].  
+- [x] 019. Implementar `crates/ingestion/src/normalizer.rs` com funções para mascaramento de CPF, limpeza de raiz de CNPJ e conversão de encoding ISO-8859-1 para UTF-8[cite: 1].  
   *Validação:* `cargo test -p ingestion -- normalizer`  
   *Commit:* `feat(ingestion): implementa normalizacao de documentos e encodings`
 

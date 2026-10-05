@@ -1,14 +1,7 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod error;
+pub mod normalizer;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use error::{IngestionError, Result};
+pub use normalizer::{
+    converter_latin1_para_utf8, extrair_cnpj_raiz, limpar_apenas_digitos, limpar_cnpj, mascarar_cpf,
+};
