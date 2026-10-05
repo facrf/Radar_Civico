@@ -4,9 +4,10 @@ pub mod error;
 pub mod migrations;
 
 pub use batch::{
-    batch_insert_alertas_beneficio, batch_insert_beneficios, batch_insert_despesas,
-    batch_insert_despesas_parlamentares, batch_insert_receitas, NovaDespesa, NovaDespesaParlamentar,
-    NovaReceita, NovoAlertaBeneficioIndevido, NovoBeneficio,
+    batch_insert_alertas_beneficio, batch_insert_beneficios, batch_insert_bens_candidato,
+    batch_insert_candidatos_tse, batch_insert_despesas, batch_insert_despesas_parlamentares,
+    batch_insert_receitas, NovaDespesa, NovaDespesaParlamentar, NovaReceita,
+    NovoAlertaBeneficioIndevido, NovoBemCandidato, NovoBeneficio, NovoCandidatoTse,
 };
 pub use connection::{apply_pragmas, DbPool, PooledConnection};
 pub use error::{Result, StorageError};

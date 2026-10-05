@@ -7,7 +7,14 @@ pub mod normalizer;
 pub mod oab;
 pub mod pncp;
 pub mod querido_diario;
+pub mod tse_ckan;
 pub mod tse_streaming;
+
+pub use tse_ckan::{
+    baixar_e_processar_pacote_tse, descobrir_urls_tse, descobrir_urls_tse_com_base,
+    processar_csv_tse_str, processar_zip_tse_bytes, selecionar_arquivos_zip, CkanPackage,
+    CkanResource, CkanResponse, LOTE_BATCH_SIZE,
+};
 
 pub use auxilio_emergencial::{
     ingerir_auxilio_emergencial_em_lotes, processar_stream_auxilio_com_delimitador,

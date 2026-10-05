@@ -67,6 +67,8 @@
 
 	// Ingestão
 	let anoTse = 2024;
+	let sincronizandoTse = false;
+	let descobrirViaCkanTse = true;
 	let anoCeap = 2024;
 	let modoCeap: 'BULK' | 'API' = 'BULK';
 	let sincronizandoCamara = false;
@@ -228,6 +230,32 @@
 			msgTseVerificacao = `Erro ao verificar repositório: ${e.message}`;
 		} finally {
 			verificandoTse = false;
+		}
+	}
+
+	async function dispararSincronizacaoTse() {
+		sincronizandoTse = true;
+		try {
+			const res = await fetch('/api/v1/config/tse/sincronizar', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					ano: anoTse,
+					descobrir_via_ckan: descobrirViaCkanTse
+				})
+			});
+
+			if (!res.ok) {
+				const err = await res.json();
+				throw new Error(err.erro || 'Falha ao sincronizar dados do TSE');
+			}
+
+			const data = await res.json();
+			iniciarPollingJob(data.job_id);
+		} catch (e: any) {
+			alert(`Erro na sincronização do TSE: ${e.message}`);
+		} finally {
+			sincronizandoTse = false;
 		}
 	}
 
@@ -758,7 +786,23 @@
 					</div>
 				</div>
 
-				<div class="flex flex-wrap items-center gap-3 pt-2">
+				<!-- Toggle Descoberta CKAN -->
+				<div class="p-3 bg-slate-900/60 border border-slate-800 rounded-lg space-y-1.5">
+					<label class="flex items-center gap-2 cursor-pointer select-none">
+						<input
+							type="checkbox"
+							bind:checked={descobrirViaCkanTse}
+							class="rounded bg-slate-950 border-slate-700 text-emerald-500 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+						/>
+						<span class="text-xs font-medium text-slate-200">Descoberta Autônoma via API CKAN</span>
+						<span class="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30">dadosabertos.tse.jus.br</span>
+					</label>
+					<p class="text-[11px] text-slate-400 pl-6 leading-relaxed">
+						Localiza pacotes oficiais via API do TSE e prioriza arquivos consolidados nacionais (<code class="text-emerald-400 font-mono text-[10px]">_BRASIL.csv</code>) com streaming e batch insert atômico.
+					</p>
+				</div>
+
+				<div class="flex flex-wrap items-center gap-3 pt-1">
 					<div class="flex items-center gap-2">
 						<label for="ano-tse" class="text-xs text-slate-400">Ano Eleitoral:</label>
 						<select
@@ -775,6 +819,7 @@
 					</div>
 
 					<button
+						type="button"
 						on:click={verificarDisponibilidadeTse}
 						disabled={verificandoTse}
 						class="px-3 py-1.5 bg-slate-700/80 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-lg border border-slate-600 transition-colors disabled:opacity-50"
@@ -783,11 +828,19 @@
 					</button>
 
 					<button
-						on:click={() => dispararIngestao('TSE', anoTse)}
-						disabled={disparandoFonte === 'TSE'}
-						class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50"
+						type="button"
+						on:click={dispararSincronizacaoTse}
+						disabled={sincronizandoTse}
+						class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50 flex items-center gap-1.5"
 					>
-						{disparandoFonte === 'TSE' ? 'Despachando...' : 'Sincronizar Dados'}
+						{#if sincronizandoTse}
+							<svg class="w-3.5 h-3.5 animate-spin text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+							</svg>
+							<span>Despachando...</span>
+						{:else}
+							<span>Sincronizar Dados</span>
+						{/if}
 					</button>
 				</div>
 

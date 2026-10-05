@@ -230,6 +230,129 @@ pub fn batch_insert_despesas_parlamentares(
     Ok(despesas.len())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NovoBemCandidato {
+    pub candidatura_id: Option<i64>,
+    pub tipo_bem: String,
+    pub descricao: Option<String>,
+    pub valor_declarado: f64,
+}
+
+pub fn batch_insert_bens_candidato(
+    conn: &mut Connection,
+    bens: &[NovoBemCandidato],
+) -> Result<usize> {
+    if bens.is_empty() {
+        return Ok(0);
+    }
+
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO bens_candidato (
+                candidatura_id, tipo_bem, descricao, valor_declarado
+             ) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+
+        for b in bens {
+            stmt.execute(rusqlite::params![
+                b.candidatura_id,
+                b.tipo_bem,
+                b.descricao,
+                b.valor_declarado,
+            ])?;
+        }
+    }
+    tx.commit()?;
+
+    Ok(bens.len())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NovoCandidatoTse {
+    pub sq_candidato: String,
+    pub cpf_mascarado: String,
+    pub nome_completo: String,
+    pub nome_urna: String,
+    pub data_nascimento: Option<String>,
+    pub grau_instrucao: Option<String>,
+    pub ocupacao: Option<String>,
+    pub ano_eleicao: i32,
+    pub cargo: String,
+    pub numero_urna: Option<i32>,
+    pub sigla_partido: String,
+    pub uf: String,
+    pub municipio: Option<String>,
+    pub situacao_totalizacao: Option<String>,
+}
+
+pub fn batch_insert_candidatos_tse(
+    conn: &mut Connection,
+    candidatos: &[NovoCandidatoTse],
+) -> Result<usize> {
+    if candidatos.is_empty() {
+        return Ok(0);
+    }
+
+    let tx = conn.transaction()?;
+    {
+        let mut stmt_politico = tx.prepare_cached(
+            "INSERT INTO politicos (
+                sq_candidato, cpf_mascarado, nome_completo, nome_urna,
+                data_nascimento, grau_instrucao, ocupacao
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(sq_candidato) DO UPDATE SET
+                cpf_mascarado = excluded.cpf_mascarado,
+                nome_completo = excluded.nome_completo,
+                nome_urna = excluded.nome_urna",
+        )?;
+
+        let mut stmt_cand = tx.prepare_cached(
+            "INSERT INTO candidaturas (
+                politico_id, ano_eleicao, cargo, numero_urna, sigla_partido, uf, municipio, situacao_totalizacao
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(politico_id, ano_eleicao, cargo) DO UPDATE SET
+                numero_urna = excluded.numero_urna,
+                sigla_partido = excluded.sigla_partido,
+                uf = excluded.uf,
+                municipio = excluded.municipio,
+                situacao_totalizacao = excluded.situacao_totalizacao",
+        )?;
+
+        let mut stmt_lookup_id = tx.prepare_cached(
+            "SELECT id FROM politicos WHERE sq_candidato = ?1",
+        )?;
+
+        for c in candidatos {
+            stmt_politico.execute(rusqlite::params![
+                c.sq_candidato,
+                c.cpf_mascarado,
+                c.nome_completo,
+                c.nome_urna,
+                c.data_nascimento,
+                c.grau_instrucao,
+                c.ocupacao,
+            ])?;
+
+            let politico_id: i64 = stmt_lookup_id.query_row([&c.sq_candidato], |r| r.get(0))?;
+
+            stmt_cand.execute(rusqlite::params![
+                politico_id,
+                c.ano_eleicao,
+                c.cargo,
+                c.numero_urna,
+                c.sigla_partido,
+                c.uf,
+                c.municipio,
+                c.situacao_totalizacao,
+            ])?;
+        }
+    }
+    tx.commit()?;
+
+    Ok(candidatos.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

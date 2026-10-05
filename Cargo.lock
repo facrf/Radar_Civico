@@ -966,6 +966,7 @@ name = "ingestion"
 version = "0.1.0"
 dependencies = [
  "async_zip",
+ "csv",
  "csv-async",
  "encoding_rs",
  "futures",
@@ -975,6 +976,7 @@ dependencies = [
  "storage",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
  "zip",
 ]
 

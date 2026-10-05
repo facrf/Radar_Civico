@@ -290,3 +290,16 @@ Diretrizes para o agente autônomo (YOLO Mode):
 - [x] 061. Criar teste de integração ponta a ponta simulando carga de lote de notas fiscais da Câmara e verificação na tabela `despesas_parlamentares`.  
   *Validação:* `cargo test --test camara_pipeline`  
   *Commit:* `test(e2e): valida ingestao dual da camara com persistencia no sqlite`
+
+---
+
+## Fase 12: Ingestor Autônomo do TSE via API CKAN
+
+- [x] 062. Implementar cliente CKAN do TSE (`crates/ingestion/src/tse_ckan.rs`) para descoberta dinâmica de pacotes e processamento seletivo de consolidados nacionais (`_BRASIL.csv`) em lotes atômicos.  
+  *Validação:* `cargo test -p ingestion -- tse_ckan`  
+  *Commit:* `feat(ingestion): adiciona ingestor autonomo do tse via ckan`
+
+- [x] 063. Integrar disparo do CKAN com flag `descobrir_via_ckan: true` no endpoint `POST /api/v1/config/tse/sincronizar` do Axum e adicionar toggle no frontend SvelteKit.  
+  *Validação:* `cargo test -p server -- test_sincronizar_tse_via_ckan && cd web && npm run check && npm run build`  
+  *Commit:* `feat(server): integra sincronizacao tse via ckan com controle visual no painel`
+

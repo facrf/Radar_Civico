@@ -98,6 +98,8 @@ pub struct ConfigStatusResponse {
 pub struct ExecutarIngestaoRequest {
     pub fonte: String, // "TSE" | "CEAP" | "RECEITA_QSA" | "PNCP"
     pub ano: Option<i32>,
+    #[serde(default)]
+    pub descobrir_via_ckan: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,6 +377,18 @@ pub async fn executar_ingestao_handler(
         ));
     }
 
+    if fonte_upper == "TSE" && payload.descobrir_via_ckan == Some(true) {
+        return Box::pin(sincronizar_tse_handler(
+            State(pool),
+            Json(SincronizarTseRequest {
+                ano: payload.ano,
+                descobrir_via_ckan: Some(true),
+                datasets: None,
+            }),
+        ))
+        .await;
+    }
+
     let job_id = Uuid::new_v4().to_string();
     let ano = payload.ano.unwrap_or(2024);
     let now = Utc::now().to_rfc3339();
@@ -464,19 +478,163 @@ pub async fn verificar_tse_ano_handler(
     })))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SincronizarTseRequest {
+    #[serde(default)]
+    pub ano: Option<i32>,
+    #[serde(default)]
+    pub descobrir_via_ckan: Option<bool>,
+    #[serde(default)]
+    pub datasets: Option<Vec<String>>,
+}
+
 pub async fn sincronizar_tse_handler(
     State(pool): State<DbPool>,
-    Json(payload): Json<serde_json::Value>,
+    Json(payload): Json<SincronizarTseRequest>,
 ) -> Result<(StatusCode, Json<ExecutarIngestaoResponse>), (StatusCode, Json<serde_json::Value>)> {
-    let ano = payload.get("ano").and_then(|v| v.as_i64()).map(|v| v as i32);
-    executar_ingestao_handler(
-        State(pool),
-        Json(ExecutarIngestaoRequest {
-            fonte: "TSE".to_string(),
-            ano,
-        }),
-    )
-    .await
+    let ano = payload.ano.unwrap_or(2024);
+
+    if payload.descobrir_via_ckan == Some(true) {
+        let job_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        let job = JobInfo {
+            job_id: job_id.clone(),
+            fonte: "TSE_CKAN".to_string(),
+            ano: Some(ano),
+            status: "PROCESSANDO".to_string(),
+            progresso: 10,
+            mensagem: format!("Iniciando descoberta e sincronização TSE via CKAN para o ano {ano}..."),
+            logs: vec![format!("[{now}] Sincronização TSE com descoberta automática via CKAN ({ano})")],
+            criado_em: now,
+            concluido_em: None,
+        };
+
+        {
+            let jobs = get_jobs();
+            let mut map = jobs.write().unwrap();
+            map.insert(job_id.clone(), job);
+        }
+
+        let job_id_spawn = job_id.clone();
+        let pool_spawn = pool.clone();
+        let datasets = payload.datasets.unwrap_or_default();
+
+        tokio::spawn(async move {
+            atualizar_job(&job_id_spawn, 25, "Consultando catálogo de dados abertos no portal CKAN do TSE...").await;
+
+            let datasets_ref: Vec<&str> = if datasets.is_empty() {
+                vec!["candidatos", "prestacao-contas-eleitorais-candidatos", "bens-candidatos"]
+            } else {
+                datasets.iter().map(|s| s.as_str()).collect()
+            };
+
+            let urls_res = ingestion::tse_ckan::descobrir_urls_tse(ano as u32, &datasets_ref).await;
+            match urls_res {
+                Ok(urls) if !urls.is_empty() => {
+                    atualizar_job(
+                        &job_id_spawn,
+                        40,
+                        &format!("{} pacotes ZIP descobertos no CKAN. Iniciando download e processamento seletivo...", urls.len()),
+                    )
+                    .await;
+
+                    let mut total_inseridos = 0;
+                    let client = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(60))
+                        .user_agent("RadarCivico/1.0 (Auditoria TSE CKAN)")
+                        .build()
+                        .unwrap_or_default();
+
+                    for (idx, url) in urls.iter().enumerate() {
+                        let progresso_atual = 40 + ((idx * 50) / urls.len()) as u8;
+                        let nome_url = url.split('/').last().unwrap_or("pacote.zip");
+                        atualizar_job(
+                            &job_id_spawn,
+                            progresso_atual,
+                            &format!("Baixando pacote ({}/{}) {}...", idx + 1, urls.len(), nome_url),
+                        )
+                        .await;
+
+                        if let Ok(resp) = client.get(url).send().await {
+                            if resp.status().is_success() {
+                                if let Ok(bytes) = resp.bytes().await {
+                                    atualizar_job(
+                                        &job_id_spawn,
+                                        progresso_atual + 5,
+                                        &format!("Processando ZIP {} em streaming (priorizando _BRASIL.csv)...", nome_url),
+                                    )
+                                    .await;
+
+                                    if let Ok(mut conn) = pool_spawn.get() {
+                                        if let Ok(inseridos) = ingestion::tse_ckan::processar_zip_tse_bytes(&mut conn, &bytes) {
+                                            total_inseridos += inseridos;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let msg = format!(
+                        "Sincronização TSE via CKAN ({ano}) concluída com sucesso. {} registros gravados no banco.",
+                        total_inseridos
+                    );
+                    atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
+                    if let Ok(conn) = pool_spawn.get() {
+                        let _ = conn.execute(
+                            "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
+                             VALUES ('TSE_CKAN', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
+                            rusqlite::params![msg],
+                        );
+                    }
+                }
+                Ok(_) => {
+                    let msg = format!(
+                        "Busca no CKAN para o ano {ano} concluída. Nenhum pacote novo encontrado ou disponível no momento."
+                    );
+                    atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
+                    if let Ok(conn) = pool_spawn.get() {
+                        let _ = conn.execute(
+                            "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
+                             VALUES ('TSE_CKAN', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
+                            rusqlite::params![msg],
+                        );
+                    }
+                }
+                Err(e) => {
+                    let err_msg = format!("Falha na descoberta de pacotes via CKAN ({ano}): {e}");
+                    atualizar_job_concluido(&job_id_spawn, 100, "ERRO", &err_msg).await;
+                    if let Ok(conn) = pool_spawn.get() {
+                        let _ = conn.execute(
+                            "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
+                             VALUES ('TSE_CKAN', 'ERRO', ?1, CURRENT_TIMESTAMP)",
+                            rusqlite::params![err_msg],
+                        );
+                    }
+                }
+            }
+        });
+
+        Ok((
+            StatusCode::ACCEPTED,
+            Json(ExecutarIngestaoResponse {
+                job_id,
+                status: "PROCESSANDO".to_string(),
+                mensagem: format!("Job de sincronização TSE via CKAN despachado com sucesso ({ano})."),
+            }),
+        ))
+    } else {
+        executar_ingestao_handler(
+            State(pool),
+            Json(ExecutarIngestaoRequest {
+                fonte: "TSE".to_string(),
+                ano: Some(ano),
+                descobrir_via_ckan: None,
+            }),
+        )
+        .await
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2188,6 +2346,86 @@ mod tests {
             )
             .unwrap();
         assert!(historico_count >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_sincronizar_tse_via_ckan() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+
+        // 1. Testa endpoint dedicado /api/v1/config/tse/sincronizar
+        let app = crate::criar_router(pool.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/tse/sincronizar")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "ano": 2024,
+                    "descobrir_via_ckan": true
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let resp: ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!resp.job_id.is_empty());
+
+        let app_status = crate::criar_router(pool.clone());
+        let req_status = Request::builder()
+            .uri(format!("/api/v1/config/ingestao/status/{}", resp.job_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let res_status = app_status.oneshot(req_status).await.unwrap();
+        assert_eq!(res_status.status(), StatusCode::OK);
+        let bytes_status = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let job: JobInfo = serde_json::from_slice(&bytes_status).unwrap();
+        assert_eq!(job.fonte, "TSE_CKAN");
+        assert_eq!(job.ano, Some(2024));
+
+        // 2. Testa também delegação via /api/v1/config/ingestao/executar
+        let app_exec = crate::criar_router(pool.clone());
+        let req_exec = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/ingestao/executar")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "fonte": "TSE",
+                    "ano": 2022,
+                    "descobrir_via_ckan": true
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let res_exec = app_exec.oneshot(req_exec).await.unwrap();
+        assert_eq!(res_exec.status(), StatusCode::ACCEPTED);
+
+        let bytes_exec = axum::body::to_bytes(res_exec.into_body(), usize::MAX).await.unwrap();
+        let resp_exec: ExecutarIngestaoResponse = serde_json::from_slice(&bytes_exec).unwrap();
+        assert!(!resp_exec.job_id.is_empty());
+
+        let app_status_exec = crate::criar_router(pool.clone());
+        let req_status_exec = Request::builder()
+            .uri(format!("/api/v1/config/ingestao/status/{}", resp_exec.job_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let res_status_exec = app_status_exec.oneshot(req_status_exec).await.unwrap();
+        assert_eq!(res_status_exec.status(), StatusCode::OK);
+        let bytes_status_exec = axum::body::to_bytes(res_status_exec.into_body(), usize::MAX).await.unwrap();
+        let job_exec: JobInfo = serde_json::from_slice(&bytes_status_exec).unwrap();
+        assert_eq!(job_exec.fonte, "TSE_CKAN");
+        assert_eq!(job_exec.ano, Some(2022));
     }
 }
 
