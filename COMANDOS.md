@@ -147,7 +147,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
 
 ## Fase 6: Servidor de Aplicação HTTP (`crates/server`)
 
-- [ ] 030. Criar `crates/server/Cargo.toml` com `axum`, `tower-http` (CORS e compressão), `tokio`, `serde`, `serde_json` e as crates internas do workspace[cite: 1].  
+- [x] 030. Criar `crates/server/Cargo.toml` com `axum`, `tower-http` (CORS e compressão), `tokio`, `serde`, `serde_json` e as crates internas do workspace[cite: 1].  
   *Validação:* `cargo check -p server`  
   *Commit:* `feat(server): define dependencias do servidor http axum`
 
