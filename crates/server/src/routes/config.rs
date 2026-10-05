@@ -27,7 +27,43 @@ pub const TABELAS_PERMITIDAS: &[&str] = &[
     "alertas_auditoria",
     "registros_profissionais",
     "historico_sincronizacao",
+    "configuracoes_sistema",
 ];
+
+pub const DEFAULT_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="8" fill="#0f172a"/>
+  <path d="M16 4L6 8v7c0 6.6 4.3 12.8 10 14 5.7-1.2 10-7.4 10-14V8l-10-4z" fill="none" stroke="#10b981" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="16" cy="15" r="4" fill="none" stroke="#10b981" stroke-width="1.8"/>
+  <circle cx="16" cy="15" r="1.5" fill="#10b981"/>
+  <line x1="16" y1="15" x2="20" y2="12" stroke="#10b981" stroke-width="1.8" stroke-linecap="round"/>
+</svg>"##;
+
+#[derive(Debug, Deserialize)]
+pub struct ObterIconeParams {
+    pub tipo: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoverIconeParams {
+    pub alvo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SalvarIconeResponse {
+    pub status: String,
+    pub mensagem: String,
+    pub alvo: String,
+    pub mime_type: String,
+    pub tamanho_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentidadeVisualResponse {
+    pub tem_icone_customizado: bool,
+    pub tem_favicon_customizado: bool,
+    pub icone_url: String,
+    pub favicon_url: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TotalRegistros {
@@ -38,6 +74,10 @@ pub struct TotalRegistros {
     pub despesas_parlamentares: i64,
     pub contratos_publicos: i64,
     pub alertas_auditoria: i64,
+    #[serde(default)]
+    pub empresas_qsa: i64,
+    #[serde(default)]
+    pub registros_profissionais: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +212,14 @@ pub async fn status_handler(
             r.get(0)
         })
         .unwrap_or(0);
+    let empresas_qsa: i64 = conn
+        .query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))
+        .unwrap_or(0);
+    let registros_profissionais: i64 = conn
+        .query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
+            r.get(0)
+        })
+        .unwrap_or(0);
 
     let ultimo_evento_sincronizacao: Option<String> = conn
         .query_row(
@@ -205,6 +253,8 @@ pub async fn status_handler(
             despesas_parlamentares,
             contratos_publicos,
             alertas_auditoria,
+            empresas_qsa,
+            registros_profissionais,
         },
         ultimo_evento_sincronizacao,
         versao_sistema: env!("CARGO_PKG_VERSION").to_string(),
@@ -428,6 +478,360 @@ pub async fn job_status_handler(
     }
 }
 
+fn find_col(headers: &csv::StringRecord, candidates: &[&str]) -> Option<usize> {
+    for (i, h) in headers.iter().enumerate() {
+        let h_norm = h.trim().to_uppercase().replace(['"', '\'', '_', ' '], "");
+        for &c in candidates {
+            let c_norm = c.to_uppercase().replace(['"', '\'', '_', ' '], "");
+            if h_norm == c_norm || h_norm.contains(&c_norm) {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+fn detectar_delimitador(sample: &[u8]) -> u8 {
+    let mut semicolons = 0;
+    let mut commas = 0;
+    let mut tabs = 0;
+    for &b in sample.iter().take(2048) {
+        if b == b'\n' {
+            break;
+        }
+        if b == b';' {
+            semicolons += 1;
+        } else if b == b',' {
+            commas += 1;
+        } else if b == b'\t' {
+            tabs += 1;
+        }
+    }
+    if tabs > semicolons && tabs > commas {
+        b'\t'
+    } else if commas > semicolons {
+        b','
+    } else {
+        b';'
+    }
+}
+
+fn parse_f64_valor(val: &str) -> f64 {
+    let cleaned = val.trim().replace("R$", "").replace(' ', "");
+    if cleaned.is_empty() {
+        return 0.0;
+    }
+    if cleaned.contains(',') && cleaned.contains('.') {
+        cleaned.replace('.', "").replace(',', ".").parse::<f64>().unwrap_or(0.0)
+    } else if cleaned.contains(',') {
+        cleaned.replace(',', ".").parse::<f64>().unwrap_or(0.0)
+    } else {
+        cleaned.parse::<f64>().unwrap_or(0.0)
+    }
+}
+
+fn detectar_tipo_por_cabecalho(headers: &csv::StringRecord) -> String {
+    let header_str = headers.iter().collect::<Vec<_>>().join(";").to_uppercase().replace(['"', '\''], "");
+    if header_str.contains("NOME_SOCIO") || header_str.contains("SOCIO_NOME") || header_str.contains("QUALIFICACAO_SOCIO") || (header_str.contains("CNPJ_BASICO") && (header_str.contains("SOCIO") || header_str.contains("RAZAO"))) {
+        "RECEITA_QSA".to_string()
+    } else if header_str.contains("NUMERO_INSCRICAO") || header_str.contains("NUMERO_REGISTRO") || header_str.contains("SECCIONAL_UF") || header_str.contains("SITUACAO_REGISTRO") || header_str.contains("OAB") || header_str.contains("PESSOA_NOME") {
+        "CONSELHOS_OAB".to_string()
+    } else if header_str.contains("NUMEROCONTRATO") || header_str.contains("VALORGLOBAL") || header_str.contains("ORGAO_CONTRATANTE") || header_str.contains("VALOR_CONTRATADO") {
+        "PNCP_CONTRATOS".to_string()
+    } else if header_str.contains("VALORLIQUIDO") || header_str.contains("VLRLIQUIDO") || header_str.contains("TXNOMEPARLAMENTAR") || header_str.contains("NUMDOCUMENTO") {
+        "CEAP_NOTAS".to_string()
+    } else if header_str.contains("VR_RECEITA") || header_str.contains("DS_RECEITA") || (header_str.contains("DOADOR") && header_str.contains("VALOR")) {
+        "TSE_RECEITAS".to_string()
+    } else if header_str.contains("VR_DESPESA") || header_str.contains("DS_DESPESA") || (header_str.contains("FORNECEDOR") && header_str.contains("DESPESA")) {
+        "TSE_DESPESAS".to_string()
+    } else if header_str.contains("SQ_CANDIDATO") || header_str.contains("NM_URNA_CANDIDATO") || header_str.contains("NR_CPF_CANDIDATO") || header_str.contains("NM_CANDIDATO") {
+        "TSE_CANDIDATOS".to_string()
+    } else if header_str.contains("TERMO_PESQUISADO") || header_str.contains("MUNICIPIO_UF") || header_str.contains("QUERIDO_DIARIO") {
+        "DIARIOS_OFICIAIS".to_string()
+    } else {
+        "CSV_GENERICO".to_string()
+    }
+}
+
+fn processar_csv_records<R: std::io::Read>(
+    conn: &mut rusqlite::Connection,
+    reader: &mut csv::Reader<R>,
+    tipo_solicitado: &str,
+) -> std::io::Result<(usize, String)> {
+    let headers = reader.headers()?.clone();
+    let tipo_detectado = if tipo_solicitado != "AUTO" && !tipo_solicitado.is_empty() {
+        tipo_solicitado.to_string()
+    } else {
+        detectar_tipo_por_cabecalho(&headers)
+    };
+
+    let mut count = 0;
+
+    match tipo_detectado.as_str() {
+        "RECEITA_QSA" | "QSA" => {
+            let col_cnpj_basico = find_col(&headers, &["CNPJ_BASICO", "CNPJ"]);
+            let col_cnpj_ordem = find_col(&headers, &["CNPJ_ORDEM", "ORDEM"]);
+            let col_cnpj_dv = find_col(&headers, &["CNPJ_DV", "DV"]);
+            let col_razao = find_col(&headers, &["RAZAO_SOCIAL", "NOME_EMPRESA", "RAZAO"]);
+            let col_socio_nome = find_col(&headers, &["NOME_SOCIO", "SOCIO_NOME", "NM_SOCIO", "SOCIO", "NOME"]);
+            let col_socio_doc = find_col(&headers, &["CNPJ_CPF_SOCIO", "SOCIO_CPF_CNPJ_MASCARADO", "CPF_CNPJ_SOCIO", "CPF_SOCIO", "DOCUMENTO_SOCIO", "CPF"]);
+            let col_qualif = find_col(&headers, &["QUALIFICACAO_SOCIO", "QUALIFICACAO", "DS_QUALIFICACAO"]);
+
+            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO empresas_qsa (
+                        cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+                for record in reader.records().flatten() {
+                    let cnpj_raw = col_cnpj_basico.and_then(|i| record.get(i)).unwrap_or("00000000").trim();
+                    let cnpj_basico = if cnpj_raw.len() >= 8 { &cnpj_raw[..8] } else { cnpj_raw };
+                    let cnpj_ordem = col_cnpj_ordem.and_then(|i| record.get(i)).unwrap_or("0001").trim();
+                    let cnpj_dv = col_cnpj_dv.and_then(|i| record.get(i)).unwrap_or("00").trim();
+                    let razao = col_razao.and_then(|i| record.get(i)).unwrap_or("EMPRESA S/A").trim();
+                    let socio_nome = col_socio_nome.and_then(|i| record.get(i)).unwrap_or("SOCIO").trim();
+                    let socio_doc = col_socio_doc.and_then(|i| record.get(i)).unwrap_or("***.***.***-**").trim();
+                    let qualif = col_qualif.and_then(|i| record.get(i)).unwrap_or("SOCIO-ADMINISTRADOR").trim();
+
+                    if !cnpj_basico.is_empty() && !socio_doc.is_empty() {
+                        let _ = stmt.execute(rusqlite::params![
+                            cnpj_basico, cnpj_ordem, cnpj_dv, razao, socio_doc, socio_nome, qualif
+                        ]);
+                        count += 1;
+                    }
+                }
+            }
+            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        "CONSELHOS_OAB" | "REGISTROS_PROFISSIONAIS" | "OAB" => {
+            let col_nome = find_col(&headers, &["PESSOA_NOME", "NOME_ADVOGADO", "NOME", "ADVOGADO"]);
+            let col_cpf = find_col(&headers, &["CPF_MASCARADO", "CPF", "NR_CPF"]);
+            let col_orgao = find_col(&headers, &["ORGAO_EMISSOR", "ORGAO"]);
+            let col_reg = find_col(&headers, &["NUMERO_REGISTRO", "NUMERO_INSCRICAO", "INSCRICAO", "REGISTRO"]);
+            let col_uf = find_col(&headers, &["SECCIONAL_UF", "UF", "ESTADO"]);
+            let col_sit = find_col(&headers, &["SITUACAO_REGISTRO", "SITUACAO_REGULAR", "SITUACAO", "STATUS"]);
+            let col_tipo = find_col(&headers, &["TIPO_INSCRICAO", "TIPO"]);
+
+            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO registros_profissionais (
+                        pessoa_nome, cpf_mascarado, orgao_emissor, numero_registro, seccional_uf, situacao_registro, tipo_inscricao
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+                for record in reader.records().flatten() {
+                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let orgao = col_orgao.and_then(|i| record.get(i)).unwrap_or("OAB").trim();
+                    let reg = col_reg.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let uf = col_uf.and_then(|i| record.get(i)).unwrap_or("BR").trim();
+                    let sit = col_sit.and_then(|i| record.get(i)).unwrap_or("REGULAR").trim();
+                    let tipo_ins = col_tipo.and_then(|i| record.get(i)).unwrap_or("ADVOGADO").trim();
+
+                    if !nome.is_empty() && !reg.is_empty() {
+                        let _ = stmt.execute(rusqlite::params![
+                            nome, cpf, orgao, reg, uf, sit, tipo_ins
+                        ]);
+                        count += 1;
+                    }
+                }
+            }
+            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        "PNCP_CONTRATOS" | "PNCP" => {
+            let col_orgao = find_col(&headers, &["ORGAO_CONTRATANTE", "ORGAO_NOME", "ORGAO", "CONTRATANTE"]);
+            let col_cnpj = find_col(&headers, &["FORNECEDOR_CNPJ", "CNPJ_CONTRATADO", "CNPJ", "CONTRATADO"]);
+            let col_valor = find_col(&headers, &["VALOR_CONTRATADO", "VALORGLOBAL", "VALOR", "VALOR_INICIAL"]);
+            let col_objeto = find_col(&headers, &["OBJETO", "OBJETOCONTRATO", "DESCRICAO"]);
+            let col_dt_ass = find_col(&headers, &["DATA_ASSINATURA", "DATAASSINATURA", "DT_ASSINATURA"]);
+            let col_dt_fim = find_col(&headers, &["DATA_TERMINO", "DATAVIGENCIAFIM", "DT_TERMINO"]);
+
+            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO contratos_publicos (
+                        orgao_contratante, fornecedor_cnpj, valor_contratado, objeto, data_assinatura, data_termino
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+                for record in reader.records().flatten() {
+                    let orgao = col_orgao.and_then(|i| record.get(i)).unwrap_or("ORGAO PUBLICO").trim();
+                    let cnpj = col_cnpj.and_then(|i| record.get(i)).unwrap_or("00000000000100").trim();
+                    let valor = col_valor.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
+                    let objeto = col_objeto.and_then(|i| record.get(i)).unwrap_or("FORNECIMENTO").trim();
+                    let dt_ass = col_dt_ass.and_then(|i| record.get(i)).unwrap_or("2024-01-01").trim();
+                    let dt_fim = col_dt_fim.and_then(|i| record.get(i)).unwrap_or("2025-01-01").trim();
+
+                    if !cnpj.is_empty() {
+                        let _ = stmt.execute(rusqlite::params![orgao, cnpj, valor, objeto, dt_ass, dt_fim]);
+                        count += 1;
+                    }
+                }
+            }
+            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        "CEAP_NOTAS" | "CEAP" => {
+            let col_parlamentar = find_col(&headers, &["TXNOMEPARLAMENTAR", "PARLAMENTAR_NOME", "NOME_PARLAMENTAR", "NOME"]);
+            let col_cpf = find_col(&headers, &["CPF", "PARLAMENTAR_CPF_MASCARADO", "CPF_PARLAMENTAR"]);
+            let col_data = find_col(&headers, &["DATANF", "DATA_EMISSAO", "DATA"]);
+            let col_doc = find_col(&headers, &["NUMDOCUMENTO", "NUMERO_DOCUMENTO", "NUM_DOC"]);
+            let col_valor = find_col(&headers, &["VLRLIQUIDO", "VALORLIQUIDO", "VALOR_LIQUIDO", "VALOR"]);
+            let col_forn_nome = find_col(&headers, &["FORNECEDOR", "FORNECEDOR_NOME", "NOME_FORNECEDOR"]);
+            let col_forn_doc = find_col(&headers, &["CNPJCPF", "FORNECEDOR_CNPJ_CPF", "CNPJ_FORNECEDOR"]);
+
+            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO despesas_parlamentares (
+                        casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado, data_emissao,
+                        categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, numero_documento
+                     ) VALUES ('CAMARA', ?1, ?2, ?3, 'GERAL', ?4, ?5, ?6, ?7)"
+                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+                for record in reader.records().flatten() {
+                    let parl = col_parlamentar.and_then(|i| record.get(i)).unwrap_or("PARLAMENTAR").trim();
+                    let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let dt = col_data.and_then(|i| record.get(i)).unwrap_or("2024-01-01").trim();
+                    let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("NF-0").trim();
+                    let valor = col_valor.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
+                    let forn_nome = col_forn_nome.and_then(|i| record.get(i)).unwrap_or("FORNECEDOR").trim();
+                    let forn_doc = col_forn_doc.and_then(|i| record.get(i)).unwrap_or("00000000000100").trim();
+
+                    if !forn_doc.is_empty() {
+                        let _ = stmt.execute(rusqlite::params![parl, cpf, dt, forn_nome, forn_doc, valor, doc]);
+                        count += 1;
+                    }
+                }
+            }
+            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        "TSE_RECEITAS" => {
+            let col_doc = find_col(&headers, &["NR_CPF_CNPJ_DOADOR", "DOADOR_CPF_CNPJ", "CPF_CNPJ_DOADOR", "CPF_DOADOR", "CNPJ_DOADOR"]);
+            let col_nome = find_col(&headers, &["NM_DOADOR", "DOADOR_NOME", "NOME_DOADOR", "DOADOR"]);
+            let col_valor = find_col(&headers, &["VR_RECEITA", "VALOR_RECEITA", "VALOR"]);
+            let col_data = find_col(&headers, &["DT_RECEITA", "DATA_RECEITA", "DATA"]);
+            let col_desc = find_col(&headers, &["DS_RECEITA", "DESCRICAO"]);
+
+            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO receitas_campanha (
+                        candidatura_id, doador_cpf_cnpj, doador_nome, valor, data_receita, descricao
+                     ) VALUES (NULL, ?1, ?2, ?3, ?4, ?5)"
+                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+                for record in reader.records().flatten() {
+                    let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("00000000000").trim();
+                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("DOADOR").trim();
+                    let valor = col_valor.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
+                    let data = col_data.and_then(|i| record.get(i)).unwrap_or("2024-01-01").trim();
+                    let desc = col_desc.and_then(|i| record.get(i)).unwrap_or("DOACAO").trim();
+
+                    if !doc.is_empty() {
+                        let _ = stmt.execute(rusqlite::params![doc, nome, valor, data, desc]);
+                        count += 1;
+                    }
+                }
+            }
+            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        "TSE_DESPESAS" => {
+            let col_doc = find_col(&headers, &["NR_CPF_CNPJ_FORNECEDOR", "FORNECEDOR_CPF_CNPJ", "CPF_CNPJ_FORNECEDOR", "FORNECEDOR_CNPJ"]);
+            let col_nome = find_col(&headers, &["NM_FORNECEDOR", "FORNECEDOR_NOME", "NOME_FORNECEDOR", "FORNECEDOR"]);
+            let col_valor = find_col(&headers, &["VR_DESPESA", "VALOR_DESPESA", "VALOR"]);
+            let col_data = find_col(&headers, &["DT_DESPESA", "DATA_DESPESA", "DATA"]);
+            let col_desc = find_col(&headers, &["DS_DESPESA", "DESCRICAO"]);
+
+            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO despesas_campanha (
+                        candidatura_id, fornecedor_cpf_cnpj, fornecedor_nome, valor, data_despesa, descricao
+                     ) VALUES (NULL, ?1, ?2, ?3, ?4, ?5)"
+                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+                for record in reader.records().flatten() {
+                    let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("00000000000100").trim();
+                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("FORNECEDOR").trim();
+                    let valor = col_valor.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
+                    let data = col_data.and_then(|i| record.get(i)).unwrap_or("2024-01-01").trim();
+                    let desc = col_desc.and_then(|i| record.get(i)).unwrap_or("DESPESA").trim();
+
+                    if !doc.is_empty() {
+                        let _ = stmt.execute(rusqlite::params![doc, nome, valor, data, desc]);
+                        count += 1;
+                    }
+                }
+            }
+            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        "TSE_CANDIDATOS" => {
+            let col_sq = find_col(&headers, &["SQ_CANDIDATO"]);
+            let col_nome = find_col(&headers, &["NM_CANDIDATO", "NOME_COMPLETO"]);
+            let col_urna = find_col(&headers, &["NM_URNA_CANDIDATO", "NOME_URNA"]);
+            let col_cpf = find_col(&headers, &["NR_CPF_CANDIDATO", "CPF_MASCARADO"]);
+
+            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT OR IGNORE INTO politicos (
+                        sq_candidato, cpf_mascarado, nome_completo, nome_urna
+                     ) VALUES (?1, ?2, ?3, ?4)"
+                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+                for record in reader.records().flatten() {
+                    let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("CANDIDATO").trim();
+                    let urna = col_urna.and_then(|i| record.get(i)).unwrap_or("URNA").trim();
+                    let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
+
+                    if !sq.is_empty() || !nome.is_empty() {
+                        let _ = stmt.execute(rusqlite::params![sq, cpf, nome, urna]);
+                        count += 1;
+                    }
+                }
+            }
+            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        "DIARIOS_OFICIAIS" => {
+            let col_doc = find_col(&headers, &["DOADOR_CPF_CNPJ", "CPF_CNPJ", "DOCUMENTO"]);
+            let col_termo = find_col(&headers, &["TERMO_PESQUISADO", "TERMO", "NOME"]);
+            let col_mun = find_col(&headers, &["MUNICIPIO_UF", "MUNICIPIO", "UF"]);
+
+            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO cache_consultas_diario (
+                        doador_cpf_cnpj, termo_pesquisado, municipio_uf, ocorrencias_encontradas, payload_json
+                     ) VALUES (?1, ?2, ?3, 1, '{\"fonte\":\"upload_manual\"}')"
+                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+                for record in reader.records().flatten() {
+                    let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let termo = col_termo.and_then(|i| record.get(i)).unwrap_or("NOME").trim();
+                    let mun = col_mun.and_then(|i| record.get(i)).unwrap_or("BRASIL").trim();
+
+                    if !termo.is_empty() {
+                        let _ = stmt.execute(rusqlite::params![doc, termo, mun]);
+                        count += 1;
+                    }
+                }
+            }
+            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        }
+        _ => {
+            for _ in reader.records().flatten() {
+                count += 1;
+            }
+        }
+    }
+
+    Ok((count, tipo_detectado))
+}
+
 pub async fn upload_arquivo_handler(
     State(pool): State<DbPool>,
     mut multipart: Multipart,
@@ -446,20 +850,35 @@ pub async fn upload_arquivo_handler(
 
     let mut nome_arquivo = String::from("desconhecido");
     let mut tamanho_total: usize = 0;
+    let mut tipo_escolhido = String::from("AUTO");
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
-        if let Some(file_name) = field.file_name() {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "tipo" {
+            if let Ok(bytes) = field.bytes().await {
+                tipo_escolhido = String::from_utf8_lossy(&bytes).trim().to_uppercase();
+            }
+        } else if let Some(file_name) = field.file_name() {
             nome_arquivo = file_name.to_string();
-        }
-
-        while let Ok(Some(chunk)) = field.chunk().await {
-            tamanho_total += chunk.len();
-            temp_file.write_all(&chunk).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"erro": format!("Falha ao gravar chunk no disco: {e}")})),
-                )
-            })?;
+            while let Ok(Some(chunk)) = field.chunk().await {
+                tamanho_total += chunk.len();
+                temp_file.write_all(&chunk).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"erro": format!("Falha ao gravar chunk no disco: {e}")})),
+                    )
+                })?;
+            }
+        } else {
+            while let Ok(Some(chunk)) = field.chunk().await {
+                tamanho_total += chunk.len();
+                temp_file.write_all(&chunk).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"erro": format!("Falha ao gravar chunk no disco: {e}")})),
+                    )
+                })?;
+            }
         }
     }
 
@@ -482,29 +901,38 @@ pub async fn upload_arquivo_handler(
 
     let (registros_inseridos, tipo_detectado) = if is_zip {
         let zip_path = temp_path.clone();
+        let pool_clone = pool.clone();
+        let tipo_clone = tipo_escolhido.clone();
 
-        let extracted_records = tokio::task::spawn_blocking(move || -> std::io::Result<usize> {
+        tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
+            let mut conn = pool_clone.get().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
             let file = std::fs::File::open(&zip_path)?;
             let mut archive = zip::ZipArchive::new(file)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-            let mut count = 0;
+            let mut total_count = 0;
+            let mut tipo_final = "ZIP_COMPACTADO".to_string();
+
             for i in 0..archive.len() {
                 let mut zip_entry = archive
                     .by_index(i)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 if zip_entry.name().to_lowercase().ends_with(".csv") {
+                    let mut buf = Vec::new();
+                    use std::io::Read;
+                    zip_entry.read_to_end(&mut buf)?;
+                    let delim = detectar_delimitador(&buf);
                     let mut reader = csv::ReaderBuilder::new()
-                        .delimiter(b';')
+                        .delimiter(delim)
                         .flexible(true)
-                        .from_reader(&mut zip_entry);
+                        .from_reader(std::io::Cursor::new(buf));
 
-                    for _ in reader.records().flatten() {
-                        count += 1;
-                    }
+                    let (cnt, tp) = processar_csv_records(&mut conn, &mut reader, &tipo_clone)?;
+                    total_count += cnt;
+                    tipo_final = format!("ZIP_{tp}");
                 }
             }
-            Ok(count)
+            Ok((total_count, tipo_final))
         })
         .await
         .map_err(|e| {
@@ -518,42 +946,28 @@ pub async fn upload_arquivo_handler(
                 StatusCode::BAD_REQUEST,
                 Json(json!({"erro": format!("Falha ao ler arquivo ZIP: {e}")})),
             )
-        })?;
-
-        (extracted_records, String::from("ZIP_COMPACTADO"))
+        })?
     } else {
-        // Arquivo CSV direto
         let csv_path = temp_path.clone();
-        let (records_count, tipo) = tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
-            let file = std::fs::File::open(&csv_path)?;
+        let pool_clone = pool.clone();
+        let tipo_clone = tipo_escolhido.clone();
+
+        tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
+            let mut conn = pool_clone.get().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            let mut file = std::fs::File::open(&csv_path)?;
+            let mut sample = [0u8; 2048];
+            use std::io::Read;
+            let n = file.read(&mut sample).unwrap_or(0);
+            let delim = detectar_delimitador(&sample[..n]);
+            use std::io::Seek;
+            let _ = file.seek(std::io::SeekFrom::Start(0));
+
             let mut reader = csv::ReaderBuilder::new()
-                .delimiter(b';')
+                .delimiter(delim)
                 .flexible(true)
                 .from_reader(file);
 
-            let mut count = 0;
-            let mut detected = "CSV_GENERICO".to_string();
-
-            if let Ok(headers) = reader.headers() {
-                let header_str = headers.iter().collect::<Vec<_>>().join(";").to_uppercase();
-                if header_str.contains("VR_RECEITA") || header_str.contains("DS_RECEITA") {
-                    detected = "TSE_RECEITAS".to_string();
-                } else if header_str.contains("VR_DESPESA") || header_str.contains("DS_DESPESA") {
-                    detected = "TSE_DESPESAS".to_string();
-                } else if header_str.contains("NM_CANDIDATO") || header_str.contains("SQ_CANDIDATO") {
-                    detected = "TSE_CANDIDATOS".to_string();
-                } else if header_str.contains("VALORLIQUIDO") || header_str.contains("NUMDOCUMENTO") {
-                    detected = "CEAP_NOTAS".to_string();
-                } else if header_str.contains("NUMEROCONTRATO") || header_str.contains("VALORGLOBAL") {
-                    detected = "PNCP_CONTRATOS".to_string();
-                }
-            }
-
-            for _ in reader.records().flatten() {
-                count += 1;
-            }
-
-            Ok((count, detected))
+            processar_csv_records(&mut conn, &mut reader, &tipo_clone)
         })
         .await
         .map_err(|e| {
@@ -567,9 +981,7 @@ pub async fn upload_arquivo_handler(
                 StatusCode::BAD_REQUEST,
                 Json(json!({"erro": format!("Erro no formato do arquivo CSV: {e}")})),
             )
-        })?;
-
-        (records_count, tipo)
+        })?
     };
 
     if let Ok(conn) = pool.get() {
@@ -592,6 +1004,208 @@ pub async fn upload_arquivo_handler(
         mensagem: format!(
             "Arquivo processado com sucesso via streams assíncronos. Total de {registros_inseridos} registros catalogados."
         ),
+    }))
+}
+
+pub async fn obter_icone_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<ObterIconeParams>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let tipo = params.tipo.unwrap_or_else(|| "app".to_string()).to_lowercase();
+    let chave = if tipo == "favicon" { "favicon" } else { "app_icon" };
+
+    if let Ok(conn) = pool.get() {
+        let res: std::result::Result<(Vec<u8>, String), _> = conn.query_row(
+            "SELECT valor_blob, mime_type FROM configuracoes_sistema WHERE chave = ?1",
+            [chave],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        );
+
+        if let Ok((blob, mime)) = res {
+            if !blob.is_empty() {
+                let mut headers = HeaderMap::new();
+                if let Ok(mime_val) = HeaderValue::from_str(&mime) {
+                    headers.insert(header::CONTENT_TYPE, mime_val);
+                } else {
+                    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+                }
+                headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+                return Ok((headers, Body::from(blob)));
+            }
+        }
+
+        if chave == "favicon" {
+            let res_app: std::result::Result<(Vec<u8>, String), _> = conn.query_row(
+                "SELECT valor_blob, mime_type FROM configuracoes_sistema WHERE chave = 'app_icon'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            );
+            if let Ok((blob, mime)) = res_app {
+                if !blob.is_empty() {
+                    let mut headers = HeaderMap::new();
+                    if let Ok(mime_val) = HeaderValue::from_str(&mime) {
+                        headers.insert(header::CONTENT_TYPE, mime_val);
+                    } else {
+                        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+                    }
+                    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+                    return Ok((headers, Body::from(blob)));
+                }
+            }
+        }
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/svg+xml"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    Ok((headers, Body::from(DEFAULT_ICON_SVG)))
+}
+
+pub async fn obter_favicon_handler(
+    State(pool): State<DbPool>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    obter_icone_handler(State(pool), Query(ObterIconeParams { tipo: Some("favicon".to_string()) })).await
+}
+
+pub async fn salvar_icone_handler(
+    State(pool): State<DbPool>,
+    mut multipart: Multipart,
+) -> Result<Json<SalvarIconeResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let mut alvo = "ambos".to_string();
+    let mut bytes = Vec::new();
+    let mut mime_type = "image/png".to_string();
+
+    while let Ok(Some(mut field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "alvo" {
+            if let Ok(b) = field.bytes().await {
+                alvo = String::from_utf8_lossy(&b).trim().to_lowercase();
+            }
+        } else if name == "arquivo" || field.file_name().is_some() {
+            if let Some(content_type) = field.content_type() {
+                mime_type = content_type.to_string();
+            } else if let Some(file_name) = field.file_name() {
+                let fn_lower = file_name.to_lowercase();
+                if fn_lower.ends_with(".svg") {
+                    mime_type = "image/svg+xml".to_string();
+                } else if fn_lower.ends_with(".ico") {
+                    mime_type = "image/x-icon".to_string();
+                } else if fn_lower.ends_with(".jpg") || fn_lower.ends_with(".jpeg") {
+                    mime_type = "image/jpeg".to_string();
+                } else if fn_lower.ends_with(".webp") {
+                    mime_type = "image/webp".to_string();
+                }
+            }
+
+            while let Ok(Some(chunk)) = field.chunk().await {
+                bytes.extend_from_slice(&chunk);
+                if bytes.len() > 5 * 1024 * 1024 {
+                    return Err((
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        Json(json!({"erro": "Tamanho máximo da imagem excedido (limite 5 MB)"})),
+                    ));
+                }
+            }
+        }
+    }
+
+    if bytes.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"erro": "Nenhum arquivo de imagem enviado"})),
+        ));
+    }
+
+    let conn = pool.get().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"erro": format!("Erro ao obter conexão do pool: {e}")})),
+        )
+    })?;
+
+    if alvo == "icone" || alvo == "ambos" {
+        conn.execute(
+            "INSERT OR REPLACE INTO configuracoes_sistema (chave, valor_texto, valor_blob, mime_type, atualizado_em)
+             VALUES ('app_icon', 'icone_custom', ?1, ?2, CURRENT_TIMESTAMP)",
+            rusqlite::params![&bytes, &mime_type],
+        ).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"erro": format!("Falha ao salvar ícone no SQLite: {e}")})),
+            )
+        })?;
+    }
+
+    if alvo == "favicon" || alvo == "ambos" {
+        conn.execute(
+            "INSERT OR REPLACE INTO configuracoes_sistema (chave, valor_texto, valor_blob, mime_type, atualizado_em)
+             VALUES ('favicon', 'favicon_custom', ?1, ?2, CURRENT_TIMESTAMP)",
+            rusqlite::params![&bytes, &mime_type],
+        ).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"erro": format!("Falha ao salvar favicon no SQLite: {e}")})),
+            )
+        })?;
+    }
+
+    Ok(Json(SalvarIconeResponse {
+        status: "CONCLUIDO".to_string(),
+        mensagem: "Identidade visual atualizada com sucesso!".to_string(),
+        alvo,
+        mime_type,
+        tamanho_bytes: bytes.len(),
+    }))
+}
+
+pub async fn remover_icone_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<RemoverIconeParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let alvo = params.alvo.unwrap_or_else(|| "ambos".to_string()).to_lowercase();
+    let conn = pool.get().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"erro": format!("Erro de banco: {e}")})),
+        )
+    })?;
+
+    if alvo == "icone" || alvo == "ambos" {
+        let _ = conn.execute("DELETE FROM configuracoes_sistema WHERE chave = 'app_icon'", []);
+    }
+    if alvo == "favicon" || alvo == "ambos" {
+        let _ = conn.execute("DELETE FROM configuracoes_sistema WHERE chave = 'favicon'", []);
+    }
+
+    Ok(Json(json!({
+        "status": "CONCLUIDO",
+        "mensagem": "Ícone restaurado para o padrão original"
+    })))
+}
+
+pub async fn obter_identidade_handler(
+    State(pool): State<DbPool>,
+) -> Result<Json<IdentidadeVisualResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let mut tem_icone = false;
+    let mut tem_fav = false;
+    if let Ok(conn) = pool.get() {
+        tem_icone = conn.query_row(
+            "SELECT 1 FROM configuracoes_sistema WHERE chave = 'app_icon'",
+            [],
+            |_| Ok(()),
+        ).is_ok();
+        tem_fav = conn.query_row(
+            "SELECT 1 FROM configuracoes_sistema WHERE chave = 'favicon'",
+            [],
+            |_| Ok(()),
+        ).is_ok();
+    }
+
+    Ok(Json(IdentidadeVisualResponse {
+        tem_icone_customizado: tem_icone,
+        tem_favicon_customizado: tem_fav,
+        icone_url: "/api/v1/config/icone".to_string(),
+        favicon_url: "/api/v1/config/favicon".to_string(),
     }))
 }
 
@@ -1006,4 +1620,227 @@ mod tests {
         assert_eq!(upload_res.tipo_detectado, "TSE_RECEITAS");
         assert_eq!(upload_res.registros_inseridos, 1);
     }
+
+    #[tokio::test]
+    async fn test_salvar_obter_e_remover_icone_e_favicon() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+
+        // 1. Obter icone padrao
+        let req_padrao = Request::builder()
+            .uri("/api/v1/config/icone")
+            .body(Body::empty())
+            .unwrap();
+        let res_padrao = app.oneshot(req_padrao).await.unwrap();
+        assert_eq!(res_padrao.status(), StatusCode::OK);
+        assert_eq!(
+            res_padrao.headers().get("content-type").unwrap(),
+            "image/svg+xml"
+        );
+
+        // 2. Salvar icone e favicon customizados
+        let app = crate::criar_router(pool.clone());
+        let boundary = "---------------------------12345678901234567890";
+        let mock_png_bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01];
+        let mut body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"alvo\"\r\n\r\n\
+             ambos\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"arquivo\"; filename=\"meu_logo.png\"\r\n\
+             Content-Type: image/png\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(&mock_png_bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+        let req_post = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/icone")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+
+        let res_post = app.oneshot(req_post).await.unwrap();
+        assert_eq!(res_post.status(), StatusCode::OK);
+
+        // 3. Obter icone customizado
+        let app = crate::criar_router(pool.clone());
+        let req_custom = Request::builder()
+            .uri("/api/v1/config/icone")
+            .body(Body::empty())
+            .unwrap();
+        let res_custom = app.oneshot(req_custom).await.unwrap();
+        assert_eq!(res_custom.status(), StatusCode::OK);
+        assert_eq!(
+            res_custom.headers().get("content-type").unwrap(),
+            "image/png"
+        );
+        let custom_bytes = axum::body::to_bytes(res_custom.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(custom_bytes.as_ref(), &mock_png_bytes);
+
+        // 4. Obter favicon customizado
+        let app = crate::criar_router(pool.clone());
+        let req_fav = Request::builder()
+            .uri("/api/v1/config/favicon")
+            .body(Body::empty())
+            .unwrap();
+        let res_fav = app.oneshot(req_fav).await.unwrap();
+        assert_eq!(res_fav.status(), StatusCode::OK);
+        assert_eq!(
+            res_fav.headers().get("content-type").unwrap(),
+            "image/png"
+        );
+
+        // 5. Verificar identidade
+        let app = crate::criar_router(pool.clone());
+        let req_id = Request::builder()
+            .uri("/api/v1/config/identidade")
+            .body(Body::empty())
+            .unwrap();
+        let res_id = app.oneshot(req_id).await.unwrap();
+        assert_eq!(res_id.status(), StatusCode::OK);
+        let id_bytes = axum::body::to_bytes(res_id.into_body(), usize::MAX).await.unwrap();
+        let id_val: IdentidadeVisualResponse = serde_json::from_slice(&id_bytes).unwrap();
+        assert!(id_val.tem_icone_customizado);
+        assert!(id_val.tem_favicon_customizado);
+
+        // 6. Remover icone customizado (restaurar padrao)
+        let app = crate::criar_router(pool.clone());
+        let req_del = Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/config/icone?alvo=ambos")
+            .body(Body::empty())
+            .unwrap();
+        let res_del = app.oneshot(req_del).await.unwrap();
+        assert_eq!(res_del.status(), StatusCode::OK);
+
+        // 7. Apos remover, volta a retornar SVG
+        let app = crate::criar_router(pool);
+        let req_reset = Request::builder()
+            .uri("/api/v1/config/icone")
+            .body(Body::empty())
+            .unwrap();
+        let res_reset = app.oneshot(req_reset).await.unwrap();
+        assert_eq!(res_reset.status(), StatusCode::OK);
+        assert_eq!(
+            res_reset.headers().get("content-type").unwrap(),
+            "image/svg+xml"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upload_csv_qsa_multipart() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+        let boundary = "---------------------------qsa974767299852498929531610575";
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"tipo\"\r\n\r\n\
+             RECEITA_QSA\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"arquivo\"; filename=\"socios_rfb.csv\"\r\n\
+             Content-Type: text/csv\r\n\r\n\
+             CNPJ_BASICO;RAZAO_SOCIAL;NOME_SOCIO;CPF_CNPJ_SOCIO;QUALIFICACAO_SOCIO\r\n\
+             12345678;EMPRESA MODELO LTDA;JOAO DA SILVA SOCIO;***.111.222-**;49-SOCIO-ADMINISTRADOR\r\n\
+             87654321;CONSULTORIA TECNICA SA;MARIA PEREIRA;***.333.444-**;10-DIRETOR\r\n\
+             --{boundary}--\r\n"
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/ingestao/upload")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(upload_res.status, "CONCLUIDO");
+        assert_eq!(upload_res.tipo_detectado, "RECEITA_QSA");
+        assert_eq!(upload_res.registros_inseridos, 2);
+
+        // Validar insercao direta no banco
+        let conn = pool.get().unwrap();
+        let total_qsa: i64 = conn
+            .query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_qsa, 2);
+
+        let socio_nome: String = conn
+            .query_row(
+                "SELECT socio_nome FROM empresas_qsa WHERE cnpj_basico = '12345678'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(socio_nome, "JOAO DA SILVA SOCIO");
+    }
+
+    #[tokio::test]
+    async fn test_upload_csv_oab_multipart() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+        let boundary = "---------------------------oab974767299852498929531610575";
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"arquivo\"; filename=\"advogados_oab.csv\"\r\n\
+             Content-Type: text/csv\r\n\r\n\
+             PESSOA_NOME;CPF_MASCARADO;ORGAO_EMISSOR;NUMERO_REGISTRO;SECCIONAL_UF;SITUACAO_REGISTRO;TIPO_INSCRICAO\r\n\
+             DR ROBERTO CARLOS;***.555.666-**;OAB;98765;SP;REGULAR;ADVOGADO\r\n\
+             --{boundary}--\r\n"
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/ingestao/upload")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(upload_res.status, "CONCLUIDO");
+        assert_eq!(upload_res.tipo_detectado, "CONSELHOS_OAB");
+        assert_eq!(upload_res.registros_inseridos, 1);
+
+        let conn = pool.get().unwrap();
+        let total_oab: i64 = conn
+            .query_row("SELECT count(*) FROM registros_profissionais", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_oab, 1);
+    }
 }
+

@@ -13,8 +13,10 @@ pub use alertas::{
 pub use busca::{busca_handler, BuscaParams, ItemBuscaUnificada, RespostaBusca};
 pub use config::{
     executar_ingestao_handler, exportar_banco_handler, exportar_tabela_handler, job_status_handler,
-    status_handler, upload_arquivo_handler, ConfigStatusResponse, ExecutarIngestaoRequest,
-    ExecutarIngestaoResponse, JobInfo, TotalRegistros, UploadResponse,
+    obter_favicon_handler, obter_icone_handler, obter_identidade_handler, remover_icone_handler,
+    salvar_icone_handler, status_handler, upload_arquivo_handler, ConfigStatusResponse,
+    ExecutarIngestaoRequest, ExecutarIngestaoResponse, IdentidadeVisualResponse, JobInfo,
+    SalvarIconeResponse, TotalRegistros, UploadResponse,
 };
 pub use grafo::{
     formatar_subgrafo, grafo_subgrafo_handler, CytoscapeEdge, CytoscapeEdgeData,
@@ -57,7 +59,15 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/config/tse/sincronizar", post(config::sincronizar_tse_handler))
         .route("/api/v1/config/ingestao/upload", post(upload_arquivo_handler))
         .route("/api/v1/config/exportar/banco", get(exportar_banco_handler))
-        .route("/api/v1/config/exportar/tabela/:nome_tabela", get(exportar_tabela_handler));
+        .route("/api/v1/config/exportar/tabela/:nome_tabela", get(exportar_tabela_handler))
+        .route(
+            "/api/v1/config/icone",
+            get(obter_icone_handler)
+                .post(salvar_icone_handler)
+                .delete(remover_icone_handler),
+        )
+        .route("/api/v1/config/favicon", get(obter_favicon_handler))
+        .route("/api/v1/config/identidade", get(obter_identidade_handler));
 
     let web_dir = std::env::var("WEB_DIR").unwrap_or_else(|_| "web/build".to_string());
     if Path::new(&web_dir).exists() {
