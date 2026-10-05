@@ -176,6 +176,60 @@ pub fn batch_insert_alertas_beneficio(
     Ok(alertas.len())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NovaDespesaParlamentar {
+    pub casa_legislativa: String,
+    pub parlamentar_nome: String,
+    pub parlamentar_cpf_mascarado: Option<String>,
+    pub data_emissao: String,
+    pub categoria_despesa: String,
+    pub fornecedor_nome: String,
+    pub fornecedor_cnpj_cpf: String,
+    pub valor_liquido: f64,
+    pub numero_documento: Option<String>,
+    pub url_nota_fiscal: Option<String>,
+    pub detalhes_litros: Option<f64>,
+}
+
+pub fn batch_insert_despesas_parlamentares(
+    conn: &mut Connection,
+    despesas: &[NovaDespesaParlamentar],
+) -> Result<usize> {
+    if despesas.is_empty() {
+        return Ok(0);
+    }
+
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO despesas_parlamentares (
+                casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado,
+                data_emissao, categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf,
+                valor_liquido, numero_documento, url_nota_fiscal, detalhes_litros
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )?;
+
+        for d in despesas {
+            stmt.execute(rusqlite::params![
+                d.casa_legislativa,
+                d.parlamentar_nome,
+                d.parlamentar_cpf_mascarado,
+                d.data_emissao,
+                d.categoria_despesa,
+                d.fornecedor_nome,
+                d.fornecedor_cnpj_cpf,
+                d.valor_liquido,
+                d.numero_documento,
+                d.url_nota_fiscal,
+                d.detalhes_litros,
+            ])?;
+        }
+    }
+    tx.commit()?;
+
+    Ok(despesas.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +334,50 @@ mod tests {
 
         let count_alertas: i64 = conn.query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| r.get(0))?;
         assert_eq!(count_alertas, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_batch_insert_despesas_parlamentares() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        let despesas = vec![
+            NovaDespesaParlamentar {
+                casa_legislativa: "CAMARA".to_string(),
+                parlamentar_nome: "DEPUTADO JOAO".to_string(),
+                parlamentar_cpf_mascarado: Some("***.123.456-**".to_string()),
+                data_emissao: "2024-04-10".to_string(),
+                categoria_despesa: "COMBUSTIVEIS".to_string(),
+                fornecedor_nome: "POSTO CENTRAL".to_string(),
+                fornecedor_cnpj_cpf: "00111222000133".to_string(),
+                valor_liquido: 300.0,
+                numero_documento: Some("NF-100".to_string()),
+                url_nota_fiscal: Some("https://nf.exemplo.com/100".to_string()),
+                detalhes_litros: Some(50.0),
+            },
+            NovaDespesaParlamentar {
+                casa_legislativa: "CAMARA".to_string(),
+                parlamentar_nome: "DEPUTADA MARIA".to_string(),
+                parlamentar_cpf_mascarado: Some("***.987.654-**".to_string()),
+                data_emissao: "2024-04-12".to_string(),
+                categoria_despesa: "PASSAGEM AEREA".to_string(),
+                fornecedor_nome: "GOL LINHAS AEREAS".to_string(),
+                fornecedor_cnpj_cpf: "07575651000159".to_string(),
+                valor_liquido: 1250.80,
+                numero_documento: Some("ETK-5544".to_string()),
+                url_nota_fiscal: None,
+                detalhes_litros: None,
+            },
+        ];
+
+        let inseridos = batch_insert_despesas_parlamentares(&mut conn, &despesas)?;
+        assert_eq!(inseridos, 2);
+
+        let total: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
+        assert_eq!(total, 2);
 
         Ok(())
     }

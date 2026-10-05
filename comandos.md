@@ -268,3 +268,25 @@ Diretrizes para o agente autônomo (YOLO Mode):
 - [x] 056. Adicionar rota `/api/v1/auditoria/auxilio-indevido` no Axum e exibir badge/cartão de benefício indevido no dossiê do político em SvelteKit.  
   *Validação:* `cargo check -p server && cd web && npm run build`  
   *Commit:* `feat(web): integra alertas de auxilio emergencial no dossie do politico`
+
+## Fase 11: Ingestão Dual da Câmara dos Deputados (CEAP)
+
+- [x] 057. Implementar parser de streaming para os arquivos estáticos anuais compactados da CEAP (`Ano-{ano}.csv.zip`) em `crates/ingestion/src/camara/bulk.rs`.  
+  *Validação:* `cargo test -p ingestion -- camara_bulk`  
+  *Commit:* `feat(ingestion): implementa extrator em streaming de dumps anuais da ceap`
+
+- [ ] 058. Implementar cliente assíncrono com suporte a paginação HATEOAS (`links.next`) e rate-limit para a API REST v2 da Câmara em `crates/ingestion/src/camara/api.rs`.  
+  *Validação:* `cargo test -p ingestion -- camara_api`  
+  *Commit:* `feat(ingestion): adiciona consumo paginado hateoas da api da camara`
+
+- [ ] 059. Implementar rota `POST /api/v1/config/camara/sincronizar` no Axum suportando alternância entre modo estático e modo API REST via background task.  
+  *Validação:* `cargo test -p server -- camara_sincronizar`  
+  *Commit:* `feat(server): adiciona endpoint de sincronizacao configuravel da ceap`
+
+- [ ] 060. Adicionar card de sincronização da Câmara no SvelteKit com alternância entre carga anual em massa e API REST paginada.  
+  *Validação:* `cd web && npm run build`  
+  *Commit:* `feat(web): cria controles de sincronizacao estatica e api da camara`
+
+- [ ] 061. Criar teste de integração ponta a ponta simulando carga de lote de notas fiscais da Câmara e verificação na tabela `despesas_parlamentares`.  
+  *Validação:* `cargo test --test camara_pipeline`  
+  *Commit:* `test(e2e): valida ingestao dual da camara com persistencia no sqlite`
