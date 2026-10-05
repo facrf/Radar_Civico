@@ -203,6 +203,6 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test --test e2e_pipeline`  
   *Commit:* `test(e2e): valida pipeline completo de ingestao auditoria e grafo`
 
-- [ ] 042. Validar build multi-stage final via Docker Compose e verificar subida completa de backend e banco persistido em `./data`[cite: 1].  
+- [x] 042. Validar build multi-stage final via Docker Compose e verificar subida completa de backend e banco persistido em `./data`[cite: 1].  
   *Validação:* `docker compose up --build -d && docker compose ps`  
   *Commit:* `chore(release): valida empacotamento completo em containers docker`
