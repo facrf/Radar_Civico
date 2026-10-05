@@ -163,7 +163,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p server -- grafo`  
   *Commit:* `feat(server): implementa endpoint de extracao de subgrafos`
 
-- [ ] 034. Implementar rotas do motor de auditoria (`/api/v1/auditoria/alertas`), listando anomalias ordenadas por severidade e filtros por município/ano[cite: 1].  
+- [x] 034. Implementar rotas do motor de auditoria (`/api/v1/auditoria/alertas`), listando anomalias ordenadas por severidade e filtros por município/ano[cite: 1].  
   *Validação:* `cargo test -p server -- alertas`  
   *Commit:* `feat(server): adiciona endpoint de listagem de anomalias detectadas`
 

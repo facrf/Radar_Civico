@@ -1,7 +1,12 @@
+pub mod alertas;
 pub mod busca;
 pub mod grafo;
 pub mod politico;
 
+pub use alertas::{
+    alertas_handler, carregar_alertas, registrar_alerta, sincronizar_alertas_sistema, AlertaItem,
+    AlertasQueryParams, AlertasResponse, NovoAlerta,
+};
 pub use busca::{busca_handler, BuscaParams, ItemBuscaUnificada, RespostaBusca};
 pub use grafo::{
     formatar_subgrafo, grafo_subgrafo_handler, CytoscapeEdge, CytoscapeEdgeData,

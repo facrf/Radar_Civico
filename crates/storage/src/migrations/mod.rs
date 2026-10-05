@@ -257,6 +257,32 @@ pub const MIGRATIONS: &[Migration] = &[
             END;
         ",
     },
+    Migration {
+        version: 7,
+        name: "create_alertas_auditoria",
+        sql: "
+            CREATE TABLE IF NOT EXISTS alertas_auditoria (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tipo TEXT NOT NULL,
+                severidade TEXT NOT NULL,
+                titulo TEXT NOT NULL,
+                descricao TEXT NOT NULL,
+                alvo_nome TEXT NOT NULL,
+                alvo_documento TEXT,
+                municipio TEXT,
+                uf TEXT,
+                ano INTEGER,
+                valor_envolvido REAL,
+                fonte_dado TEXT NOT NULL,
+                detalhes_json TEXT,
+                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_alertas_auditoria_filtro ON alertas_auditoria(ano, municipio);
+            CREATE INDEX IF NOT EXISTS idx_alertas_auditoria_severidade ON alertas_auditoria(severidade);
+            CREATE INDEX IF NOT EXISTS idx_alertas_auditoria_tipo ON alertas_auditoria(tipo);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
