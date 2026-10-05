@@ -9,28 +9,44 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
+
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("Radar Cívico - Inteligência e Auditoria Pública\n");
+        println!("Uso: server [COMANDO | OPÇÕES]\n");
+        println!("Comandos:");
+        println!("  servidor (padrão)    Inicia a API HTTP Axum e servidor web");
+        println!("  auditar              Executa varredura do motor de auditoria e sincroniza alertas\n");
+        println!("Opções:");
+        println!("  -v, --version        Exibe a versão do radar-civico");
+        println!("  -h, --help           Exibe esta mensagem de ajuda");
+        return Ok(());
+    }
+
     if args.iter().any(|arg| arg == "--version" || arg == "-v" || arg == "-V") {
         println!("radar-civico server {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
-    // Inicializa logging / tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "server=info,tower_http=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let eh_auditoria = args.get(1).map(|s| s.as_str()) == Some("auditar");
 
-    info!("Iniciando Radar Cívico API v{}", env!("CARGO_PKG_VERSION"));
+    // Inicializa logging / tracing apenas no modo servidor ou se solicitado
+    if !eh_auditoria {
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "server=info,tower_http=info".into()),
+            )
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+
+        info!("Iniciando Radar Cívico API v{}", env!("CARGO_PKG_VERSION"));
+    }
 
     let db_path_str = env::var("DATABASE_PATH")
         .or_else(|_| env::var("DATA_DIR").map(|d| format!("{}/radar_civico.db", d)))
         .unwrap_or_else(|_| "./data/radar_civico.db".to_string());
 
     let pool = if db_path_str == ":memory:" {
-        info!("Instanciando SQLite in-memory");
         DbPool::open_in_memory().context("Falha ao abrir SQLite in-memory")?
     } else {
         let db_path = Path::new(&db_path_str);
@@ -40,7 +56,6 @@ async fn main() -> Result<()> {
                     .with_context(|| format!("Falha ao criar diretório para banco: {:?}", parent))?;
             }
         }
-        info!("Instanciando pool de conexões SQLite em: {}", db_path_str);
         DbPool::open(db_path)
             .with_context(|| format!("Falha ao conectar no SQLite: {}", db_path_str))?
     };
@@ -48,9 +63,41 @@ async fn main() -> Result<()> {
     // Executa migrações no arranque
     {
         let mut conn = pool.get().context("Falha ao obter conexão para migrações")?;
-        info!("Aplicando migrações SQL no banco...");
         run_migrations(&mut conn).context("Falha ao executar migrações no arranque")?;
-        info!("Migrações aplicadas com sucesso!");
+    }
+
+    if eh_auditoria {
+        println!("=== Radar Cívico: Executando Varredura do Motor de Auditoria ===");
+        let conn = pool.get()?;
+        let sincronizados = server::alertas::sincronizar_alertas_sistema(&conn)?;
+        println!("Alertas sincronizados a partir da base: {}", sincronizados);
+
+        let filtros = server::alertas::AlertasQueryParams {
+            municipio: None,
+            ano: None,
+            severidade: None,
+            tipo: None,
+            limit: Some(100),
+            offset: Some(0),
+        };
+        let relatorio = server::alertas::carregar_alertas(&conn, &filtros)?;
+        println!("Total de anomalias registradas no sistema: {}\n", relatorio.total);
+        for (i, alerta) in relatorio.alertas.iter().enumerate() {
+            println!(
+                "[{}] [{}] {} - {}",
+                i + 1,
+                alerta.severidade,
+                alerta.tipo,
+                alerta.titulo
+            );
+            println!("    Alvo: {}", alerta.alvo_nome);
+            if let Some(val) = alerta.valor_envolvido {
+                println!("    Valor Envolvido: R$ {:.2}", val);
+            }
+            println!("    Descrição: {}\n", alerta.descricao);
+        }
+        println!("Varredura concluída com sucesso.");
+        return Ok(());
     }
 
     let app = criar_router(pool);
