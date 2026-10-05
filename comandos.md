@@ -257,7 +257,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p storage -- beneficio`  
   *Commit:* `feat(storage): adiciona tabelas para auditoria de auxilio emergencial`
 
-- [ ] 054. Implementar parser de streaming em `crates/ingestion` para arquivos de pagamentos de benefícios da CGU/Brasil.IO.  
+- [x] 054. Implementar parser de streaming em `crates/ingestion` para arquivos de pagamentos de benefícios da CGU/Brasil.IO.  
   *Validação:* `cargo test -p ingestion -- auxilio`  
   *Commit:* `feat(ingestion): implementa parser streaming de auxilio emergencial`
 
