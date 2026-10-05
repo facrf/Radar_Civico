@@ -199,7 +199,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
 
 ## Fase 8: Teste de Integração Ponta a Ponta
 
-- [ ] 041. Criar teste de integração completo em `tests/e2e_pipeline.rs`: popula dados simulados de um candidato e um doador advogado nomeado em secretaria, roda o auditor e valida o alerta[cite: 1].  
+- [x] 041. Criar teste de integração completo em `tests/e2e_pipeline.rs`: popula dados simulados de um candidato e um doador advogado nomeado em secretaria, roda o auditor e valida o alerta[cite: 1].  
   *Validação:* `cargo test --test e2e_pipeline`  
   *Commit:* `test(e2e): valida pipeline completo de ingestao auditoria e grafo`
 

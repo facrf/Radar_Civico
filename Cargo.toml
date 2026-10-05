@@ -7,3 +7,4 @@ members = [
     "crates/graph",
     "crates/server",
 ]
+default-members = ["crates/server"]
