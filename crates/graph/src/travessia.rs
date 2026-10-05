@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 use crate::builder::{ArestaRede, GrafoSincronizado, NoRede};
 
 pub const GRAU_MAXIMO_PADRAO: usize = 3;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SubgrafoVizinhanca {
+    pub raiz: NoRede,
+    pub nos: Vec<NoRede>,
+    pub arestas: Vec<ArestaRede>,
+    pub grau: usize,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CaminhoRede {
@@ -211,6 +219,72 @@ impl GrafoSincronizado {
             }
         }
     }
+
+    pub fn extrair_subgrafo_vizinhanca(
+        &self,
+        raiz_uuid_ou_id: &str,
+        max_graus: usize,
+    ) -> Option<SubgrafoVizinhanca> {
+        let raiz_idx = if let Some(&idx) = self.uuid_map.get(raiz_uuid_ou_id) {
+            idx
+        } else if let Ok(id_num) = raiz_uuid_ou_id.parse::<i64>() {
+            *self.id_map.get(&id_num)?
+        } else {
+            return None;
+        };
+
+        let raiz_node = self.grafo.node_weight(raiz_idx)?.clone();
+
+        let mut visitados = HashSet::new();
+        let mut fila = VecDeque::new();
+
+        visitados.insert(raiz_idx);
+        fila.push_back((raiz_idx, 0usize));
+
+        while let Some((atual_idx, grau_atual)) = fila.pop_front() {
+            if grau_atual < max_graus {
+                for edge in self.grafo.edges_directed(atual_idx, Direction::Outgoing) {
+                    let vizinho = edge.target();
+                    if visitados.insert(vizinho) {
+                        fila.push_back((vizinho, grau_atual + 1));
+                    }
+                }
+                for edge in self.grafo.edges_directed(atual_idx, Direction::Incoming) {
+                    let vizinho = edge.source();
+                    if visitados.insert(vizinho) {
+                        fila.push_back((vizinho, grau_atual + 1));
+                    }
+                }
+            }
+        }
+
+        let nos: Vec<NoRede> = visitados
+            .iter()
+            .filter_map(|&idx| self.grafo.node_weight(idx).cloned())
+            .collect();
+
+        let mut arestas_set = HashSet::new();
+        let mut arestas = Vec::new();
+
+        for &node_idx in &visitados {
+            for edge in self.grafo.edges_directed(node_idx, Direction::Outgoing) {
+                let target_idx = edge.target();
+                if visitados.contains(&target_idx) {
+                    let a = edge.weight().clone();
+                    if arestas_set.insert(a.db_id) {
+                        arestas.push(a);
+                    }
+                }
+            }
+        }
+
+        Some(SubgrafoVizinhanca {
+            raiz: raiz_node,
+            nos,
+            arestas,
+            grau: max_graus,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -308,5 +382,42 @@ mod tests {
 
         assert_eq!(ciclos.len(), 1);
         assert_eq!(ciclos[0].tamanho, 3);
+    }
+
+    #[test]
+    fn test_extrair_subgrafo_vizinhanca() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // N1 -> N2 -> N3 -> N4
+        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n1', 'POLITICO', 'N1')", []).unwrap();
+        let n1 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n2', 'EMPRESA', 'N2')", []).unwrap();
+        let n2 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n3', 'PESSOA_FISICA', 'N3')", []).unwrap();
+        let n3 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n4', 'PARTIDO', 'N4')", []).unwrap();
+        let n4 = conn.last_insert_rowid();
+
+        conn.execute("INSERT INTO conexoes_rede (origem_id, destino_id, tipo_relacao, ano, fonte_dado) VALUES (?1, ?2, 'REL_1', 2024, 'TSE')", storage::rusqlite::params![n1, n2]).unwrap();
+        conn.execute("INSERT INTO conexoes_rede (origem_id, destino_id, tipo_relacao, ano, fonte_dado) VALUES (?1, ?2, 'REL_2', 2024, 'TSE')", storage::rusqlite::params![n2, n3]).unwrap();
+        conn.execute("INSERT INTO conexoes_rede (origem_id, destino_id, tipo_relacao, ano, fonte_dado) VALUES (?1, ?2, 'REL_3', 2024, 'TSE')", storage::rusqlite::params![n3, n4]).unwrap();
+
+        let grafo = GrafoSincronizado::carregar_do_sqlite(&conn).unwrap();
+
+        // Grau 1 a partir de n1 deve conter n1 e n2
+        let sub1 = grafo.extrair_subgrafo_vizinhanca("n1", 1).unwrap();
+        assert_eq!(sub1.nos.len(), 2);
+        assert_eq!(sub1.arestas.len(), 1);
+
+        // Grau 2 a partir de n1 deve conter n1, n2, n3
+        let sub2 = grafo.extrair_subgrafo_vizinhanca("n1", 2).unwrap();
+        assert_eq!(sub2.nos.len(), 3);
+        assert_eq!(sub2.arestas.len(), 2);
+
+        // Também deve funcionar buscando pelo db_id em formato string
+        let sub_id = grafo.extrair_subgrafo_vizinhanca(&n1.to_string(), 2).unwrap();
+        assert_eq!(sub_id.nos.len(), 3);
     }
 }

@@ -159,7 +159,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p server -- politico`  
   *Commit:* `feat(server): adiciona rota de dossie consolidado do candidato`
 
-- [ ] 033. Implementar rota do grafo de relacionamentos (`/api/v1/grafo/{id}?grau=2`) retornando nós e arestas formatados para Cytoscape/ECharts[cite: 1].  
+- [x] 033. Implementar rota do grafo de relacionamentos (`/api/v1/grafo/{id}?grau=2`) retornando nós e arestas formatados para Cytoscape/ECharts[cite: 1].  
   *Validação:* `cargo test -p server -- grafo`  
   *Commit:* `feat(server): implementa endpoint de extracao de subgrafos`
 
