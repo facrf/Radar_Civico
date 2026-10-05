@@ -127,7 +127,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
 
 ## Fase 5: Motor de Grafos e Métricas de Rede (`crates/graph`)
 
-- [ ] 026. Criar `crates/graph/Cargo.toml` adicionando `petgraph`, `crates/storage`, `serde` e `thiserror`[cite: 1].  
+- [x] 026. Criar `crates/graph/Cargo.toml` adicionando `petgraph`, `crates/storage`, `serde` e `thiserror`[cite: 1].  
   *Validação:* `cargo check -p graph`  
   *Commit:* `feat(graph): configura crate de modelagem e travessia de redes`
 
