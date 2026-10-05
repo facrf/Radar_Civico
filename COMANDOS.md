@@ -131,7 +131,7 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo check -p graph`  
   *Commit:* `feat(graph): configura crate de modelagem e travessia de redes`
 
-- [ ] 027. Implementar `crates/graph/src/builder.rs` para sincronizar os registros das tabelas `nos_rede` e `conexoes_rede` para um grafo direcionado em memória (`petgraph::Graph`)[cite: 1].  
+- [x] 027. Implementar `crates/graph/src/builder.rs` para sincronizar os registros das tabelas `nos_rede` e `conexoes_rede` para um grafo direcionado em memória (`petgraph::Graph`)[cite: 1].  
   *Validação:* `cargo test -p graph -- builder`  
   *Commit:* `feat(graph): implementa construcao de grafo direcionado a partir do sqlite`
 
