@@ -172,12 +172,16 @@ volumes:
 
 ## 📡 Endpoints da API REST
 
-* `GET /health` - Verificação de saúde da aplicação.
-* `GET /api/v1/busca?q={termo}` - Busca textual instantânea unificada via FTS5 (políticos, doadores, empresas).
-* `GET /api/v1/politico/{id}` - Dossiê consolidado: candidaturas, bens declarados, doadores e foto TSE em Base64.
+* `GET /health` - Verificação de saúde da aplicação (utilizado pelo healthcheck do Docker).
+* `GET /api/v1/busca?q={termo}` - Busca unificada de alta performance cobrindo:
+  - Políticos (`politicos_fts` e identificadores TSE).
+  - Fornecedores de campanha e CEAP (`fornecedores_fts`).
+  - Doadores eleitorais (`receitas_campanha`).
+  - Quadro de Sócios e Administradores da Receita Federal (`empresas_qsa`) com suporte a CPF completo (11 dígitos), miolo de 6 dígitos, CPF mascarado (`***123456**`) e CNPJ de empresas.
+* `GET /api/v1/politico/{id}` - Dossiê consolidado: candidaturas, bens declarados, doadores e foto oficial do TSE.
 * `GET /api/v1/grafo/{id}?grau=2` - Subgrafo relacional formatado para Cytoscape.js e Apache ECharts.
-* `GET /api/v1/auditoria/alertas?ano=2024&severidade=CRITICA` - Ranking de anomalias com filtros por município/ano.
-* `GET /api/v1/investigar/nomeacao/{doador_id}` - Disparo sob demanda na API do Querido Diário e CNA/OAB com checagem do Art. 28.
+* `GET /api/v1/auditoria/alertas?ano=2024&severidade=CRITICA` - Ranking de anomalias com indicação de fontes primárias, filtros e sincronização em tempo real.
+* `GET /api/v1/investigar/nomeacao/{doador_id}` - Disparo sob demanda na API do Querido Diário e CNA/OAB com checagem do Art. 28 da Lei 8.906/94.
 
 ---
 

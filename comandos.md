@@ -335,4 +335,20 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test --test ingestion_pipeline`  
   *Commit:* `test(e2e): valida pipeline unificado de ingestao em lote e consumo de api de status`
 
+---
+
+## Fase 14: Busca Unificada QSA, Eliminação de Flicker e Painel de Alertas Reativo
+
+- [x] 064. Estender o motor de busca unificada (`crates/server/src/busca.rs`) para consultar a base societária `empresas_qsa`, suportando busca por CPF de sócios (completo de 11 dígitos, miolo de 6 dígitos e máscara da RFB `***123456**`) e CNPJ de empresas, garantindo interoperabilidade entre campos (`titulo`/`nome`, `subtitulo`/`detalhe`, `resultados`/`itens`).  
+  *Validação:* `cargo test -p server test_busca`  
+  *Commit:* `feat(server): adiciona busca de cpf/qsa e sincronizacao de combustivel anomalo ceap`
+
+- [x] 065. Reformular o componente de busca (`web/src/lib/components/Busca.svelte`) adicionando botão explícito "Buscar", submissão por formulário/Enter, botão de limpeza e supressão de layout shift / flicker durante a digitação.  
+  *Validação:* `npm --prefix web run check && npm --prefix web run build`  
+  *Commit:* `feat(web): adiciona botao buscar, elimina flicker, torna alertas reativo e adiciona modal de irregularidades`
+
+- [x] 066. Tornar o indicador de alertas no menu superior (`web/src/routes/+layout.svelte`) reativo à contagem real de anomalias (badge numérico e estado calmo sem vermelho falso), e implementar modal detalhado de fundamentação técnica/jurídica e fonte primária ao clicar nas irregularidades (`web/src/lib/components/PainelAlertas.svelte`).  
+  *Validação:* `npm --prefix web run check && npm --prefix web run build`  
+  *Commit:* `feat(web): adiciona botao buscar, elimina flicker, torna alertas reativo e adiciona modal de irregularidades`
+
 
