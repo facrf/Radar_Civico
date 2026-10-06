@@ -253,7 +253,7 @@
 				</div>
 				<h3 class="text-base font-semibold text-slate-200">Nenhuma irregularidade ativa detectada</h3>
 				<p class="text-slate-400 text-xs sm:text-sm max-w-md mx-auto leading-relaxed">
-					O motor de auditoria analisa notas da CEAP (&gt;80L de combustível), cruzamentos com doadores de campanha, contratos do PNCP, auxílio emergencial e incompatibilidade com a advocacia (Art. 28 OAB).
+					O motor de auditoria analisa notas da CEAP (volume de combustível ajustável nas Configurações), cruzamentos com doadores de campanha, contratos do PNCP, auxílio emergencial e incompatibilidade com a advocacia (Art. 28 OAB).
 				</p>
 				<button
 					type="button"

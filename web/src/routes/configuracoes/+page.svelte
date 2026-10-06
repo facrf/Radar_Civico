@@ -56,6 +56,105 @@
 	let loadingStatus = true;
 	let erroStatus: string | null = null;
 
+	// Parâmetros do Motor de Auditoria
+	interface ParametrosAuditoria {
+		limite_combustivel_litros: number;
+		janela_triangulacao_dias: number;
+		concentracao_fornecedor_percentual: number;
+	}
+
+	let auditRules: ParametrosAuditoria = {
+		limite_combustivel_litros: 250,
+		janela_triangulacao_dias: 180,
+		concentracao_fornecedor_percentual: 60
+	};
+	let carregandoAuditRules = false;
+	let salvandoAuditRules = false;
+	let msgAuditRulesSucesso: string | null = null;
+	let erroAuditRules: string | null = null;
+
+	async function carregarAuditRules() {
+		carregandoAuditRules = true;
+		erroAuditRules = null;
+		try {
+			const res = await fetch('/api/settings/audit-rules');
+			if (res.ok) {
+				const data = await res.json();
+				auditRules = {
+					limite_combustivel_litros: Number(data.limite_combustivel_litros) || 250,
+					janela_triangulacao_dias: Number(data.janela_triangulacao_dias) || 180,
+					concentracao_fornecedor_percentual: Number(data.concentracao_fornecedor_percentual) || 60
+				};
+			}
+		} catch (e: any) {
+			console.error('Erro ao buscar parâmetros de auditoria:', e);
+		} finally {
+			carregandoAuditRules = false;
+		}
+	}
+
+	async function salvarAuditRules() {
+		if (isNaN(auditRules.limite_combustivel_litros) || auditRules.limite_combustivel_litros < 1 || auditRules.limite_combustivel_litros > 10000) {
+			erroAuditRules = 'Limite de combustível deve estar entre 1 L e 10.000 L.';
+			return;
+		}
+		if (isNaN(auditRules.janela_triangulacao_dias) || auditRules.janela_triangulacao_dias < 1 || auditRules.janela_triangulacao_dias > 730) {
+			erroAuditRules = 'Janela de triangulação deve estar entre 1 e 730 dias.';
+			return;
+		}
+		if (isNaN(auditRules.concentracao_fornecedor_percentual) || auditRules.concentracao_fornecedor_percentual < 0 || auditRules.concentracao_fornecedor_percentual > 100) {
+			erroAuditRules = 'Concentração de fornecedor deve estar entre 0% e 100%.';
+			return;
+		}
+
+		salvandoAuditRules = true;
+		erroAuditRules = null;
+		msgAuditRulesSucesso = null;
+
+		try {
+			const res = await fetch('/api/settings/audit-rules', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(auditRules)
+			});
+
+			if (!res.ok) {
+				const err = await res.json();
+				throw new Error(err.erro || 'Falha ao salvar parâmetros do motor de auditoria');
+			}
+
+			const data = await res.json();
+			if (data.parametros) {
+				auditRules = {
+					limite_combustivel_litros: Number(data.parametros.limite_combustivel_litros),
+					janela_triangulacao_dias: Number(data.parametros.janela_triangulacao_dias),
+					concentracao_fornecedor_percentual: Number(data.parametros.concentracao_fornecedor_percentual)
+				};
+			}
+
+			msgAuditRulesSucesso = 'Parâmetros do motor de auditoria salvos com sucesso! Regras aplicadas dinamicamente.';
+			window.dispatchEvent(new CustomEvent('radar-alertas-updated'));
+			await carregarStatus();
+
+			setTimeout(() => {
+				msgAuditRulesSucesso = null;
+			}, 6000);
+		} catch (e: any) {
+			erroAuditRules = e.message || 'Erro ao persistir parâmetros';
+		} finally {
+			salvandoAuditRules = false;
+		}
+	}
+
+	async function restaurarPadroesAuditRules() {
+		auditRules = {
+			limite_combustivel_litros: 250,
+			janela_triangulacao_dias: 180,
+			concentracao_fornecedor_percentual: 60
+		};
+		await salvarAuditRules();
+	}
+
 	// Identidade Visual & Ícones
 	let identidade: IdentidadeVisual | null = null;
 	let arquivoIcone: File | null = null;
@@ -496,6 +595,7 @@
 
 	onMount(() => {
 		carregarStatus();
+		carregarAuditRules();
 		carregarIdentidade();
 		carregarImporters();
 		sincronizarVersaoServidor();
@@ -713,6 +813,338 @@
 					</p>
 				</div>
 			</div>
+		</div>
+	</div>
+
+	<!-- Seção: Parâmetros do Motor de Auditoria -->
+	<div>
+		<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+			<div>
+				<h2 class="text-base font-semibold text-slate-200 flex items-center gap-2">
+					<span class="w-2 h-2 rounded-full bg-amber-400"></span>
+					Parâmetros do Motor de Auditoria
+				</h2>
+				<p class="text-xs text-slate-400 mt-0.5">
+					Ajuste fino da sensibilidade das regras determinísticas para evitar falsos positivos
+				</p>
+			</div>
+			<div class="flex items-center gap-2">
+				{#if auditRules.limite_combustivel_litros === 250 && auditRules.janela_triangulacao_dias === 180 && auditRules.concentracao_fornecedor_percentual === 60}
+					<span class="px-2.5 py-1 text-xs font-medium rounded-full bg-slate-800 border border-slate-700 text-slate-400">
+						Limiares Padrão de Fábrica
+					</span>
+				{:else}
+					<span class="px-2.5 py-1 text-xs font-medium rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 flex items-center gap-1.5">
+						<span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+						Limiares Customizados Ativos
+					</span>
+				{/if}
+			</div>
+		</div>
+
+		<div class="bg-slate-800/40 border border-slate-700/60 rounded-xl p-6 space-y-6">
+			<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+				<!-- Parâmetro 1: Limite de Combustível -->
+				<div class="p-5 bg-slate-900/60 border border-slate-800 rounded-xl flex flex-col justify-between space-y-4">
+					<div class="space-y-2">
+						<div class="flex items-center justify-between">
+							<span class="text-xs font-semibold text-white flex items-center gap-1.5">
+								<svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+								</svg>
+								Limite de Combustível
+							</span>
+							<span class="px-2 py-0.5 rounded text-xs font-mono font-bold bg-amber-500/10 border border-amber-500/30 text-amber-300">
+								{auditRules.limite_combustivel_litros} L
+							</span>
+						</div>
+						<p class="text-[11px] text-slate-400 leading-snug">
+							Volume máximo por abastecimento na CEAP. Notas com volume acima deste valor disparam anomalia de capacidade física do tanque excedida.
+						</p>
+					</div>
+
+					<div class="space-y-3">
+						<!-- Slider -->
+						<div class="space-y-1">
+							<input
+								type="range"
+								min="1"
+								max="1000"
+								step="1"
+								bind:value={auditRules.limite_combustivel_litros}
+								class="w-full accent-amber-500 cursor-pointer h-2 bg-slate-800 rounded-lg"
+							/>
+							<div class="flex justify-between text-[10px] text-slate-500 font-mono">
+								<span>1 L</span>
+								<span class="text-amber-400/80">Padrão: 250 L</span>
+								<span>1.000 L+</span>
+							</div>
+						</div>
+
+						<!-- Entrada Manual -->
+						<div class="flex items-center gap-2">
+							<label for="input-combustivel" class="text-[11px] text-slate-400 whitespace-nowrap">Entrada direta (1 a 10.000 L):</label>
+							<div class="relative flex-1">
+								<input
+									id="input-combustivel"
+									type="number"
+									min="1"
+									max="10000"
+									step="1"
+									bind:value={auditRules.limite_combustivel_litros}
+									class="w-full bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-lg px-2.5 py-1.5 pr-8 focus:ring-amber-500 focus:border-amber-500 font-mono"
+								/>
+								<span class="absolute right-2.5 top-1.5 text-xs text-slate-500 pointer-events-none">L</span>
+							</div>
+						</div>
+
+						<!-- Presets rápidos -->
+						<div class="flex items-center gap-1.5 pt-1">
+							<span class="text-[10px] text-slate-500">Atalhos:</span>
+							<button
+								type="button"
+								on:click={() => (auditRules.limite_combustivel_litros = 80)}
+								class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
+							>
+								80 L (Carro)
+							</button>
+							<button
+								type="button"
+								on:click={() => (auditRules.limite_combustivel_litros = 250)}
+								class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors font-medium"
+							>
+								250 L (Recomendado)
+							</button>
+							<button
+								type="button"
+								on:click={() => (auditRules.limite_combustivel_litros = 1000)}
+								class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
+							>
+								1.000 L (Frota/Barco)
+							</button>
+						</div>
+					</div>
+				</div>
+
+				<!-- Parâmetro 2: Janela de Triangulação -->
+				<div class="p-5 bg-slate-900/60 border border-slate-800 rounded-xl flex flex-col justify-between space-y-4">
+					<div class="space-y-2">
+						<div class="flex items-center justify-between">
+							<span class="text-xs font-semibold text-white flex items-center gap-1.5">
+								<svg class="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+								</svg>
+								Janela de Triangulação Societária
+							</span>
+							<span class="px-2 py-0.5 rounded text-xs font-mono font-bold bg-indigo-500/10 border border-indigo-500/30 text-indigo-300">
+								{auditRules.janela_triangulacao_dias} dias
+							</span>
+						</div>
+						<p class="text-[11px] text-slate-400 leading-snug">
+							Janela de proximidade temporal entre abertura da empresa, alteração societária no QSA ou doação e a contratação pública/emissão de nota CEAP.
+						</p>
+					</div>
+
+					<div class="space-y-3">
+						<!-- Slider -->
+						<div class="space-y-1">
+							<input
+								type="range"
+								min="1"
+								max="730"
+								step="1"
+								bind:value={auditRules.janela_triangulacao_dias}
+								class="w-full accent-indigo-500 cursor-pointer h-2 bg-slate-800 rounded-lg"
+							/>
+							<div class="flex justify-between text-[10px] text-slate-500 font-mono">
+								<span>1 dia</span>
+								<span class="text-indigo-400/80">Padrão: 180 dias</span>
+								<span>730 dias (2 anos)</span>
+							</div>
+						</div>
+
+						<!-- Entrada Manual -->
+						<div class="flex items-center gap-2">
+							<label for="input-janela" class="text-[11px] text-slate-400 whitespace-nowrap">Entrada direta (1 a 730 dias):</label>
+							<div class="relative flex-1">
+								<input
+									id="input-janela"
+									type="number"
+									min="1"
+									max="730"
+									step="1"
+									bind:value={auditRules.janela_triangulacao_dias}
+									class="w-full bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-lg px-2.5 py-1.5 pr-12 focus:ring-indigo-500 focus:border-indigo-500 font-mono"
+								/>
+								<span class="absolute right-2.5 top-1.5 text-xs text-slate-500 pointer-events-none">dias</span>
+							</div>
+						</div>
+
+						<!-- Presets rápidos -->
+						<div class="flex items-center gap-1.5 pt-1">
+							<span class="text-[10px] text-slate-500">Atalhos:</span>
+							<button
+								type="button"
+								on:click={() => (auditRules.janela_triangulacao_dias = 90)}
+								class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
+							>
+								90 dias
+							</button>
+							<button
+								type="button"
+								on:click={() => (auditRules.janela_triangulacao_dias = 180)}
+								class="px-1.5 py-0.5 rounded text-[10px] bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 transition-colors font-medium"
+							>
+								180 dias (Recomendado)
+							</button>
+							<button
+								type="button"
+								on:click={() => (auditRules.janela_triangulacao_dias = 365)}
+								class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
+							>
+								365 dias (1 ano)
+							</button>
+						</div>
+					</div>
+				</div>
+
+				<!-- Parâmetro 3: Concentração de Fornecedor -->
+				<div class="p-5 bg-slate-900/60 border border-slate-800 rounded-xl flex flex-col justify-between space-y-4">
+					<div class="space-y-2">
+						<div class="flex items-center justify-between">
+							<span class="text-xs font-semibold text-white flex items-center gap-1.5">
+								<svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" />
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
+								</svg>
+								Concentração de Fornecedor Hub
+							</span>
+							<span class="px-2 py-0.5 rounded text-xs font-mono font-bold bg-cyan-500/10 border border-cyan-500/30 text-cyan-300">
+								{auditRules.concentracao_fornecedor_percentual}%
+							</span>
+						</div>
+						<p class="text-[11px] text-slate-400 leading-snug">
+							Percentual de faturamento ou exclusividade da empresa com o mesmo parlamentar/gabinete que dispara suspeita de fornecedor dedicado/hub.
+						</p>
+					</div>
+
+					<div class="space-y-3">
+						<!-- Slider -->
+						<div class="space-y-1">
+							<input
+								type="range"
+								min="0"
+								max="100"
+								step="1"
+								bind:value={auditRules.concentracao_fornecedor_percentual}
+								class="w-full accent-cyan-500 cursor-pointer h-2 bg-slate-800 rounded-lg"
+							/>
+							<div class="flex justify-between text-[10px] text-slate-500 font-mono">
+								<span>0%</span>
+								<span class="text-cyan-400/80">Padrão: 60%</span>
+								<span>100%</span>
+							</div>
+						</div>
+
+						<!-- Entrada Manual -->
+						<div class="flex items-center gap-2">
+							<label for="input-concentracao" class="text-[11px] text-slate-400 whitespace-nowrap">Entrada direta (0% a 100%):</label>
+							<div class="relative flex-1">
+								<input
+									id="input-concentracao"
+									type="number"
+									min="0"
+									max="100"
+									step="1"
+									bind:value={auditRules.concentracao_fornecedor_percentual}
+									class="w-full bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-lg px-2.5 py-1.5 pr-8 focus:ring-cyan-500 focus:border-cyan-500 font-mono"
+								/>
+								<span class="absolute right-2.5 top-1.5 text-xs text-slate-500 pointer-events-none">%</span>
+							</div>
+						</div>
+
+						<!-- Presets rápidos -->
+						<div class="flex items-center gap-1.5 pt-1">
+							<span class="text-[10px] text-slate-500">Atalhos:</span>
+							<button
+								type="button"
+								on:click={() => (auditRules.concentracao_fornecedor_percentual = 40)}
+								class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
+							>
+								40% (Rigoroso)
+							</button>
+							<button
+								type="button"
+								on:click={() => (auditRules.concentracao_fornecedor_percentual = 60)}
+								class="px-1.5 py-0.5 rounded text-[10px] bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 transition-colors font-medium"
+							>
+								60% (Recomendado)
+							</button>
+							<button
+								type="button"
+								on:click={() => (auditRules.concentracao_fornecedor_percentual = 80)}
+								class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
+							>
+								80% (Tolerante)
+							</button>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- Botões de Ação e Mensagens de Feedback -->
+			<div class="border-t border-slate-700/60 pt-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+				<div class="flex flex-wrap items-center gap-3">
+					<button
+						type="button"
+						on:click={salvarAuditRules}
+						disabled={salvandoAuditRules || carregandoAuditRules}
+						class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+					>
+						{#if salvandoAuditRules}
+							<svg class="w-3.5 h-3.5 animate-spin text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+							</svg>
+							<span>Persistindo Parâmetros...</span>
+						{:else}
+							<svg class="w-4 h-4 text-emerald-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+							</svg>
+							<span>Salvar Parâmetros</span>
+						{/if}
+					</button>
+
+					<button
+						type="button"
+						on:click={restaurarPadroesAuditRules}
+						disabled={salvandoAuditRules || carregandoAuditRules}
+						class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium rounded-lg border border-slate-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+					>
+						<svg class="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+						</svg>
+						<span>Restaurar Padrões de Fábrica</span>
+					</button>
+				</div>
+
+				<span class="text-[11px] text-slate-500 text-right">
+					Padrão: 250 L de combustível &bull; 180 dias de triangulação &bull; 60% de exclusividade
+				</span>
+			</div>
+
+			{#if msgAuditRulesSucesso}
+				<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-emerald-300 text-xs flex items-center gap-2 animate-fade-in">
+					<span class="text-sm">✅</span>
+					<span>{msgAuditRulesSucesso}</span>
+				</div>
+			{/if}
+
+			{#if erroAuditRules}
+				<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg text-rose-300 text-xs flex items-center gap-2 animate-fade-in">
+					<span class="text-sm">❌</span>
+					<span>{erroAuditRules}</span>
+				</div>
+			{/if}
 		</div>
 	</div>
 
