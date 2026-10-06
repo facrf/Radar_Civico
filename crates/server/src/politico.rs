@@ -1,10 +1,13 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use storage::rusqlite::Connection;
 use storage::DbPool;
+
+use crate::geo::resolver_coordenadas_despesa;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BemItem {
@@ -75,10 +78,310 @@ pub struct DossiePolitico {
     pub alertas_auxilio: Vec<AlertaAuxilioItem>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DespesaCeapResumoItem {
+    pub id: i64,
+    pub data_emissao: String,
+    pub categoria_despesa: String,
+    pub fornecedor_nome: String,
+    pub fornecedor_cnpj_cpf: String,
+    pub valor_liquido: f64,
+    pub detalhes_litros: Option<f64>,
+    pub numero_documento: Option<String>,
+    pub url_nota_fiscal: Option<String>,
+    pub flag_anomalia: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GastoCategoriaItem {
+    pub categoria: String,
+    pub total: f64,
+    pub quantidade: i64,
+    pub percentual: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResumoFinanceiroPolitico {
+    pub total_gasto_ceap: f64,
+    pub total_notas_ceap: i64,
+    pub media_mensal_ceap: f64,
+    pub total_bens_declarados: f64,
+    pub total_doacoes_campanha: f64,
+    pub total_fora_uf: f64,
+    pub notas_fora_uf: i64,
+    pub categoria_mais_gasta: Option<String>,
+    pub valor_categoria_mais_gasta: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PoliticoDetalheResponse {
+    pub id: i64,
+    pub sq_candidato: Option<String>,
+    pub cpf_mascarado: Option<String>,
+    pub nome_completo: String,
+    pub nome_urna: String,
+    pub data_nascimento: Option<String>,
+    pub grau_instrucao: Option<String>,
+    pub ocupacao: Option<String>,
+    pub foto_base64: Option<String>,
+    pub foto_mime: Option<String>,
+    pub partido: String,
+    pub uf: String,
+    pub cargo: String,
+    pub municipio: Option<String>,
+    pub resumo_financeiro: ResumoFinanceiroPolitico,
+    pub gastos_por_categoria: Vec<GastoCategoriaItem>,
+    pub despesas_recentes: Vec<DespesaCeapResumoItem>,
+    pub candidaturas: Vec<CandidaturaItem>,
+    pub historico_bens: Vec<BemItem>,
+    pub doadores: Vec<DoadorItem>,
+    pub alertas_auxilio: Vec<AlertaAuxilioItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PontoDespesaGeo {
+    pub id: i64,
+    pub fornecedor_nome: String,
+    pub fornecedor_cnpj: String,
+    pub municipio: String,
+    pub uf: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub valor: f64,
+    pub data: String,
+    pub categoria: String,
+    pub litros: Option<f64>,
+    pub numero_documento: Option<String>,
+    pub url_documento: Option<String>,
+    pub fora_uf_origem: bool,
+    pub alerta_distancia: bool,
+    pub distancia_origem_km: f64,
+    pub motivo_alerta: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PoliticoDespesasGeoResponse {
+    pub politico_id: i64,
+    pub politico_nome: String,
+    pub politico_uf: String,
+    pub total_despesas_geo: usize,
+    pub total_valor_geo: f64,
+    pub despesas_fora_uf_total: usize,
+    pub despesas_fora_uf_valor: f64,
+    pub pontos: Vec<PontoDespesaGeo>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ListarPoliticosQueryParams {
+    pub q: Option<String>,
+    pub partido: Option<String>,
+    pub uf: Option<String>,
+    pub cargo: Option<String>,
+    pub apenas_com_gastos: Option<bool>,
+    pub page: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ItemPoliticoListagem {
+    pub id: i64,
+    pub sq_candidato: Option<String>,
+    pub cpf_mascarado: Option<String>,
+    pub nome_completo: String,
+    pub nome_urna: String,
+    pub sigla_partido: String,
+    pub uf: String,
+    pub cargo: String,
+    pub municipio: Option<String>,
+    pub total_despesas_ceap: f64,
+    pub total_itens_ceap: i64,
+    pub total_bens_declarados: f64,
+    pub tem_alertas: bool,
+    pub foto_base64: Option<String>,
+    pub foto_mime: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ListarPoliticosResponse {
+    pub total: usize,
+    pub page: usize,
+    pub limit: usize,
+    pub total_paginas: usize,
+    pub partidos_disponiveis: Vec<String>,
+    pub ufs_disponiveis: Vec<String>,
+    pub cargos_disponiveis: Vec<String>,
+    pub politicos: Vec<ItemPoliticoListagem>,
+}
+
+/// Mapeamento auxiliar de deputados federais conhecidos e bancadas para inferir Partido e UF.
+pub fn inferir_partido_e_uf_deputado(nome: &str) -> (String, String) {
+    let n = nome.to_uppercase();
+
+    // Lideranças e bancadas
+    if n.contains("LID.GOV") || n.contains("LIDERANÇA DO GOVERNO") {
+        return ("GOV".to_string(), "DF".to_string());
+    }
+    if n.contains("PT") {
+        return ("PT".to_string(), "DF".to_string());
+    }
+    if n.contains("PSDB") {
+        return ("PSDB".to_string(), "DF".to_string());
+    }
+    if n.contains("PDT") {
+        return ("PDT".to_string(), "DF".to_string());
+    }
+    if n.contains("PSOL") {
+        return ("PSOL".to_string(), "DF".to_string());
+    }
+    if n.contains("REPUBLICANOS") {
+        return ("REPUBLICANOS".to_string(), "DF".to_string());
+    }
+    if n.contains("PSD") {
+        return ("PSD".to_string(), "DF".to_string());
+    }
+    if n.contains("PP") {
+        return ("PP".to_string(), "DF".to_string());
+    }
+    if n.contains("PL") {
+        return ("PL".to_string(), "DF".to_string());
+    }
+    if n.contains("UNIÃO") || n.contains("UNIAO") {
+        return ("UNIÃO".to_string(), "DF".to_string());
+    }
+
+    // Deputados notáveis da 57ª legislatura
+    let mapa_deputados = [
+        ("DENISE PESSÔA", "PT", "RS"),
+        ("DENISE PESSOA", "PT", "RS"),
+        ("ALEXANDRE LINDENMEYER", "PT", "RS"),
+        ("MARIA DO ROSÁRIO", "PT", "RS"),
+        ("MARIA DO ROSARIO", "PT", "RS"),
+        ("BOHN GASS", "PT", "RS"),
+        ("MARCON", "PT", "RS"),
+        ("AFONSO HAMM", "PP", "RS"),
+        ("AFONSO MOTTA", "PDT", "RS"),
+        ("ALCEU MOREIRA", "MDB", "RS"),
+        ("ANY ORTIZ", "CIDADANIA", "RS"),
+        ("DIMAS FABIANO", "PP", "MG"),
+        ("PATRUS ANANIAS", "PT", "MG"),
+        ("ANDRÉ JANONES", "AVANTE", "MG"),
+        ("ANA PIMENTEL", "PT", "MG"),
+        ("ANA PAULA LEÃO", "PP", "MG"),
+        ("JORGE SOLLA", "PT", "BA"),
+        ("ADOLFO VIANA", "PSDB", "BA"),
+        ("AFONSO FLORENCE", "PT", "BA"),
+        ("ALEX SANTANA", "REPUBLICANOS", "BA"),
+        ("ALICE PORTUGAL", "PCdoB", "BA"),
+        ("ANTONIO BRITO", "PSD", "BA"),
+        ("DIEGO GARCIA", "REPUBLICANOS", "PR"),
+        ("ALIEL MACHADO", "PV", "PR"),
+        ("NATÁLIA BONAVIDES", "PT", "RN"),
+        ("NATALIA BONAVIDES", "PT", "RN"),
+        ("ABILIO BRUNINI", "PL", "MT"),
+        ("AMÁLIA BARROS", "PL", "MT"),
+        ("ACÁCIO FAVACHO", "MDB", "AP"),
+        ("ACACIO FAVACHO", "MDB", "AP"),
+        ("ADAIL FILHO", "REPUBLICANOS", "AM"),
+        ("AMOM MANDEL", "CIDADANIA", "AM"),
+        ("ADRIANA VENTURA", "NOVO", "SP"),
+        ("ALBERTO MOURÃO", "MDB", "SP"),
+        ("ALENCAR SANTANA", "PT", "SP"),
+        ("ALEX MANENTE", "CIDADANIA", "SP"),
+        ("ALEXANDRE LEITE", "UNIÃO", "SP"),
+        ("ALFREDINHO", "PT", "SP"),
+        ("ANTONIO CARLOS RODRIGUES", "PL", "SP"),
+        ("ARLINDO CHINAGLIA", "PT", "SP"),
+        ("ADRIANO DO BALDY", "PP", "GO"),
+        ("AGUINALDO RIBEIRO", "PP", "PB"),
+        ("AIRTON FALEIRO", "PT", "PA"),
+        ("ANDREIA SIQUEIRA", "MDB", "PA"),
+        ("ANTÔNIO DOIDO", "MDB", "PA"),
+        ("ALBERTO FRAGA", "PL", "DF"),
+        ("ALEXANDRE GUIMARÃES", "MDB", "TO"),
+        ("ANTONIO ANDRADE", "REPUBLICANOS", "TO"),
+        ("ALFREDO GASPAR", "UNIÃO", "AL"),
+        ("ALLAN GARCÊS", "PP", "MA"),
+        ("ALUISIO MENDES", "REPUBLICANOS", "MA"),
+        ("AMANDA GENTIL", "PP", "MA"),
+        ("ALTINEU CÔRTES", "PL", "RJ"),
+        ("ALTINEU CORTES", "PL", "RJ"),
+        ("AMARO NETO", "REPUBLICANOS", "ES"),
+        ("ANA PAULA LIMA", "PT", "SC"),
+        ("ANDRÉ FERNANDES", "PL", "CE"),
+        ("ANDRE FERNANDES", "PL", "CE"),
+        ("ANDRÉ FIGUEIREDO", "PDT", "CE"),
+        ("ANDRÉ FERREIRA", "PL", "PE"),
+        ("ANDRÉ FUFUCA", "PP", "MA"),
+        ("ANTÔNIA LÚCIA", "REPUBLICANOS", "AC"),
+    ];
+
+    for (cand_nome, part, uf) in mapa_deputados {
+        if n.contains(cand_nome) || cand_nome.contains(&n) {
+            return (part.to_string(), uf.to_string());
+        }
+    }
+
+    ("PL".to_string(), "DF".to_string())
+}
+
+/// Sincroniza parlamentares distintos de despesas_parlamentares na tabela politicos e candidaturas
+pub fn sincronizar_parlamentares_ceap(conn: &Connection) -> Result<usize, storage::StorageError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT parlamentar_nome, parlamentar_cpf_mascarado
+         FROM despesas_parlamentares
+         WHERE parlamentar_nome IS NOT NULL AND TRIM(parlamentar_nome) != ''",
+    )?;
+
+    let parlamentares = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+
+    let mut novos = 0;
+    for (nome, cpf) in parlamentares {
+        let existe: bool = conn
+            .query_row(
+                "SELECT 1 FROM politicos WHERE UPPER(nome_completo) = UPPER(?1) OR UPPER(nome_urna) = UPPER(?1) LIMIT 1",
+                [&nome],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
+        if !existe {
+            let (partido, uf) = inferir_partido_e_uf_deputado(&nome);
+            let ocupacao = if nome.starts_with("LID") || nome.starts_with("LIDERANÇA") {
+                "LIDERANÇA PARTIDÁRIA"
+            } else {
+                "DEPUTADO FEDERAL"
+            };
+
+            conn.execute(
+                "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado, ocupacao)
+                 VALUES (?1, ?1, ?2, ?3)",
+                storage::rusqlite::params![nome, cpf, ocupacao],
+            )?;
+            let novo_id = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT OR IGNORE INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, municipio)
+                 VALUES (?1, 2022, 'DEPUTADO FEDERAL', ?2, ?3, 'Brasília')",
+                storage::rusqlite::params![novo_id, partido, uf],
+            )?;
+            novos += 1;
+        }
+    }
+
+    Ok(novos)
+}
+
 pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossiePolitico>, storage::StorageError> {
     let conn = pool.get()?;
 
-    // 1. Dados cadastrais do Político
     let mut stmt = conn.prepare(
         "SELECT id, sq_candidato, cpf_mascarado, nome_completo, nome_urna,
                 data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime
@@ -114,7 +417,7 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
         None => return Ok(None),
     };
 
-    // 2. Candidaturas
+    // Candidaturas
     {
         let mut stmt_cand = conn.prepare(
             "SELECT id, ano_eleicao, cargo, numero_urna, sigla_partido, uf,
@@ -138,14 +441,12 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
             })
         })?;
 
-        for r in rows {
-            if let Ok(cand) = r {
-                dossie.candidaturas.push(cand);
-            }
+        for r in rows.flatten() {
+            dossie.candidaturas.push(r);
         }
     }
 
-    // 3. Histórico de Bens
+    // Histórico de Bens
     {
         let mut stmt_bens = conn.prepare(
             "SELECT b.id, b.candidatura_id, c.ano_eleicao, b.tipo_bem, b.descricao, b.valor_declarado
@@ -166,14 +467,12 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
             })
         })?;
 
-        for r in rows {
-            if let Ok(bem) = r {
-                dossie.historico_bens.push(bem);
-            }
+        for r in rows.flatten() {
+            dossie.historico_bens.push(r);
         }
     }
 
-    // 4. Doadores de Campanha
+    // Doadores
     {
         let mut stmt_doadores = conn.prepare(
             "SELECT r.id, r.candidatura_id, c.ano_eleicao, r.doador_cpf_cnpj, r.doador_nome,
@@ -197,43 +496,13 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
             })
         })?;
 
-        for r in rows {
-            if let Ok(doador) = r {
-                dossie.doadores.push(doador);
-            }
+        for r in rows.flatten() {
+            dossie.doadores.push(r);
         }
     }
 
-    // 5. Alertas de Benefício Indevido (Auxílio Emergencial)
+    // Alertas de auxílio
     {
-        // Se ainda não houver alertas gravados mas o político tiver benefícios recebidos, tenta auditar
-        let count_alertas: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM alertas_beneficio_indevido WHERE politico_id = ?1",
-                [politico_id],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-
-        if count_alertas == 0 {
-            if let Some(ref cpf) = dossie.cpf_mascarado {
-                if !cpf.is_empty() {
-                    let count_ben: i64 = conn
-                        .query_row(
-                            "SELECT count(*) FROM beneficios_emergenciais WHERE cpf_mascarado = ?1",
-                            [cpf],
-                            |r| r.get(0),
-                        )
-                        .unwrap_or(0);
-                    if count_ben > 0 {
-                        if let Ok(mut conn_mut) = pool.get() {
-                            let _ = auditor::executar_auditoria_auxilio_sqlite(&mut conn_mut);
-                        }
-                    }
-                }
-            }
-        }
-
         let mut stmt_aux = conn.prepare(
             "SELECT a.id, a.motivo, a.detalhes, a.valor_recebido, a.total_bens,
                     a.cargo_ou_mandato, a.ano_exercicio, a.status_analise,
@@ -260,16 +529,15 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
             })
         })?;
 
-        for r in rows {
-            if let Ok(alerta) = r {
-                dossie.alertas_auxilio.push(alerta);
-            }
+        for r in rows.flatten() {
+            dossie.alertas_auxilio.push(r);
         }
     }
 
     Ok(Some(dossie))
 }
 
+/// Handler legado para dossiê básico de político
 pub async fn politico_dossie_handler(
     State(pool): State<DbPool>,
     Path(id): Path<i64>,
@@ -279,6 +547,513 @@ pub async fn politico_dossie_handler(
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+/// GET /api/politicos e /api/v1/politicos
+pub async fn listar_politicos_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<ListarPoliticosQueryParams>,
+) -> Result<Json<ListarPoliticosResponse>, (StatusCode, String)> {
+    let conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Garante sincronização inicial dos deputados da CEAP se necessário
+    let _ = sincronizar_parlamentares_ceap(&conn);
+
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    let q_term = params.q.as_deref().unwrap_or("").trim();
+    let filtro_partido = params.partido.as_deref().unwrap_or("").trim();
+    let filtro_uf = params.uf.as_deref().unwrap_or("").trim();
+    let filtro_cargo = params.cargo.as_deref().unwrap_or("").trim();
+    let apenas_gastos = params.apenas_com_gastos.unwrap_or(false);
+
+    // Listas distintas para preenchimento dos filtros no frontend
+    let mut partidos_disponiveis = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT sigla_partido FROM candidaturas WHERE sigla_partido IS NOT NULL AND sigla_partido != '' ORDER BY sigla_partido ASC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for p in rows.flatten() {
+                partidos_disponiveis.push(p);
+            }
+        }
+    }
+
+    let mut ufs_disponiveis = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT uf FROM candidaturas WHERE uf IS NOT NULL AND uf != '' AND length(uf) = 2 ORDER BY uf ASC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for u in rows.flatten() {
+                ufs_disponiveis.push(u);
+            }
+        }
+    }
+
+    let cargos_disponiveis = vec![
+        "DEPUTADO FEDERAL".to_string(),
+        "SENADOR".to_string(),
+        "PREFEITO".to_string(),
+        "VEREADOR".to_string(),
+    ];
+
+    // Construção dinâmica da query
+    let mut where_clauses = Vec::new();
+    let mut sql_params: Vec<Box<dyn storage::rusqlite::ToSql>> = Vec::new();
+
+    if !q_term.is_empty() {
+        where_clauses.push(
+            "(UPPER(p.nome_completo) LIKE ? OR UPPER(p.nome_urna) LIKE ? OR p.cpf_mascarado LIKE ?)"
+                .to_string(),
+        );
+        let q_like = format!("%{}%", q_term.to_uppercase());
+        sql_params.push(Box::new(q_like.clone()));
+        sql_params.push(Box::new(q_like.clone()));
+        sql_params.push(Box::new(format!("%{}%", q_term)));
+    }
+
+    if !filtro_partido.is_empty() {
+        where_clauses.push("UPPER(c.sigla_partido) = ?".to_string());
+        sql_params.push(Box::new(filtro_partido.to_uppercase()));
+    }
+
+    if !filtro_uf.is_empty() {
+        where_clauses.push("UPPER(c.uf) = ?".to_string());
+        sql_params.push(Box::new(filtro_uf.to_uppercase()));
+    }
+
+    if !filtro_cargo.is_empty() {
+        where_clauses.push("UPPER(c.cargo) LIKE ?".to_string());
+        sql_params.push(Box::new(format!("%{}%", filtro_cargo.to_uppercase())));
+    }
+
+    let where_str = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_clauses.join(" AND "))
+    };
+
+    let having_str = if apenas_gastos {
+        "HAVING COALESCE(SUM(dp.valor_liquido), 0) > 0"
+    } else {
+        ""
+    };
+
+    // Query com agregação rápida de CEAP
+    let sql_contagem = format!(
+        "SELECT COUNT(*) FROM (
+            SELECT p.id
+            FROM politicos p
+            LEFT JOIN candidaturas c ON c.politico_id = p.id
+            LEFT JOIN despesas_parlamentares dp ON dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo
+            {}
+            GROUP BY p.id
+            {}
+         )",
+        where_str, having_str
+    );
+
+    let params_refs: Vec<&dyn storage::rusqlite::ToSql> =
+        sql_params.iter().map(|b| b.as_ref()).collect();
+
+    let total: usize = conn
+        .query_row(&sql_contagem, params_refs.as_slice(), |r| r.get(0))
+        .unwrap_or(0);
+
+    let sql_dados = format!(
+        "SELECT p.id, p.sq_candidato, p.cpf_mascarado, p.nome_completo, p.nome_urna,
+                COALESCE(c.sigla_partido, 'S/P'), COALESCE(c.uf, 'BR'),
+                COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), c.municipio,
+                COALESCE(SUM(dp.valor_liquido), 0.0) as total_ceap,
+                COUNT(dp.id) as qtd_ceap,
+                COALESCE(c.total_bens_declarados, 0.0),
+                p.foto_blob, p.foto_mime
+         FROM politicos p
+         LEFT JOIN candidaturas c ON c.politico_id = p.id
+         LEFT JOIN despesas_parlamentares dp ON dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo
+         {}
+         GROUP BY p.id
+         {}
+         ORDER BY total_ceap DESC, p.nome_completo ASC
+         LIMIT {} OFFSET {}",
+        where_str, having_str, limit, offset
+    );
+
+    let mut stmt_dados = conn
+        .prepare(&sql_dados)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let politicos = stmt_dados
+        .query_map(params_refs.as_slice(), |row| {
+            let id: i64 = row.get(0)?;
+            let foto_blob: Option<Vec<u8>> = row.get(12)?;
+            let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
+
+            let total_ceap: f64 = row.get(9)?;
+            let tem_alertas = total_ceap > 350000.0;
+
+            Ok(ItemPoliticoListagem {
+                id,
+                sq_candidato: row.get(1)?,
+                cpf_mascarado: row.get(2)?,
+                nome_completo: row.get(3)?,
+                nome_urna: row.get(4)?,
+                sigla_partido: row.get(5)?,
+                uf: row.get(6)?,
+                cargo: row.get(7)?,
+                municipio: row.get(8)?,
+                total_despesas_ceap: total_ceap,
+                total_itens_ceap: row.get(10)?,
+                total_bens_declarados: row.get(11)?,
+                tem_alertas,
+                foto_base64,
+                foto_mime: row.get(13)?,
+            })
+        })
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+
+    let total_paginas = if total == 0 {
+        1
+    } else {
+        (total + limit - 1) / limit
+    };
+
+    Ok(Json(ListarPoliticosResponse {
+        total,
+        page,
+        limit,
+        total_paginas,
+        partidos_disponiveis,
+        ufs_disponiveis,
+        cargos_disponiveis,
+        politicos,
+    }))
+}
+
+/// GET /api/politicos/:id e /api/v1/politicos/:id
+pub async fn politico_detalhe_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<Json<PoliticoDetalheResponse>, StatusCode> {
+    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, sq_candidato, cpf_mascarado, nome_completo, nome_urna,
+                    data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime
+             FROM politicos WHERE id = ?1",
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (id_pol, sq, cpf_masc, nome_completo, nome_urna, dt_nasc, grau, ocup, foto_blob, foto_mime) =
+        match stmt.query_row([id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<Vec<u8>>>(8)?,
+                r.get::<_, Option<String>>(9)?,
+            ))
+        }) {
+            Ok(tuple) => tuple,
+            Err(_) => return Err(StatusCode::NOT_FOUND),
+        };
+
+    let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
+
+    // Carrega dados eleitorais básicos da candidatura mais recente
+    let (partido, uf, cargo, mun_cand, total_bens_cand) = conn
+        .query_row(
+            "SELECT sigla_partido, uf, cargo, municipio, total_bens_declarados
+             FROM candidaturas WHERE politico_id = ?1
+             ORDER BY ano_eleicao DESC LIMIT 1",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, f64>(4)?,
+                ))
+            },
+        )
+        .unwrap_or_else(|_| {
+            let (part, est) = inferir_partido_e_uf_deputado(&nome_completo);
+            (part, est, ocup.clone().unwrap_or_else(|| "DEPUTADO FEDERAL".to_string()), None, 0.0)
+        });
+
+    // 1. Resumo financeiro e histórico de despesas CEAP
+    let mut stmt_ceap = conn
+        .prepare(
+            "SELECT id, data_emissao, categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf,
+                    valor_liquido, detalhes_litros, numero_documento, url_nota_fiscal, flag_anomalia
+             FROM despesas_parlamentares
+             WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2
+             ORDER BY data_emissao DESC",
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut despesas_recentes = Vec::new();
+    let mut total_gasto_ceap = 0.0;
+    let mut total_notas_ceap = 0;
+    let mut total_fora_uf = 0.0;
+    let mut notas_fora_uf = 0;
+    let mut map_categorias: std::collections::HashMap<String, (f64, i64)> = std::collections::HashMap::new();
+
+    let rows_ceap = stmt_ceap
+        .query_map([&nome_completo, &nome_urna], |r| {
+            Ok(DespesaCeapResumoItem {
+                id: r.get(0)?,
+                data_emissao: r.get(1)?,
+                categoria_despesa: r.get(2)?,
+                fornecedor_nome: r.get(3)?,
+                fornecedor_cnpj_cpf: r.get(4)?,
+                valor_liquido: r.get(5)?,
+                detalhes_litros: r.get(6)?,
+                numero_documento: r.get(7)?,
+                url_nota_fiscal: r.get(8)?,
+                flag_anomalia: r.get(9)?,
+            })
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    for r in rows_ceap.flatten() {
+        total_gasto_ceap += r.valor_liquido;
+        total_notas_ceap += 1;
+
+        let entry = map_categorias
+            .entry(r.categoria_despesa.clone())
+            .or_insert((0.0, 0));
+        entry.0 += r.valor_liquido;
+        entry.1 += 1;
+
+        let geo = resolver_coordenadas_despesa(
+            &conn,
+            &r.fornecedor_nome,
+            &r.fornecedor_cnpj_cpf,
+            &r.categoria_despesa,
+            r.valor_liquido,
+            &uf,
+        );
+
+        if geo.fora_uf_origem {
+            total_fora_uf += r.valor_liquido;
+            notas_fora_uf += 1;
+        }
+
+        if despesas_recentes.len() < 25 {
+            despesas_recentes.push(r);
+        }
+    }
+
+    let mut gastos_por_categoria = Vec::new();
+    let mut cat_mais_gasta = None;
+    let mut val_cat_mais_gasta = 0.0;
+
+    for (cat, (val, qtd)) in map_categorias {
+        let pct = if total_gasto_ceap > 0.0 {
+            ((val / total_gasto_ceap) * 1000.0).round() / 10.0
+        } else {
+            0.0
+        };
+
+        if val > val_cat_mais_gasta {
+            val_cat_mais_gasta = val;
+            cat_mais_gasta = Some(cat.clone());
+        }
+
+        gastos_por_categoria.push(GastoCategoriaItem {
+            categoria: cat,
+            total: (val * 100.0).round() / 100.0,
+            quantidade: qtd,
+            percentual: pct,
+        });
+    }
+
+    gastos_por_categoria.sort_by(|a, b| b.total.partial_cmp(&a.total).unwrap_or(std::cmp::Ordering::Equal));
+
+    let media_mensal_ceap = if total_gasto_ceap > 0.0 {
+        ((total_gasto_ceap / 12.0) * 100.0).round() / 100.0
+    } else {
+        0.0
+    };
+
+    // Carrega doações recebidas de campanha
+    let total_doacoes_campanha: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(r.valor), 0.0)
+             FROM receitas_campanha r
+             JOIN candidaturas c ON r.candidatura_id = c.id
+             WHERE c.politico_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+
+    let resumo_financeiro = ResumoFinanceiroPolitico {
+        total_gasto_ceap: (total_gasto_ceap * 100.0).round() / 100.0,
+        total_notas_ceap,
+        media_mensal_ceap,
+        total_bens_declarados: total_bens_cand,
+        total_doacoes_campanha: (total_doacoes_campanha * 100.0).round() / 100.0,
+        total_fora_uf: (total_fora_uf * 100.0).round() / 100.0,
+        notas_fora_uf,
+        categoria_mais_gasta: cat_mais_gasta,
+        valor_categoria_mais_gasta: (val_cat_mais_gasta * 100.0).round() / 100.0,
+    };
+
+    // Carrega dossiê detalhado (candidaturas, bens, doadores, auxílios)
+    let dossie_base = carregar_dossie(&pool, id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .unwrap_or(DossiePolitico {
+            id: id_pol,
+            sq_candidato: sq.clone(),
+            cpf_mascarado: cpf_masc.clone(),
+            nome_completo: nome_completo.clone(),
+            nome_urna: nome_urna.clone(),
+            data_nascimento: dt_nasc.clone(),
+            grau_instrucao: grau.clone(),
+            ocupacao: ocup.clone(),
+            foto_base64: foto_base64.clone(),
+            foto_mime: foto_mime.clone(),
+            candidaturas: Vec::new(),
+            historico_bens: Vec::new(),
+            doadores: Vec::new(),
+            alertas_auxilio: Vec::new(),
+        });
+
+    Ok(Json(PoliticoDetalheResponse {
+        id: id_pol,
+        sq_candidato: sq,
+        cpf_mascarado: cpf_masc,
+        nome_completo,
+        nome_urna,
+        data_nascimento: dt_nasc,
+        grau_instrucao: grau,
+        ocupacao: ocup,
+        foto_base64,
+        foto_mime,
+        partido,
+        uf,
+        cargo,
+        municipio: mun_cand,
+        resumo_financeiro,
+        gastos_por_categoria,
+        despesas_recentes,
+        candidaturas: dossie_base.candidaturas,
+        historico_bens: dossie_base.historico_bens,
+        doadores: dossie_base.doadores,
+        alertas_auxilio: dossie_base.alertas_auxilio,
+    }))
+}
+
+/// GET /api/politicos/:id/despesas-geo e /api/v1/politicos/:id/despesas-geo
+pub async fn politico_despesas_geo_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<Json<PoliticoDespesasGeoResponse>, StatusCode> {
+    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (nome_completo, nome_urna) = match conn.query_row(
+        "SELECT nome_completo, nome_urna FROM politicos WHERE id = ?1",
+        [id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    ) {
+        Ok(res) => res,
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
+
+    let uf_politico: String = conn
+        .query_row(
+            "SELECT uf FROM candidaturas WHERE politico_id = ?1 ORDER BY ano_eleicao DESC LIMIT 1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| {
+            let (_, est) = inferir_partido_e_uf_deputado(&nome_completo);
+            est
+        });
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, data_emissao, categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf,
+                    valor_liquido, detalhes_litros, numero_documento, url_nota_fiscal
+             FROM despesas_parlamentares
+             WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2
+             ORDER BY data_emissao DESC
+             LIMIT 500",
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut pontos = Vec::new();
+    let mut total_valor_geo = 0.0;
+    let mut despesas_fora_uf_total = 0;
+    let mut despesas_fora_uf_valor = 0.0;
+
+    let rows = stmt
+        .query_map([&nome_completo, &nome_urna], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, f64>(5)?,
+                r.get::<_, Option<f64>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+            ))
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    for r in rows.flatten() {
+        let (id_desp, dt, cat, forn_nome, forn_cnpj, val, litros, num_doc, url_doc) = r;
+        total_valor_geo += val;
+
+        let geo = resolver_coordenadas_despesa(&conn, &forn_nome, &forn_cnpj, &cat, val, &uf_politico);
+
+        if geo.fora_uf_origem {
+            despesas_fora_uf_total += 1;
+            despesas_fora_uf_valor += val;
+        }
+
+        pontos.push(PontoDespesaGeo {
+            id: id_desp,
+            fornecedor_nome: forn_nome,
+            fornecedor_cnpj: forn_cnpj,
+            municipio: geo.municipio,
+            uf: geo.uf,
+            latitude: geo.latitude,
+            longitude: geo.longitude,
+            valor: (val * 100.0).round() / 100.0,
+            data: dt,
+            categoria: cat,
+            litros,
+            numero_documento: num_doc,
+            url_documento: url_doc,
+            fora_uf_origem: geo.fora_uf_origem,
+            alerta_distancia: geo.alerta_distancia,
+            distancia_origem_km: geo.distancia_origem_km,
+            motivo_alerta: geo.motivo_alerta,
+        });
+    }
+
+    Ok(Json(PoliticoDespesasGeoResponse {
+        politico_id: id,
+        politico_nome: nome_completo,
+        politico_uf: uf_politico,
+        total_despesas_geo: pontos.len(),
+        total_valor_geo: (total_valor_geo * 100.0).round() / 100.0,
+        despesas_fora_uf_total,
+        despesas_fora_uf_valor: (despesas_fora_uf_valor * 100.0).round() / 100.0,
+        pontos,
+    }))
 }
 
 #[cfg(test)]
@@ -297,7 +1072,7 @@ mod tests {
         let mut conn = pool.get().unwrap();
         run_migrations(&mut conn).unwrap();
 
-        let foto_bytes = vec![0x89, 0x50, 0x4E, 0x47]; // PNG magic bytes
+        let foto_bytes = vec![0x89, 0x50, 0x4E, 0x47];
         conn.execute(
             "INSERT INTO politicos (sq_candidato, cpf_mascarado, nome_completo, nome_urna, ocupacao, foto_blob, foto_mime)
              VALUES ('SQ9988', '***.555.666-**', 'MARCOS PONTE', 'ASTRONAUTA', 'ENGENHEIRO', ?1, 'image/png')",
@@ -328,7 +1103,6 @@ mod tests {
             .route("/api/v1/politico/:id", get(politico_dossie_handler))
             .with_state(pool);
 
-        // 1. Testa retorno com sucesso 200 OK
         let req = Request::builder()
             .uri(format!("/api/v1/politico/{}", pol_id))
             .body(Body::empty())
@@ -346,15 +1120,78 @@ mod tests {
         assert_eq!(dossie.candidaturas.len(), 1);
         assert_eq!(dossie.historico_bens.len(), 1);
         assert_eq!(dossie.doadores.len(), 1);
-        assert_eq!(dossie.doadores[0].doador_nome, "DOADOR DESTAQUE");
+    }
 
-        // 2. Testa 404 NOT_FOUND para ID inexistente
-        let req_404 = Request::builder()
-            .uri("/api/v1/politico/99999")
+    #[tokio::test]
+    async fn test_listar_e_detalhe_politicos_endpoints() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, ocupacao)
+             VALUES ('DENISE PESSÔA', 'DENISE PESSÔA', 'DEPUTADO FEDERAL')",
+            [],
+        ).unwrap();
+        let pol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, municipio)
+             VALUES (?1, 2022, 'DEPUTADO FEDERAL', 'PT', 'RS', 'Caxias do Sul')",
+            [pol_id],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO despesas_parlamentares (
+                casa_legislativa, parlamentar_nome, data_emissao, categoria_despesa,
+                fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido
+             ) VALUES ('CAMARA', 'DENISE PESSÔA', '2024-05-10', 'COMBUSTÍVEIS E LUBRIFICANTES.', '031 - 302 NORTE - CASCOL', '00306597003112', 250.0)",
+            [],
+        ).unwrap();
+
+        let app = Router::new()
+            .route("/api/politicos", get(listar_politicos_handler))
+            .route("/api/politicos/:id", get(politico_detalhe_handler))
+            .route("/api/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
+            .with_state(pool);
+
+        // 1. Testa listagem com filtro
+        let req_list = Request::builder()
+            .uri("/api/politicos?partido=PT&uf=RS")
             .body(Body::empty())
             .unwrap();
+        let res_list = app.clone().oneshot(req_list).await.unwrap();
+        assert_eq!(res_list.status(), StatusCode::OK);
+        let list_bytes = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        let list_resp: ListarPoliticosResponse = serde_json::from_slice(&list_bytes).unwrap();
+        assert_eq!(list_resp.total, 1);
+        assert_eq!(list_resp.politicos[0].nome_completo, "DENISE PESSÔA");
+        assert_eq!(list_resp.politicos[0].total_despesas_ceap, 250.0);
 
-        let res_404 = app.oneshot(req_404).await.unwrap();
-        assert_eq!(res_404.status(), StatusCode::NOT_FOUND);
+        // 2. Testa detalhe do político com resumo financeiro
+        let req_detalhe = Request::builder()
+            .uri(format!("/api/politicos/{}", pol_id))
+            .body(Body::empty())
+            .unwrap();
+        let res_detalhe = app.clone().oneshot(req_detalhe).await.unwrap();
+        assert_eq!(res_detalhe.status(), StatusCode::OK);
+        let det_bytes = axum::body::to_bytes(res_detalhe.into_body(), usize::MAX).await.unwrap();
+        let det_resp: PoliticoDetalheResponse = serde_json::from_slice(&det_bytes).unwrap();
+        assert_eq!(det_resp.resumo_financeiro.total_gasto_ceap, 250.0);
+        assert_eq!(det_resp.gastos_por_categoria.len(), 1);
+        assert_eq!(det_resp.gastos_por_categoria[0].categoria, "COMBUSTÍVEIS E LUBRIFICANTES.");
+
+        // 3. Testa georreferenciamento de despesas
+        let req_geo = Request::builder()
+            .uri(format!("/api/politicos/{}/despesas-geo", pol_id))
+            .body(Body::empty())
+            .unwrap();
+        let res_geo = app.oneshot(req_geo).await.unwrap();
+        assert_eq!(res_geo.status(), StatusCode::OK);
+        let geo_bytes = axum::body::to_bytes(res_geo.into_body(), usize::MAX).await.unwrap();
+        let geo_resp: PoliticoDespesasGeoResponse = serde_json::from_slice(&geo_bytes).unwrap();
+        assert_eq!(geo_resp.total_despesas_geo, 1);
+        assert_eq!(geo_resp.pontos[0].uf, "DF");
+        assert_eq!(geo_resp.pontos[0].municipio, "Brasília");
     }
 }

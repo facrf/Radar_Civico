@@ -3,11 +3,13 @@ pub mod api;
 pub mod busca;
 pub mod config;
 pub mod dossie;
+pub mod geo;
 pub mod grafo;
 pub mod investigar;
 pub mod politico;
 pub mod routes;
 
+pub use geo::{calcular_distancia_km, coordenadas_capital_uf, resolver_coordenadas_despesa, CoordenadaResolvida};
 pub use dossie::{
     dossie_cnpj_handler, dossie_cpf_handler, AlertaDossie, BeneficioEmergencialItem,
     CandidaturaItemCpf, CandidaturaSocioTse, CompradorCeapResumo, ContratoPncpItem,
@@ -43,8 +45,11 @@ pub use investigar::{
     InvestigacaoNomeacaoResponse, InvestigarParams,
 };
 pub use politico::{
-    carregar_dossie, politico_dossie_handler, AlertaAuxilioItem, BemItem, CandidaturaItem,
-    DoadorItem, DossiePolitico,
+    carregar_dossie, listar_politicos_handler, politico_despesas_geo_handler,
+    politico_detalhe_handler, politico_dossie_handler, AlertaAuxilioItem, BemItem, CandidaturaItem,
+    DespesaCeapResumoItem, DoadorItem, DossiePolitico, GastoCategoriaItem, ItemPoliticoListagem,
+    ListarPoliticosQueryParams, ListarPoliticosResponse, PoliticoDespesasGeoResponse,
+    PoliticoDetalheResponse, PontoDespesaGeo, ResumoFinanceiroPolitico,
 };
 
 use std::path::Path;
@@ -61,7 +66,13 @@ pub fn criar_router(pool: DbPool) -> Router {
     let mut router = Router::new()
         .route("/health", get(|| async { "OK" }))
         .route("/api/v1/busca", get(busca_handler))
-        .route("/api/v1/politico/:id", get(politico_dossie_handler))
+        .route("/api/politicos", get(listar_politicos_handler))
+        .route("/api/v1/politicos", get(listar_politicos_handler))
+        .route("/api/politicos/:id", get(politico_detalhe_handler))
+        .route("/api/v1/politicos/:id", get(politico_detalhe_handler))
+        .route("/api/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
+        .route("/api/v1/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
+        .route("/api/v1/politico/:id", get(politico_detalhe_handler))
         .route("/api/v1/dossie/cnpj/:cnpj", get(dossie::dossie_cnpj_handler))
         .route("/api/v1/dossie/cpf/:cpf", get(dossie::dossie_cpf_handler))
         .route("/api/v1/grafo/:id", get(grafo_subgrafo_handler))
