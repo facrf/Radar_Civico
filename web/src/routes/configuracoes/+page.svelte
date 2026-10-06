@@ -96,6 +96,26 @@
 	}
 	let importProgress: ImportProgress | null = null;
 
+	// Ingestão Unificada (SourceImporter)
+	interface ImporterSummary {
+		id: string;
+		name: string;
+		description: string;
+		stage: 'IDLE' | 'CONECTANDO' | 'BAIXANDO' | 'DESCOMPACTANDO' | 'PROCESSANDO' | 'FINALIZANDO' | 'CONCLUIDO' | 'CANCELADO' | 'ERRO';
+		is_running: boolean;
+		current_file: string;
+		files_processed: number;
+		total_files: number;
+		records_processed: number;
+		percentage: number;
+		elapsed_seconds: number;
+		message: string;
+		last_error?: string | null;
+	}
+	let importers: ImporterSummary[] = [];
+	let acaoImporterId: string | null = null;
+	let importersInterval: any = null;
+
 	// Upload Manual
 	let tipoDocumentoUpload = 'AUTO';
 	let arquivoSelecionado: File | null = null;
@@ -418,11 +438,59 @@
 		window.location.href = `/api/v1/config/exportar/tabela/${tabelaExportar}?formato=${formatoExportar}`;
 	}
 
+	async function carregarImporters() {
+		try {
+			const res = await fetch('/api/importers');
+			if (res.ok) {
+				importers = await res.json();
+			}
+		} catch (e) {
+			console.error('Erro ao consultar /api/importers:', e);
+		}
+	}
+
+	async function iniciarImporter(id: string) {
+		acaoImporterId = id;
+		try {
+			const res = await fetch(`/api/importers/${id}/start`, { method: 'POST' });
+			if (res.ok) {
+				await carregarImporters();
+			} else {
+				const err = await res.json();
+				alert(err.erro || 'Falha ao iniciar importação');
+			}
+		} catch (e: any) {
+			alert(e.message || 'Erro de rede ao iniciar importação');
+		} finally {
+			acaoImporterId = null;
+		}
+	}
+
+	async function cancelarImporter(id: string) {
+		acaoImporterId = id;
+		try {
+			const res = await fetch(`/api/importers/${id}/cancel`, { method: 'POST' });
+			if (res.ok) {
+				await carregarImporters();
+			} else {
+				const err = await res.json();
+				alert(err.erro || 'Falha ao cancelar importação');
+			}
+		} catch (e: any) {
+			alert(e.message || 'Erro de rede ao cancelar importação');
+		} finally {
+			acaoImporterId = null;
+		}
+	}
+
 	onMount(() => {
 		carregarStatus();
 		carregarIdentidade();
+		carregarImporters();
+		importersInterval = setInterval(carregarImporters, 2000);
 		return () => {
 			if (pollingInterval) clearInterval(pollingInterval);
+			if (importersInterval) clearInterval(importersInterval);
 			if (previewIconeUrl) URL.revokeObjectURL(previewIconeUrl);
 		};
 	});
@@ -1114,6 +1182,119 @@
 			</div>
 		</div>
 	{/if}
+
+	<!-- Seção: Monitoramento e Controle Unificado de Fontes Públicas (Framework SourceImporter) -->
+	<div>
+		<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+			<h2 class="text-base font-semibold text-slate-200 flex items-center gap-2">
+				<span class="w-2 h-2 rounded-full bg-indigo-400"></span>
+				Monitoramento & Controle Unificado de Fontes Públicas
+			</h2>
+			<button
+				on:click={carregarImporters}
+				class="self-start sm:self-auto px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-medium rounded-lg border border-slate-700 flex items-center gap-1.5 transition-colors"
+			>
+				<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+				</svg>
+				Atualizar Status
+			</button>
+		</div>
+
+		<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+			{#each importers as imp}
+				<div class="p-5 bg-slate-800/60 border border-slate-700/70 rounded-xl space-y-3.5 flex flex-col justify-between">
+					<div class="space-y-3">
+						<div class="flex items-start justify-between gap-2">
+							<div>
+								<div class="flex items-center gap-2">
+									<span class="text-sm font-bold text-white">{imp.name}</span>
+									<span class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-900 text-slate-400 border border-slate-700">
+										{imp.id}
+									</span>
+								</div>
+								<p class="text-xs text-slate-400 mt-1 leading-snug">{imp.description}</p>
+							</div>
+							<span class="text-[11px] font-semibold px-2 py-0.5 rounded uppercase shrink-0
+								{imp.stage === 'CONCLUIDO' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+								 imp.stage === 'ERRO' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' :
+								 imp.stage === 'CANCELADO' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
+								 imp.is_running ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse' :
+								 'bg-slate-700/40 text-slate-400 border border-slate-700'}">
+								{imp.stage}
+							</span>
+						</div>
+
+						<!-- Barra de Progresso do Importer -->
+						<div class="space-y-1">
+							<div class="flex justify-between text-[11px] font-mono text-slate-400">
+								<span>Progresso</span>
+								<span>{Math.round(imp.percentage)}%</span>
+							</div>
+							<div class="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
+								<div
+									class="h-2 rounded-full transition-all duration-300
+										{imp.stage === 'CONCLUIDO' ? 'bg-emerald-500' :
+										 imp.stage === 'ERRO' ? 'bg-rose-500' :
+										 imp.stage === 'CANCELADO' ? 'bg-orange-500' : 'bg-indigo-500'}"
+									style="width: {imp.percentage}%"
+								></div>
+							</div>
+						</div>
+
+						<!-- Métricas Detalhadas -->
+						<div class="grid grid-cols-2 gap-2 p-2.5 bg-slate-900/60 rounded-lg border border-slate-800 text-[11px]">
+							<div>
+								<span class="text-slate-400 block text-[10px]">Arquivos</span>
+								<span class="text-slate-200 font-semibold">{imp.files_processed} / {imp.total_files}</span>
+							</div>
+							<div>
+								<span class="text-slate-400 block text-[10px]">Registros Salvos</span>
+								<span class="text-cyan-400 font-semibold font-mono">{imp.records_processed.toLocaleString('pt-BR')}</span>
+							</div>
+							<div class="col-span-2">
+								<span class="text-slate-400 block text-[10px]">Status / Mensagem</span>
+								<span class="text-slate-300 truncate block text-[11px]" title={imp.message}>
+									{imp.message || 'Pronto para execução'}
+								</span>
+							</div>
+						</div>
+					</div>
+
+					<!-- Botões de Ação -->
+					<div class="pt-2 border-t border-slate-700/40 flex items-center justify-between">
+						<span class="text-[11px] text-slate-400 font-mono">
+							Tempo: {imp.elapsed_seconds}s
+						</span>
+
+						{#if imp.is_running}
+							<button
+								on:click={() => cancelarImporter(imp.id)}
+								disabled={acaoImporterId === imp.id}
+								class="px-3 py-1.5 bg-rose-600/90 hover:bg-rose-600 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50 flex items-center gap-1"
+							>
+								{#if acaoImporterId === imp.id}
+									<span class="animate-spin text-xs">⟳</span>
+								{/if}
+								Cancelar
+							</button>
+						{:else}
+							<button
+								on:click={() => iniciarImporter(imp.id)}
+								disabled={acaoImporterId === imp.id}
+								class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50 flex items-center gap-1"
+							>
+								{#if acaoImporterId === imp.id}
+									<span class="animate-spin text-xs">⟳</span>
+								{/if}
+								Iniciar Carga
+							</button>
+						{/if}
+					</div>
+				</div>
+			{/each}
+		</div>
+	</div>
 
 	<!-- Seção 4: Área de Importação Manual (Dropzone) -->
 	<div>
