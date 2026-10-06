@@ -94,9 +94,35 @@ Após a geração do CSV filtrado (ex.: `auxilio_campinas.csv`), você pode carr
 
 ---
 
-### Método B: Ingestão Direta via Terminal / Linha de Comando (CURL)
+### Método B: Ingestão Direta no Banco SQLite via Script (Jogar Tudo ou por Filtro)
 
-Se preferir enviar sem abrir o navegador:
+Para ingerir a base inteira (todos os 30 GB) ou aplicar filtros diretamente no SQLite sem passar pelo navegador HTTP:
+
+```bash
+# 1. Jogar tudo no banco (carga completa do arquivo bruto de 30 GB):
+./scripts/ingerir_auxilio_completo.sh
+
+# 2. Jogar apenas os registros da sua cidade e estado:
+./scripts/ingerir_auxilio_completo.sh --municipio "Campinas" --uf "SP"
+
+# 3. Jogar apenas registros de pessoas com nomes ou CPFs correspondentes a políticos cadastrados:
+./scripts/ingerir_auxilio_completo.sh --apenas-candidatos
+
+# 4. Ingerir um arquivo CSV filtrado previamente:
+./scripts/ingerir_auxilio_completo.sh --arquivo /home/facrf/Downloads/basedados/auxilio_campinas.csv
+```
+
+* **Vantagens Técnicas:**
+  * Executa transações em lotes de 50.000 registros com `PRAGMA journal_mode = WAL` e `synchronous = OFF/NORMAL`.
+  * Desativa índices secundários temporariamente para carga massiva e os reconstrói ao término.
+  * Exibe taxa de transferência em tempo real (linhas por segundo, progresso e tempo decorrido).
+  * Consumo fixo de RAM (< 50 MB), permitindo processar dezenas de gigabytes sem risco de travamento.
+
+---
+
+### Método C: Ingestão via Terminal com CURL (API HTTP)
+
+Se preferir enviar o CSV filtrado via chamada REST ao servidor Axum:
 
 ```bash
 curl -X POST "http://localhost:28080/api/v1/config/ingestao/upload?tipo=AUXILIO_EMERGENCIAL" \
