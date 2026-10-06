@@ -945,7 +945,15 @@ fn parse_f64_valor(val: &str) -> f64 {
 
 fn detectar_tipo_por_cabecalho(headers: &csv::StringRecord) -> String {
     let header_str = headers.iter().collect::<Vec<_>>().join(";").to_uppercase().replace(['"', '\''], "");
-    if header_str.contains("NOME_SOCIO") || header_str.contains("SOCIO_NOME") || header_str.contains("QUALIFICACAO_SOCIO") || (header_str.contains("CNPJ_BASICO") && (header_str.contains("SOCIO") || header_str.contains("RAZAO"))) {
+    if header_str.contains("NOME_SOCIO")
+        || header_str.contains("SOCIO_NOME")
+        || header_str.contains("QUALIFICACAO_SOCIO")
+        || header_str.contains("HOLDING")
+        || header_str.contains("CONTROLADORA")
+        || header_str.contains("CONTROLADA")
+        || header_str.contains("PARTICIPACAO")
+        || (header_str.contains("CNPJ") && (header_str.contains("SOCIO") || header_str.contains("RAZAO") || header_str.contains("EMPRESA")))
+    {
         "RECEITA_QSA".to_string()
     } else if header_str.contains("NUMERO_INSCRICAO") || header_str.contains("NUMERO_REGISTRO") || header_str.contains("SECCIONAL_UF") || header_str.contains("SITUACAO_REGISTRO") || header_str.contains("OAB") || header_str.contains("PESSOA_NOME") {
         "CONSELHOS_OAB".to_string()
@@ -983,14 +991,78 @@ fn processar_csv_records<R: std::io::Read>(
     let mut count = 0;
 
     match tipo_detectado.as_str() {
-        "RECEITA_QSA" | "QSA" => {
-            let col_cnpj_basico = find_col(&headers, &["CNPJ_BASICO", "CNPJ"]);
+        "RECEITA_QSA" | "QSA" | "HOLDINGS" | "EMPRESAS" | "SOCIOS" | "RECEITA_HOLDINGS" => {
+            let col_cnpj_basico = find_col(
+                &headers,
+                &[
+                    "CNPJ_BASICO",
+                    "CNPJ",
+                    "CNPJ_RAIZ",
+                    "CNPJ_EMPRESA",
+                    "CNPJ_HOLDING",
+                    "CNPJ_CONTROLADORA",
+                    "CNPJ_CONTROLADA",
+                    "CNPJ_PARTICIPADA",
+                ],
+            );
             let col_cnpj_ordem = find_col(&headers, &["CNPJ_ORDEM", "ORDEM"]);
             let col_cnpj_dv = find_col(&headers, &["CNPJ_DV", "DV"]);
-            let col_razao = find_col(&headers, &["RAZAO_SOCIAL", "NOME_EMPRESA", "RAZAO"]);
-            let col_socio_nome = find_col(&headers, &["NOME_SOCIO", "SOCIO_NOME", "NM_SOCIO", "SOCIO", "NOME"]);
-            let col_socio_doc = find_col(&headers, &["CNPJ_CPF_SOCIO", "SOCIO_CPF_CNPJ_MASCARADO", "CPF_CNPJ_SOCIO", "CPF_SOCIO", "DOCUMENTO_SOCIO", "CPF"]);
-            let col_qualif = find_col(&headers, &["QUALIFICACAO_SOCIO", "QUALIFICACAO", "DS_QUALIFICACAO"]);
+            let col_razao = find_col(
+                &headers,
+                &[
+                    "RAZAO_SOCIAL",
+                    "NOME_EMPRESA",
+                    "RAZAO",
+                    "EMPRESA",
+                    "NOME_FANTASIA",
+                    "CONTROLADA",
+                    "PARTICIPADA",
+                ],
+            );
+            let col_socio_nome = find_col(
+                &headers,
+                &[
+                    "NOME_SOCIO",
+                    "SOCIO_NOME",
+                    "NM_SOCIO",
+                    "SOCIO",
+                    "NOME",
+                    "HOLDING",
+                    "NOME_HOLDING",
+                    "CONTROLADORA",
+                    "ACIONISTA",
+                    "PARTICIPANTE",
+                    "INVESTIDOR",
+                ],
+            );
+            let col_socio_doc = find_col(
+                &headers,
+                &[
+                    "CNPJ_CPF_SOCIO",
+                    "SOCIO_CPF_CNPJ_MASCARADO",
+                    "CPF_CNPJ_SOCIO",
+                    "CPF_SOCIO",
+                    "DOCUMENTO_SOCIO",
+                    "CPF",
+                    "CNPJ_HOLDING",
+                    "CNPJ_SOCIO",
+                    "CNPJ_CONTROLADORA",
+                    "DOCUMENTO",
+                ],
+            );
+            let col_qualif = find_col(
+                &headers,
+                &[
+                    "QUALIFICACAO_SOCIO",
+                    "QUALIFICACAO",
+                    "DS_QUALIFICACAO",
+                    "TIPO_SOCIO",
+                    "PAPEL",
+                    "RELACAO",
+                    "PARTICIPACAO",
+                    "PERCENTUAL",
+                ],
+            );
 
             let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
@@ -1002,15 +1074,36 @@ fn processar_csv_records<R: std::io::Read>(
 
                 for record in reader.records().flatten() {
                     let cnpj_raw = col_cnpj_basico.and_then(|i| record.get(i)).unwrap_or("00000000").trim();
-                    let cnpj_basico = if cnpj_raw.len() >= 8 { &cnpj_raw[..8] } else { cnpj_raw };
-                    let cnpj_ordem = col_cnpj_ordem.and_then(|i| record.get(i)).unwrap_or("0001").trim();
-                    let cnpj_dv = col_cnpj_dv.and_then(|i| record.get(i)).unwrap_or("00").trim();
-                    let razao = col_razao.and_then(|i| record.get(i)).unwrap_or("EMPRESA S/A").trim();
-                    let socio_nome = col_socio_nome.and_then(|i| record.get(i)).unwrap_or("SOCIO").trim();
-                    let socio_doc = col_socio_doc.and_then(|i| record.get(i)).unwrap_or("***.***.***-**").trim();
-                    let qualif = col_qualif.and_then(|i| record.get(i)).unwrap_or("SOCIO-ADMINISTRADOR").trim();
+                    let cnpj_digits: String = cnpj_raw.chars().filter(|c| c.is_ascii_digit()).collect();
+                    let cnpj_basico = if cnpj_digits.len() >= 8 {
+                        &cnpj_digits[..8]
+                    } else if !cnpj_digits.is_empty() {
+                        &cnpj_digits[..]
+                    } else {
+                        "00000000"
+                    };
+                    let cnpj_ordem = if cnpj_digits.len() >= 12 {
+                        &cnpj_digits[8..12]
+                    } else {
+                        col_cnpj_ordem.and_then(|i| record.get(i)).unwrap_or("0001").trim()
+                    };
+                    let cnpj_dv = if cnpj_digits.len() >= 14 {
+                        &cnpj_digits[12..14]
+                    } else {
+                        col_cnpj_dv.and_then(|i| record.get(i)).unwrap_or("00").trim()
+                    };
 
-                    if !cnpj_basico.is_empty() && !socio_doc.is_empty() {
+                    let razao = col_razao.and_then(|i| record.get(i)).unwrap_or("EMPRESA S/A").trim();
+                    let socio_nome = col_socio_nome.and_then(|i| record.get(i)).unwrap_or("HOLDING / SOCIO").trim();
+                    let socio_doc_raw = col_socio_doc.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let socio_doc = if !socio_doc_raw.is_empty() {
+                        socio_doc_raw
+                    } else {
+                        "***.***.***-**"
+                    };
+                    let qualif = col_qualif.and_then(|i| record.get(i)).unwrap_or("HOLDING / PARTICIPACAO").trim();
+
+                    if !cnpj_basico.is_empty() && (!socio_nome.is_empty() || !socio_doc.is_empty()) {
                         let _ = stmt.execute(rusqlite::params![
                             cnpj_basico, cnpj_ordem, cnpj_dv, razao, socio_doc, socio_nome, qualif
                         ]);

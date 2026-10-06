@@ -37,6 +37,7 @@ pub use politico::{
 };
 
 use std::path::Path;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use storage::DbPool;
@@ -98,6 +99,7 @@ pub fn criar_router(pool: DbPool) -> Router {
 
     router
         .layer(CorsLayer::permissive())
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(pool)

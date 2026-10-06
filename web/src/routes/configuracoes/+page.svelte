@@ -1318,7 +1318,7 @@
 						class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
 					>
 						<option value="AUTO">Detecção Automática de Cabeçalho (Recomendado)</option>
-						<option value="RECEITA_QSA">Receita Federal - Quadro Societário (QSA / Sócios)</option>
+						<option value="RECEITA_QSA">Receita Federal - Quadro Societário (QSA / Sócios / Holdings)</option>
 						<option value="CONSELHOS_OAB">Conselhos de Classe / OAB (CNA)</option>
 						<option value="DIARIOS_OFICIAIS">Diários Oficiais / Atos de Nomeação</option>
 						<option value="PNCP_CONTRATOS">PNCP - Contratos e Licitações Públicas</option>
@@ -1341,7 +1341,7 @@
 					<svg class="w-3.5 h-3.5 transition-transform duration-200 {mostrarGuiaCabecalhos ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
 					</svg>
-					<span>{mostrarGuiaCabecalhos ? 'Ocultar Dicionário de Cabeçalhos Suportados' : 'Ver Dicionário de Cabeçalhos Suportados (QSA, OAB, PNCP, CEAP, TSE, Auxílio)'}</span>
+					<span>{mostrarGuiaCabecalhos ? 'Ocultar Dicionário de Cabeçalhos Suportados' : 'Ver Dicionário de Cabeçalhos Suportados (Holdings, QSA, OAB, PNCP, CEAP, TSE, Auxílio)'}</span>
 				</button>
 
 				{#if mostrarGuiaCabecalhos}
@@ -1349,9 +1349,9 @@
 						<p class="text-slate-300 font-medium">O motor de ingestão em streaming detecta automaticamente delimitadores (<code class="text-emerald-400">;</code> ou <code class="text-emerald-400">,</code>) e aceita as seguintes colunas:</p>
 						<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
 							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
-								<span class="font-semibold text-emerald-400 block">Receita Federal (QSA / Sócios):</span>
-								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">CNPJ_BASICO</code>, <code class="text-slate-300">RAZAO_SOCIAL</code>, <code class="text-slate-300">NOME_SOCIO</code>, <code class="text-slate-300">CPF_CNPJ_SOCIO</code>, <code class="text-slate-300">QUALIFICACAO_SOCIO</code></p>
-								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">empresas_qsa</span></p>
+								<span class="font-semibold text-emerald-400 block">Receita Federal (QSA / Sócios / Holdings):</span>
+								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">CNPJ_BASICO</code> (ou <code class="text-slate-300">CNPJ</code> formatado/14 dígitos), <code class="text-slate-300">RAZAO_SOCIAL</code> (ou <code class="text-slate-300">EMPRESA</code>), <code class="text-slate-300">NOME_SOCIO</code> (ou <code class="text-slate-300">HOLDING</code> / <code class="text-slate-300">CONTROLADORA</code>), <code class="text-slate-300">CPF_CNPJ_SOCIO</code> (ou <code class="text-slate-300">CNPJ_HOLDING</code>), <code class="text-slate-300">QUALIFICACAO_SOCIO</code></p>
+								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">empresas_qsa</span> (suporta holdings PJ e formatação automática)</p>
 							</div>
 
 							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
