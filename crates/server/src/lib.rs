@@ -1,4 +1,5 @@
 pub mod alertas;
+pub mod api;
 pub mod busca;
 pub mod config;
 pub mod grafo;
@@ -75,7 +76,15 @@ pub fn criar_router(pool: DbPool) -> Router {
                 .delete(remover_icone_handler),
         )
         .route("/api/v1/config/favicon", get(obter_favicon_handler))
-        .route("/api/v1/config/identidade", get(obter_identidade_handler));
+        .route("/api/v1/config/identidade", get(obter_identidade_handler))
+        .route("/api/importers", get(api::importers::listar_importers_handler))
+        .route("/api/v1/importers", get(api::importers::listar_importers_handler))
+        .route("/api/importers/:id/status", get(api::importers::obter_status_handler))
+        .route("/api/v1/importers/:id/status", get(api::importers::obter_status_handler))
+        .route("/api/importers/:id/start", post(api::importers::iniciar_importer_handler))
+        .route("/api/v1/importers/:id/start", post(api::importers::iniciar_importer_handler))
+        .route("/api/importers/:id/cancel", post(api::importers::cancelar_importer_handler))
+        .route("/api/v1/importers/:id/cancel", post(api::importers::cancelar_importer_handler));
 
     let web_dir = std::env::var("WEB_DIR").unwrap_or_else(|_| "web/build".to_string());
     if Path::new(&web_dir).exists() {
