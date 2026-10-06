@@ -469,6 +469,14 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_politicos_nome_completo ON politicos(nome_completo);
         ",
     },
+    Migration {
+        version: 13,
+        name: "adiciona_foto_url_politicos",
+        sql: "
+            ALTER TABLE politicos ADD COLUMN foto_url TEXT;
+            CREATE INDEX IF NOT EXISTS idx_politicos_foto_url ON politicos(foto_url);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
