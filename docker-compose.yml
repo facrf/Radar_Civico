@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-}
+        APP_COMMIT: ${APP_COMMIT:-}
+        APP_COUNT: ${APP_COUNT:-}
     image: radar_civico:latest
     container_name: radar_civico
     ports:
