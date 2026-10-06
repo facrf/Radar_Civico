@@ -119,19 +119,31 @@ CNPJ_BASICO;CNPJ_ORDEM;CNPJ_DV;RAZAO_SOCIAL;SOCIO_CPF_CNPJ_MASCARADO;SOCIO_NOME;
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
-    // 8. Aguarda processamento das tarefas assíncronas
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    // 8. Aguarda processamento das tarefas assíncronas com polling resiliente
+    let mut lista_final: Vec<ImporterSummary> = Vec::new();
+    for _ in 0..30 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let req_list = Request::builder()
+            .uri("/api/importers")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let res_list = app.clone().oneshot(req_list).await.unwrap();
+        assert_eq!(res_list.status(), StatusCode::OK);
+        let body_list = to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        lista_final = serde_json::from_slice(&body_list).unwrap();
 
-    // 9. Verifica se status dos importadores finalizou com sucesso
-    let req_list = Request::builder()
-        .uri("/api/importers")
-        .method("GET")
-        .body(Body::empty())
-        .unwrap();
-    let res_list = app.clone().oneshot(req_list).await.unwrap();
-    assert_eq!(res_list.status(), StatusCode::OK);
-    let body_list = to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
-    let lista_final: Vec<ImporterSummary> = serde_json::from_slice(&body_list).unwrap();
+        let todos_concluidos = ["tse", "receita_qsa", "pncp"].iter().all(|id| {
+            lista_final
+                .iter()
+                .find(|i| &i.id == id)
+                .map(|i| i.stage == ingestion::importers::ImportStage::Concluido)
+                .unwrap_or(false)
+        });
+        if todos_concluidos {
+            break;
+        }
+    }
 
     let tse_status = lista_final.iter().find(|i| i.id == "tse").unwrap();
     assert_eq!(tse_status.stage, ingestion::importers::ImportStage::Concluido);

@@ -17,10 +17,11 @@ pub use config::{
     executar_ingestao_handler, exportar_banco_handler, exportar_tabela_handler, import_status_handler,
     job_status_handler, obter_favicon_handler, obter_icone_handler, obter_identidade_handler,
     remover_icone_handler, salvar_icone_handler, sincronizar_camara_handler, sincronizar_tse_handler,
-    status_handler, upload_arquivo_handler, verificar_tse_ano_handler, ConfigStatusResponse,
-    ExecutarIngestaoRequest, ExecutarIngestaoResponse, IdentidadeVisualResponse, ImportProgress,
-    JobInfo, SalvarIconeResponse, SincronizarCamaraRequest, SincronizarTseRequest, TotalRegistros,
-    UploadResponse,
+    status_handler, upload_arquivo_handler, verificar_tse_ano_handler, versao_handler,
+    ConfigStatusResponse, ExecutarIngestaoRequest, ExecutarIngestaoResponse,
+    IdentidadeVisualResponse, ImportProgress, JobInfo, SalvarIconeResponse,
+    SincronizarCamaraRequest, SincronizarTseRequest, TotalRegistros, UploadResponse,
+    VersaoResponse,
 };
 pub use grafo::{
     formatar_subgrafo, grafo_subgrafo_handler, CytoscapeEdge, CytoscapeEdgeData,
@@ -59,6 +60,8 @@ pub fn criar_router(pool: DbPool) -> Router {
             get(investigar_nomeacao_handler),
         )
         .route("/api/v1/config/status", get(status_handler))
+        .route("/api/v1/config/versao", get(versao_handler))
+        .route("/api/versao", get(versao_handler))
         .route("/api/v1/config/ingestao/executar", post(executar_ingestao_handler))
         .route("/api/import/status", get(import_status_handler))
         .route("/api/v1/import/status", get(import_status_handler))

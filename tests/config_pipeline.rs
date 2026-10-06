@@ -37,6 +37,23 @@ async fn test_pipeline_completo_configuracao_sincronizacao_e_exportacao() {
         .unwrap();
     let status_json: serde_json::Value = serde_json::from_slice(&bytes_status).unwrap();
     assert_eq!(status_json["total_registros"]["politicos"], 1);
+    assert!(status_json["versao_sistema"].as_str().unwrap().starts_with("v0."));
+
+    // 2.1 Consulta de versão dedicada
+    let app_versao = criar_router(pool.clone());
+    let req_versao = Request::builder()
+        .uri("/api/v1/config/versao")
+        .body(Body::empty())
+        .unwrap();
+    let res_versao = app_versao.oneshot(req_versao).await.unwrap();
+    assert_eq!(res_versao.status(), StatusCode::OK);
+    let bytes_versao = axum::body::to_bytes(res_versao.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let versao_json: serde_json::Value = serde_json::from_slice(&bytes_versao).unwrap();
+    assert!(versao_json["versao"].as_str().unwrap().starts_with("v0."));
+    assert!(!versao_json["commit"].as_str().unwrap().is_empty());
+    assert!(versao_json["count"].as_u64().unwrap() >= 1);
 
     // 3. Disparo de sincronização em background
     let app = criar_router(pool.clone());

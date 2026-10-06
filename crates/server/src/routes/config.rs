@@ -92,6 +92,17 @@ pub struct ConfigStatusResponse {
     pub total_registros: TotalRegistros,
     pub ultimo_evento_sincronizacao: Option<String>,
     pub versao_sistema: String,
+    #[serde(default)]
+    pub git_commit: Option<String>,
+    #[serde(default)]
+    pub commit_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersaoResponse {
+    pub versao: String,
+    pub commit: String,
+    pub count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,8 +286,20 @@ pub async fn status_handler(
             alertas_beneficio_indevido,
         },
         ultimo_evento_sincronizacao,
-        versao_sistema: env!("CARGO_PKG_VERSION").to_string(),
+        versao_sistema: option_env!("APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string(),
+        git_commit: option_env!("APP_GIT_COMMIT").map(|s| s.to_string()),
+        commit_count: option_env!("APP_COMMIT_COUNT").and_then(|s| s.parse().ok()),
     }))
+}
+
+pub async fn versao_handler() -> Json<VersaoResponse> {
+    Json(VersaoResponse {
+        versao: option_env!("APP_VERSION").unwrap_or("v0.001").to_string(),
+        commit: option_env!("APP_GIT_COMMIT").unwrap_or("unknown").to_string(),
+        count: option_env!("APP_COMMIT_COUNT")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1),
+    })
 }
 
 async fn atualizar_job(job_id: &str, progresso: u8, mensagem: &str) {
