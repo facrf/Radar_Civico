@@ -9,7 +9,10 @@ pub use batch::{
     batch_insert_receitas, NovaDespesa, NovaDespesaParlamentar, NovaReceita,
     NovoAlertaBeneficioIndevido, NovoBemCandidato, NovoBeneficio, NovoCandidatoTse,
 };
-pub use connection::{apply_pragmas, DbPool, PooledConnection};
+pub use connection::{
+    aplicar_pragmas_ingestao, apply_pragmas, desativar_indices_tse, recriar_indices_tse, DbPool,
+    PooledConnection,
+};
 pub use error::{Result, StorageError};
 pub use migrations::run_migrations;
 pub use rusqlite;

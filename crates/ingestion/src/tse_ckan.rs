@@ -11,7 +11,7 @@ use storage::{
 use crate::error::{IngestionError, Result};
 use crate::normalizer::{converter_latin1_para_utf8, limpar_cnpj, mascarar_cpf};
 
-pub const LOTE_BATCH_SIZE: usize = 5000;
+pub const LOTE_BATCH_SIZE: usize = 25_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CkanResponse<T> {
@@ -182,11 +182,47 @@ fn find_col_idx(headers: &csv::StringRecord, candidates: &[&str]) -> Option<usiz
     None
 }
 
+fn buscar_candidatura_id(
+    conn: &Connection,
+    cache: &mut std::collections::HashMap<String, Option<i64>>,
+    sq: &str,
+) -> Option<i64> {
+    if sq.is_empty() {
+        return None;
+    }
+    if let Some(&cached) = cache.get(sq) {
+        return cached;
+    }
+    let res: Option<i64> = conn
+        .query_row(
+            "SELECT c.id FROM candidaturas c 
+             JOIN politicos p ON c.politico_id = p.id 
+             WHERE p.sq_candidato = ?1 LIMIT 1",
+            [sq],
+            |r| r.get(0),
+        )
+        .ok();
+    cache.insert(sq.to_string(), res);
+    res
+}
+
 pub fn processar_csv_tse_str(
     conn: &mut Connection,
     csv_str: &str,
     batch_size: usize,
 ) -> Result<usize> {
+    processar_csv_tse_str_com_progresso(conn, csv_str, batch_size, |_| {})
+}
+
+pub fn processar_csv_tse_str_com_progresso<F>(
+    conn: &mut Connection,
+    csv_str: &str,
+    batch_size: usize,
+    mut on_batch: F,
+) -> Result<usize>
+where
+    F: FnMut(usize),
+{
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(b';')
         .has_headers(true)
@@ -201,6 +237,7 @@ pub fn processar_csv_tse_str(
     let header_line = headers.iter().collect::<Vec<_>>().join(";").to_uppercase();
 
     let mut total_inseridos = 0;
+    let mut sq_cache = std::collections::HashMap::<String, Option<i64>>::new();
 
     if (header_line.contains("VR_BEM") || header_line.contains("DS_TIPO_BEM") || header_line.contains("CD_TIPO_BEM"))
         && !header_line.contains("NM_CANDIDATO")
@@ -229,18 +266,7 @@ pub fn processar_csv_tse_str(
                 .unwrap_or(0.0);
 
             let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
-            let cand_id: Option<i64> = if !sq.is_empty() {
-                conn.query_row(
-                    "SELECT c.id FROM candidaturas c 
-                     JOIN politicos p ON c.politico_id = p.id 
-                     WHERE p.sq_candidato = ?1 LIMIT 1",
-                    [sq],
-                    |r| r.get(0),
-                )
-                .ok()
-            } else {
-                None
-            };
+            let cand_id = buscar_candidatura_id(conn, &mut sq_cache, sq);
 
             batch.push(NovoBemCandidato {
                 candidatura_id: cand_id,
@@ -250,13 +276,17 @@ pub fn processar_csv_tse_str(
             });
 
             if batch.len() >= batch_size {
-                total_inseridos += batch_insert_bens_candidato(conn, &batch)?;
+                let n = batch_insert_bens_candidato(conn, &batch)?;
+                total_inseridos += n;
+                on_batch(n);
                 batch.clear();
             }
         }
 
         if !batch.is_empty() {
-            total_inseridos += batch_insert_bens_candidato(conn, &batch)?;
+            let n = batch_insert_bens_candidato(conn, &batch)?;
+            total_inseridos += n;
+            on_batch(n);
         }
     } else if header_line.contains("VR_RECEITA") || (header_line.contains("DOADOR") && header_line.contains("VALOR")) {
         // 2. Receitas de Campanha
@@ -280,18 +310,7 @@ pub fn processar_csv_tse_str(
             let desc = col_desc.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
             let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
-            let cand_id: Option<i64> = if !sq.is_empty() {
-                conn.query_row(
-                    "SELECT c.id FROM candidaturas c 
-                     JOIN politicos p ON c.politico_id = p.id 
-                     WHERE p.sq_candidato = ?1 LIMIT 1",
-                    [sq],
-                    |r| r.get(0),
-                )
-                .ok()
-            } else {
-                None
-            };
+            let cand_id = buscar_candidatura_id(conn, &mut sq_cache, sq);
 
             if !doc.is_empty() {
                 batch.push(NovaReceita {
@@ -306,13 +325,17 @@ pub fn processar_csv_tse_str(
             }
 
             if batch.len() >= batch_size {
-                total_inseridos += batch_insert_receitas(conn, &batch)?;
+                let n = batch_insert_receitas(conn, &batch)?;
+                total_inseridos += n;
+                on_batch(n);
                 batch.clear();
             }
         }
 
         if !batch.is_empty() {
-            total_inseridos += batch_insert_receitas(conn, &batch)?;
+            let n = batch_insert_receitas(conn, &batch)?;
+            total_inseridos += n;
+            on_batch(n);
         }
     } else if header_line.contains("VR_DESPESA") || (header_line.contains("FORNECEDOR") && header_line.contains("DESPESA")) {
         // 3. Despesas de Campanha
@@ -336,18 +359,7 @@ pub fn processar_csv_tse_str(
             let desc = col_desc.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
             let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
-            let cand_id: Option<i64> = if !sq.is_empty() {
-                conn.query_row(
-                    "SELECT c.id FROM candidaturas c 
-                     JOIN politicos p ON c.politico_id = p.id 
-                     WHERE p.sq_candidato = ?1 LIMIT 1",
-                    [sq],
-                    |r| r.get(0),
-                )
-                .ok()
-            } else {
-                None
-            };
+            let cand_id = buscar_candidatura_id(conn, &mut sq_cache, sq);
 
             if !doc.is_empty() {
                 batch.push(NovaDespesa {
@@ -362,13 +374,17 @@ pub fn processar_csv_tse_str(
             }
 
             if batch.len() >= batch_size {
-                total_inseridos += batch_insert_despesas(conn, &batch)?;
+                let n = batch_insert_despesas(conn, &batch)?;
+                total_inseridos += n;
+                on_batch(n);
                 batch.clear();
             }
         }
 
         if !batch.is_empty() {
-            total_inseridos += batch_insert_despesas(conn, &batch)?;
+            let n = batch_insert_despesas(conn, &batch)?;
+            total_inseridos += n;
+            on_batch(n);
         }
     } else {
         // 4. Candidatos (consulta_cand)
@@ -431,13 +447,17 @@ pub fn processar_csv_tse_str(
             });
 
             if batch.len() >= batch_size {
-                total_inseridos += batch_insert_candidatos_tse(conn, &batch)?;
+                let n = batch_insert_candidatos_tse(conn, &batch)?;
+                total_inseridos += n;
+                on_batch(n);
                 batch.clear();
             }
         }
 
         if !batch.is_empty() {
-            total_inseridos += batch_insert_candidatos_tse(conn, &batch)?;
+            let n = batch_insert_candidatos_tse(conn, &batch)?;
+            total_inseridos += n;
+            on_batch(n);
         }
     }
 
@@ -473,9 +493,75 @@ pub fn processar_zip_tse_bytes(conn: &mut Connection, zip_bytes: &[u8]) -> Resul
                 .map_err(IngestionError::Io)?;
         }
 
-        // Decodificação ISO-8859-1 para UTF-8 conforme exigência técnica do TSE
         let csv_utf8 = converter_latin1_para_utf8(&raw_bytes);
         let inseridos = processar_csv_tse_str(conn, &csv_utf8, LOTE_BATCH_SIZE)?;
+        total_processado += inseridos;
+    }
+
+    Ok(total_processado)
+}
+
+pub fn processar_zip_tse_bytes_com_progresso(
+    conn: &mut Connection,
+    zip_bytes: &[u8],
+    nome_pacote: &str,
+    indice_pacote: usize,
+    total_pacotes: usize,
+    start_time: std::time::Instant,
+) -> Result<usize> {
+    let cursor = std::io::Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| IngestionError::Zip(format!("Erro ao abrir ZIP TSE: {e}")))?;
+
+    let mut file_names = Vec::new();
+    for i in 0..archive.len() {
+        if let Ok(file) = archive.by_index(i) {
+            file_names.push(file.name().to_string());
+        }
+    }
+
+    let selecionados = selecionar_arquivos_zip(&file_names);
+    if selecionados.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total_processado = 0;
+
+    for nome_arquivo in &selecionados {
+        let display_name = format!("{nome_pacote} -> {nome_arquivo}");
+        crate::progress::update_import_progress_batch(
+            &display_name,
+            indice_pacote,
+            total_pacotes,
+            0,
+            start_time,
+        );
+
+        let mut raw_bytes = Vec::new();
+        {
+            let mut file = archive
+                .by_name(nome_arquivo)
+                .map_err(|e| IngestionError::Zip(format!("Falha ao acessar {nome_arquivo}: {e}")))?;
+            file.read_to_end(&mut raw_bytes)
+                .map_err(IngestionError::Io)?;
+        }
+
+        let csv_utf8 = converter_latin1_para_utf8(&raw_bytes);
+        let display_name_clone = display_name.clone();
+        let inseridos = processar_csv_tse_str_com_progresso(
+            conn,
+            &csv_utf8,
+            LOTE_BATCH_SIZE,
+            |lote_qtd| {
+                crate::progress::update_import_progress_batch(
+                    &display_name_clone,
+                    indice_pacote,
+                    total_pacotes,
+                    lote_qtd as u64,
+                    start_time,
+                );
+            },
+        )?;
         total_processado += inseridos;
     }
 

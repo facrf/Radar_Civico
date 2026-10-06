@@ -20,6 +20,45 @@ pub fn apply_pragmas(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Configura PRAGMAs de alta performance especificamente para operações de ingestão massiva no SQLite.
+pub fn aplicar_pragmas_ingestao(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -64000;
+         PRAGMA temp_store = MEMORY;"
+    )?;
+    Ok(())
+}
+
+/// Remove índices secundários das tabelas do TSE para acelerar inserção em massa sem overhead de balanceamento de B-Tree.
+pub fn desativar_indices_tse(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_candidaturas_politico;
+         DROP INDEX IF EXISTS idx_candidaturas_eleicao;
+         DROP INDEX IF EXISTS idx_bens_candidatura;
+         DROP INDEX IF EXISTS idx_receitas_candidatura;
+         DROP INDEX IF EXISTS idx_receitas_doador;
+         DROP INDEX IF EXISTS idx_despesas_candidatura;
+         DROP INDEX IF EXISTS idx_despesas_fornecedor;"
+    )?;
+    Ok(())
+}
+
+/// Recria os índices secundários das tabelas do TSE após o término da carga em lote.
+pub fn recriar_indices_tse(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_candidaturas_politico ON candidaturas(politico_id);
+         CREATE INDEX IF NOT EXISTS idx_candidaturas_eleicao ON candidaturas(ano_eleicao, cargo, uf);
+         CREATE INDEX IF NOT EXISTS idx_bens_candidatura ON bens_candidato(candidatura_id);
+         CREATE INDEX IF NOT EXISTS idx_receitas_candidatura ON receitas_campanha(candidatura_id);
+         CREATE INDEX IF NOT EXISTS idx_receitas_doador ON receitas_campanha(doador_cpf_cnpj);
+         CREATE INDEX IF NOT EXISTS idx_despesas_candidatura ON despesas_campanha(candidatura_id);
+         CREATE INDEX IF NOT EXISTS idx_despesas_fornecedor ON despesas_campanha(fornecedor_cpf_cnpj);"
+    )?;
+    Ok(())
+}
+
 #[derive(Clone)]
 enum DbTarget {
     File(PathBuf),

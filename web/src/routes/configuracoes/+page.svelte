@@ -79,9 +79,22 @@
 	let verificandoTse = false;
 	let msgTseVerificacao: string | null = null;
 
-	// Monitor de Job
+	// Monitor de Job & Ingestão
 	let activeJob: JobInfo | null = null;
 	let pollingInterval: any = null;
+
+	interface ImportProgress {
+		is_running: boolean;
+		current_file: string;
+		files_processed: number;
+		total_files: number;
+		records_processed: number;
+		percentage: number;
+		started_at?: string;
+		elapsed_seconds: number;
+		last_error?: string;
+	}
+	let importProgress: ImportProgress | null = null;
 
 	// Upload Manual
 	let tipoDocumentoUpload = 'AUTO';
@@ -320,14 +333,22 @@
 
 		const verificar = async () => {
 			try {
-				const res = await fetch(`/api/v1/config/ingestao/status/${jobId}`);
-				if (res.ok) {
-					activeJob = await res.json();
-					if (activeJob?.status === 'CONCLUIDO' || activeJob?.status === 'ERRO') {
-						clearInterval(pollingInterval);
-						pollingInterval = null;
-						carregarStatus();
-					}
+				const [resJob, resProg] = await Promise.all([
+					fetch(`/api/v1/config/ingestao/status/${jobId}`),
+					fetch('/api/import/status')
+				]);
+
+				if (resJob.ok) {
+					activeJob = await resJob.json();
+				}
+				if (resProg.ok) {
+					importProgress = await resProg.json();
+				}
+
+				if (activeJob?.status === 'CONCLUIDO' || activeJob?.status === 'ERRO') {
+					clearInterval(pollingInterval);
+					pollingInterval = null;
+					carregarStatus();
 				}
 			} catch (e) {
 				console.error('Erro no polling do job:', e);
@@ -1055,6 +1076,35 @@
 					style="width: {activeJob.progresso}%"
 				></div>
 			</div>
+
+			{#if importProgress && (importProgress.is_running || importProgress.records_processed > 0)}
+				<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-900/80 p-3 rounded-lg border border-slate-700/60 text-xs">
+					<div>
+						<span class="text-slate-400 block text-[11px]">Arquivo Atual</span>
+						<span class="text-slate-200 font-medium truncate block" title={importProgress.current_file}>
+							{importProgress.current_file || '-'}
+						</span>
+					</div>
+					<div>
+						<span class="text-slate-400 block text-[11px]">Pacotes Processados</span>
+						<span class="text-emerald-400 font-mono font-semibold">
+							{importProgress.files_processed} / {importProgress.total_files}
+						</span>
+					</div>
+					<div>
+						<span class="text-slate-400 block text-[11px]">Registros Salvos (SQLite)</span>
+						<span class="text-cyan-400 font-mono font-semibold">
+							{importProgress.records_processed.toLocaleString('pt-BR')}
+						</span>
+					</div>
+					<div>
+						<span class="text-slate-400 block text-[11px]">Tempo Decorrido</span>
+						<span class="text-amber-400 font-mono font-semibold">
+							{importProgress.elapsed_seconds}s
+						</span>
+					</div>
+				</div>
+			{/if}
 
 			<!-- Terminal de Logs -->
 			<div class="bg-slate-950 p-4 rounded-lg border border-slate-800 font-mono text-xs text-slate-300 space-y-1 max-h-48 overflow-y-auto">

@@ -521,6 +521,9 @@ pub async fn sincronizar_tse_handler(
         let datasets = payload.datasets.unwrap_or_default();
 
         tokio::spawn(async move {
+            let start_instant = std::time::Instant::now();
+            ingestion::progress::reset_import_progress(0);
+
             atualizar_job(&job_id_spawn, 25, "Consultando catálogo de dados abertos no portal CKAN do TSE...").await;
 
             let datasets_ref: Vec<&str> = if datasets.is_empty() {
@@ -532,11 +535,23 @@ pub async fn sincronizar_tse_handler(
             let urls_res = ingestion::tse_ckan::descobrir_urls_tse(ano as u32, &datasets_ref).await;
             match urls_res {
                 Ok(urls) if !urls.is_empty() => {
+                    let total_urls = urls.len();
+                    ingestion::progress::reset_import_progress(total_urls);
+
                     atualizar_job(
                         &job_id_spawn,
                         40,
-                        &format!("{} pacotes ZIP descobertos no CKAN. Iniciando download e processamento seletivo...", urls.len()),
+                        &format!("{} pacotes ZIP descobertos no CKAN. Otimizando SQLite e iniciando processamento seletivo...", total_urls),
                     )
+                    .await;
+
+                    // Otimização de Postergação de Índices: desativa índices secundários antes do lote massivo
+                    let pool_idx_pre = pool_spawn.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Ok(conn) = pool_idx_pre.get() {
+                            let _ = storage::desativar_indices_tse(&conn);
+                        }
+                    })
                     .await;
 
                     let mut total_inseridos = 0;
@@ -547,12 +562,12 @@ pub async fn sincronizar_tse_handler(
                         .unwrap_or_default();
 
                     for (idx, url) in urls.iter().enumerate() {
-                        let progresso_atual = 40 + ((idx * 50) / urls.len()) as u8;
+                        let progresso_atual = 40 + ((idx * 50) / total_urls) as u8;
                         let nome_url = url.split('/').last().unwrap_or("pacote.zip");
                         atualizar_job(
                             &job_id_spawn,
                             progresso_atual,
-                            &format!("Baixando pacote ({}/{}) {}...", idx + 1, urls.len(), nome_url),
+                            &format!("Baixando pacote ({}/{}) {}...", idx + 1, total_urls, nome_url),
                         )
                         .await;
 
@@ -562,19 +577,50 @@ pub async fn sincronizar_tse_handler(
                                     atualizar_job(
                                         &job_id_spawn,
                                         progresso_atual + 5,
-                                        &format!("Processando ZIP {} em streaming (priorizando _BRASIL.csv)...", nome_url),
+                                        &format!("Processando ZIP {} em background thread (batching 25.000)...", nome_url),
                                     )
                                     .await;
 
-                                    if let Ok(mut conn) = pool_spawn.get() {
-                                        if let Ok(inseridos) = ingestion::tse_ckan::processar_zip_tse_bytes(&mut conn, &bytes) {
-                                            total_inseridos += inseridos;
-                                        }
+                                    let pool_batch = pool_spawn.clone();
+                                    let nome_url_str = nome_url.to_string();
+                                    let bytes_vec = bytes.to_vec();
+
+                                    // ISOLAMENTO DE CPU/IO: Delega parse, unzipping e transações do SQLite para o pool de blocking
+                                    let batch_res = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+                                        let mut conn = pool_batch.get().map_err(|e| e.to_string())?;
+                                        // Aplica PRAGMAs de alta performance na conexão da thread de ingestão
+                                        storage::aplicar_pragmas_ingestao(&conn).map_err(|e| e.to_string())?;
+
+                                        ingestion::tse_ckan::processar_zip_tse_bytes_com_progresso(
+                                            &mut conn,
+                                            &bytes_vec,
+                                            &nome_url_str,
+                                            idx,
+                                            total_urls,
+                                            start_instant,
+                                        )
+                                        .map_err(|e| e.to_string())
+                                    })
+                                    .await;
+
+                                    if let Ok(Ok(inseridos)) = batch_res {
+                                        total_inseridos += inseridos;
                                     }
                                 }
                             }
                         }
                     }
+
+                    // Recria os índices secundários após o término da carga massiva
+                    let pool_idx_post = pool_spawn.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Ok(conn) = pool_idx_post.get() {
+                            let _ = storage::recriar_indices_tse(&conn);
+                        }
+                    })
+                    .await;
+
+                    ingestion::progress::finish_import_progress(start_instant);
 
                     let msg = format!(
                         "Sincronização TSE via CKAN ({ano}) concluída com sucesso. {} registros gravados no banco.",
@@ -590,6 +636,7 @@ pub async fn sincronizar_tse_handler(
                     }
                 }
                 Ok(_) => {
+                    ingestion::progress::finish_import_progress(start_instant);
                     let msg = format!(
                         "Busca no CKAN para o ano {ano} concluída. Nenhum pacote novo encontrado ou disponível no momento."
                     );
@@ -604,6 +651,7 @@ pub async fn sincronizar_tse_handler(
                 }
                 Err(e) => {
                     let err_msg = format!("Falha na descoberta de pacotes via CKAN ({ano}): {e}");
+                    ingestion::progress::set_import_error(&err_msg, start_instant);
                     atualizar_job_concluido(&job_id_spawn, 100, "ERRO", &err_msg).await;
                     if let Ok(conn) = pool_spawn.get() {
                         let _ = conn.execute(
@@ -834,6 +882,13 @@ pub async fn job_status_handler(
             Json(json!({"erro": format!("Job '{job_id}' não encontrado")})),
         ))
     }
+}
+
+pub use ingestion::progress::ImportProgress;
+
+pub async fn import_status_handler() -> Json<ImportProgress> {
+    let progress = ingestion::progress::get_import_progress().read().unwrap().clone();
+    Json(progress)
 }
 
 fn find_col(headers: &csv::StringRecord, candidates: &[&str]) -> Option<usize> {
@@ -2426,6 +2481,38 @@ mod tests {
         let job_exec: JobInfo = serde_json::from_slice(&bytes_status_exec).unwrap();
         assert_eq!(job_exec.fonte, "TSE_CKAN");
         assert_eq!(job_exec.ano, Some(2022));
+    }
+
+    #[tokio::test]
+    async fn test_import_status_endpoint() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+        let req = Request::builder()
+            .uri("/api/import/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let progress: ImportProgress = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(progress.percentage >= 0.0, true);
+
+        // Testa também rota sob /api/v1
+        let app_v1 = crate::criar_router(pool.clone());
+        let req_v1 = Request::builder()
+            .uri("/api/v1/import/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let res_v1 = app_v1.oneshot(req_v1).await.unwrap();
+        assert_eq!(res_v1.status(), StatusCode::OK);
     }
 }
 

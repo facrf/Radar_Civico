@@ -6,14 +6,21 @@ pub mod error;
 pub mod normalizer;
 pub mod oab;
 pub mod pncp;
+pub mod progress;
 pub mod querido_diario;
 pub mod tse_ckan;
 pub mod tse_streaming;
 
+pub use progress::{
+    finish_import_progress, get_import_progress, reset_import_progress, set_import_error,
+    update_import_progress_batch, ImportProgress,
+};
+
 pub use tse_ckan::{
     baixar_e_processar_pacote_tse, descobrir_urls_tse, descobrir_urls_tse_com_base,
-    processar_csv_tse_str, processar_zip_tse_bytes, selecionar_arquivos_zip, CkanPackage,
-    CkanResource, CkanResponse, LOTE_BATCH_SIZE,
+    processar_csv_tse_str, processar_csv_tse_str_com_progresso, processar_zip_tse_bytes,
+    processar_zip_tse_bytes_com_progresso, selecionar_arquivos_zip, CkanPackage, CkanResource,
+    CkanResponse, LOTE_BATCH_SIZE,
 };
 
 pub use auxilio_emergencial::{
