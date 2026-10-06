@@ -14,11 +14,29 @@ pub struct BuscaParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ItemBuscaUnificada {
-    pub tipo: String, // "POLITICO", "FORNECEDOR", "DOADOR"
+    pub tipo: String, // "POLITICO", "FORNECEDOR", "DOADOR", "SOCIO", "EMPRESA_QSA"
     pub id: Option<i64>,
     pub identificador: String,
     pub titulo: String,
     pub subtitulo: Option<String>,
+    #[serde(default)]
+    pub nome: String,
+    #[serde(default)]
+    pub detalhe: Option<String>,
+}
+
+impl ItemBuscaUnificada {
+    pub fn novo(tipo: &str, id: Option<i64>, identificador: &str, titulo: &str, subtitulo: Option<String>) -> Self {
+        Self {
+            tipo: tipo.to_string(),
+            id,
+            identificador: identificador.to_string(),
+            titulo: titulo.to_string(),
+            subtitulo: subtitulo.clone(),
+            nome: titulo.to_string(),
+            detalhe: subtitulo,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -26,6 +44,8 @@ pub struct RespostaBusca {
     pub query: String,
     pub total: usize,
     pub resultados: Vec<ItemBuscaUnificada>,
+    #[serde(default)]
+    pub itens: Vec<ItemBuscaUnificada>,
 }
 
 fn sanitizar_fts_query(q: &str) -> String {
@@ -46,15 +66,14 @@ fn sanitizar_fts_query(q: &str) -> String {
 
 pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<ItemBuscaUnificada>, storage::StorageError> {
     let conn = pool.get()?;
-    let fts_query = sanitizar_fts_query(termo);
+    let termo_trim = termo.trim();
+    let fts_query = sanitizar_fts_query(termo_trim);
     let mut resultados = Vec::new();
 
-    if fts_query.is_empty() {
-        return Ok(resultados);
-    }
+    let digits: String = termo_trim.chars().filter(|c| c.is_ascii_digit()).collect();
 
-    // 1. Busca em politicos_fts
-    {
+    // 1. Busca em politicos_fts (se houver texto para FTS)
+    if !fts_query.is_empty() {
         let mut stmt = conn.prepare(
             "SELECT politico_id, nome_completo, nome_urna, sq_candidato
              FROM politicos_fts
@@ -68,54 +87,104 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
             let nome_urna: String = row.get(2)?;
             let sq: String = row.get(3)?;
 
-            Ok(ItemBuscaUnificada {
-                tipo: "POLITICO".to_string(),
+            Ok(ItemBuscaUnificada::novo(
+                "POLITICO",
                 id,
-                identificador: sq,
-                titulo: nome_completo,
-                subtitulo: Some(format!("Nome de urna: {}", nome_urna)),
-            })
+                &sq,
+                &nome_completo,
+                Some(format!("Nome de urna: {}", nome_urna)),
+            ))
         })?;
 
-        for r in rows {
-            if let Ok(item) = r {
-                resultados.push(item);
+        for r in rows.flatten() {
+            resultados.push(r);
+        }
+    }
+
+    // 2. Busca direta em politicos por CPF ou SQ candidato
+    if (!digits.is_empty()) && resultados.len() < limite {
+        let rem_limite = limite - resultados.len();
+        let mut stmt = conn.prepare(
+            "SELECT id, nome_completo, nome_urna, sq_candidato, cpf_mascarado
+             FROM politicos
+             WHERE sq_candidato = ?1
+                OR (cpf_mascarado IS NOT NULL AND cpf_mascarado != '-4' AND (cpf_mascarado LIKE ?2 OR cpf_mascarado LIKE ?3))
+             LIMIT ?4",
+        )?;
+
+        let like_digits = format!("%{}%", digits);
+        let like_termo = format!("%{}%", termo_trim);
+
+        let rows = stmt.query_map(
+            storage::rusqlite::params![termo_trim, like_digits, like_termo, rem_limite],
+            |row| {
+                let id: Option<i64> = row.get(0)?;
+                let nome_completo: String = row.get(1)?;
+                let nome_urna: String = row.get(2)?;
+                let sq: String = row.get(3)?;
+                let cpf: Option<String> = row.get(4)?;
+
+                Ok(ItemBuscaUnificada::novo(
+                    "POLITICO",
+                    id,
+                    &sq,
+                    &nome_completo,
+                    Some(format!(
+                        "Nome de urna: {}{}",
+                        nome_urna,
+                        cpf.map(|c| format!(" • CPF: {}", c)).unwrap_or_default()
+                    )),
+                ))
+            },
+        )?;
+
+        for r in rows.flatten() {
+            if !resultados.iter().any(|existing| existing.identificador == r.identificador) {
+                resultados.push(r);
             }
         }
     }
 
-    // 2. Busca em fornecedores_fts
-    {
-        let mut stmt = conn.prepare(
+    // 3. Busca em fornecedores_fts
+    if (!fts_query.is_empty() || !digits.is_empty()) && resultados.len() < limite {
+        let rem_limite = limite - resultados.len();
+        let query_fts = if !fts_query.is_empty() {
+            fts_query.clone()
+        } else {
+            format!("{}*", digits)
+        };
+
+        if let Ok(mut stmt) = conn.prepare(
             "SELECT DISTINCT fornecedor_cpf_cnpj, fornecedor_nome
              FROM fornecedores_fts
              WHERE fornecedores_fts MATCH ?1
              LIMIT ?2",
-        )?;
+        ) {
+            let rows = stmt.query_map(storage::rusqlite::params![query_fts, rem_limite], |row| {
+                let doc: String = row.get(0)?;
+                let nome: String = row.get(1)?;
 
-        let rows = stmt.query_map(storage::rusqlite::params![fts_query, limite], |row| {
-            let doc: String = row.get(0)?;
-            let nome: String = row.get(1)?;
+                Ok(ItemBuscaUnificada::novo(
+                    "FORNECEDOR",
+                    None,
+                    &doc,
+                    &nome,
+                    Some("Fornecedor contratado/declarado".to_string()),
+                ))
+            })?;
 
-            Ok(ItemBuscaUnificada {
-                tipo: "FORNECEDOR".to_string(),
-                id: None,
-                identificador: doc,
-                titulo: nome,
-                subtitulo: Some("Fornecedor contratado/declarado".to_string()),
-            })
-        })?;
-
-        for r in rows {
-            if let Ok(item) = r {
-                resultados.push(item);
+            for r in rows.flatten() {
+                if !resultados.iter().any(|existing| existing.identificador == r.identificador && existing.titulo == r.titulo) {
+                    resultados.push(r);
+                }
             }
         }
     }
 
-    // 3. Busca em receitas_campanha (Doadores)
-    {
-        let like_query = format!("%{}%", termo.trim());
+    // 4. Busca em receitas_campanha (Doadores)
+    if (!termo_trim.is_empty()) && resultados.len() < limite {
+        let rem_limite = limite - resultados.len();
+        let like_query = format!("%{}%", termo_trim);
         let mut stmt = conn.prepare(
             "SELECT DISTINCT doador_cpf_cnpj, doador_nome
              FROM receitas_campanha
@@ -123,22 +192,155 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
              LIMIT ?2",
         )?;
 
-        let rows = stmt.query_map(storage::rusqlite::params![like_query, limite], |row| {
+        let rows = stmt.query_map(storage::rusqlite::params![like_query, rem_limite], |row| {
             let doc: String = row.get(0)?;
             let nome: String = row.get(1)?;
 
-            Ok(ItemBuscaUnificada {
-                tipo: "DOADOR".to_string(),
-                id: None,
-                identificador: doc,
-                titulo: nome,
-                subtitulo: Some("Doador eleitoral".to_string()),
-            })
+            Ok(ItemBuscaUnificada::novo(
+                "DOADOR",
+                None,
+                &doc,
+                &nome,
+                Some("Doador eleitoral".to_string()),
+            ))
         })?;
 
-        for r in rows {
-            if let Ok(item) = r {
-                resultados.push(item);
+        for r in rows.flatten() {
+            if !resultados.iter().any(|existing| existing.identificador == r.identificador && existing.titulo == r.titulo) {
+                resultados.push(r);
+            }
+        }
+    }
+
+    // 5. Busca na base de Sócios e Administradores (empresas_qsa)
+    // Suporta CPF completo (11 dígitos), 6 dígitos do miolo, CPF mascarado (***123456**) e CNPJ (8 ou 14 dígitos)
+    if resultados.len() < limite {
+        let mut qsa_cpf_candidates = Vec::new();
+
+        if termo_trim.contains("***") {
+            qsa_cpf_candidates.push(termo_trim.to_string());
+        }
+
+        if digits.len() == 11 {
+            // Em dados abertos da RFB, o CPF do sócio é mascarado exibindo os 6 dígitos centrais (índice 3 a 9)
+            let miolo = &digits[3..9];
+            qsa_cpf_candidates.push(format!("***{}**", miolo));
+            qsa_cpf_candidates.push(format!("***.{}.{}-**", &miolo[0..3], &miolo[3..6]));
+            qsa_cpf_candidates.push(digits.clone());
+        } else if digits.len() == 6 {
+            qsa_cpf_candidates.push(format!("***{}**", digits));
+            qsa_cpf_candidates.push(format!("***.{}.{}-**", &digits[0..3], &digits[3..6]));
+        }
+
+        for mask in qsa_cpf_candidates {
+            if resultados.len() >= limite {
+                break;
+            }
+            let rem_limite = limite - resultados.len();
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio
+                 FROM empresas_qsa
+                 WHERE socio_cpf_cnpj_mascarado = ?1
+                 LIMIT ?2",
+            ) {
+                let rows = stmt.query_map(storage::rusqlite::params![mask, rem_limite], |row| {
+                    let cnpj_b: String = row.get(0)?;
+                    let cnpj_o: String = row.get(1)?;
+                    let cnpj_d: String = row.get(2)?;
+                    let razao: String = row.get(3)?;
+                    let socio_doc: String = row.get(4)?;
+                    let socio_nome: String = row.get(5)?;
+                    let qualif: Option<String> = row.get(6)?;
+
+                    let cnpj_fmt = format!(
+                        "{}.{}.{}/{}-{}",
+                        if cnpj_b.len() >= 2 { &cnpj_b[0..2] } else { &cnpj_b },
+                        if cnpj_b.len() >= 5 { &cnpj_b[2..5] } else { "" },
+                        if cnpj_b.len() >= 8 { &cnpj_b[5..8] } else { "" },
+                        cnpj_o,
+                        cnpj_d
+                    );
+
+                    let titulo = if socio_nome.is_empty() || socio_nome == socio_doc {
+                        format!("Sócio {}", socio_doc)
+                    } else {
+                        socio_nome
+                    };
+
+                    let subtitulo = Some(format!(
+                        "Sócio em {} (CNPJ: {}){}",
+                        razao,
+                        cnpj_fmt,
+                        qualif.map(|q| format!(" - {}", q)).unwrap_or_default()
+                    ));
+
+                    Ok(ItemBuscaUnificada::novo(
+                        "SOCIO",
+                        None,
+                        &cnpj_fmt,
+                        &titulo,
+                        subtitulo,
+                    ))
+                })?;
+
+                for r in rows.flatten() {
+                    if !resultados.iter().any(|existing| existing.identificador == r.identificador && existing.titulo == r.titulo) {
+                        resultados.push(r);
+                    }
+                }
+            }
+        }
+
+        // Busca por CNPJ básico (8 ou 14 dígitos) em empresas_qsa
+        if (digits.len() == 8 || digits.len() == 14) && resultados.len() < limite {
+            let cnpj_b = &digits[0..8];
+            let rem_limite = limite - resultados.len();
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio
+                 FROM empresas_qsa
+                 WHERE cnpj_basico = ?1
+                 LIMIT ?2",
+            ) {
+                let rows = stmt.query_map(storage::rusqlite::params![cnpj_b, rem_limite], |row| {
+                    let b: String = row.get(0)?;
+                    let o: String = row.get(1)?;
+                    let d: String = row.get(2)?;
+                    let razao: String = row.get(3)?;
+                    let s_doc: String = row.get(4)?;
+                    let s_nome: String = row.get(5)?;
+                    let qualif: Option<String> = row.get(6)?;
+
+                    let cnpj_fmt = format!(
+                        "{}.{}.{}/{}-{}",
+                        if b.len() >= 2 { &b[0..2] } else { &b },
+                        if b.len() >= 5 { &b[2..5] } else { "" },
+                        if b.len() >= 8 { &b[5..8] } else { "" },
+                        o,
+                        d
+                    );
+
+                    let titulo = razao;
+                    let subtitulo = Some(format!(
+                        "Empresa com sócio {} ({}){}",
+                        s_nome,
+                        s_doc,
+                        qualif.map(|q| format!(" - {}", q)).unwrap_or_default()
+                    ));
+
+                    Ok(ItemBuscaUnificada::novo(
+                        "EMPRESA_QSA",
+                        None,
+                        &cnpj_fmt,
+                        &titulo,
+                        subtitulo,
+                    ))
+                })?;
+
+                for r in rows.flatten() {
+                    if !resultados.iter().any(|existing| existing.identificador == r.identificador && existing.titulo == r.titulo) {
+                        resultados.push(r);
+                    }
+                }
             }
         }
     }
@@ -161,6 +363,7 @@ pub async fn busca_handler(
     Ok(Json(RespostaBusca {
         query: termo,
         total: resultados.len(),
+        itens: resultados.clone(),
         resultados,
     }))
 }
@@ -223,5 +426,57 @@ mod tests {
         let tipos: Vec<String> = resposta.resultados.iter().map(|r| r.tipo.clone()).collect();
         assert!(tipos.contains(&"POLITICO".to_string()));
         assert!(tipos.contains(&"FORNECEDOR".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_busca_cpf_e_qsa_socio_endpoint() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Insere vínculo societário em empresas_qsa com CPF mascarado no formato oficial da Receita (***456789**)
+        conn.execute(
+            "INSERT INTO empresas_qsa (cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio)
+             VALUES ('12345678', '0001', '90', 'ALPHA SERVICOS DIGITAIS LTDA', '***456789**', 'MARIO SERGIO SILVA', '49-Sócio-Administrador')",
+            [],
+        ).unwrap();
+
+        let app = Router::new()
+            .route("/api/v1/busca", get(busca_handler))
+            .with_state(pool);
+
+        // 1. Testa busca pelo CPF completo formatado (123.456.789-00)
+        let req1 = Request::builder()
+            .uri("/api/v1/busca?q=123.456.789-00")
+            .body(Body::empty())
+            .unwrap();
+
+        let res1 = app.clone().oneshot(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
+
+        let bytes1 = axum::body::to_bytes(res1.into_body(), usize::MAX).await.unwrap();
+        let resposta1: RespostaBusca = serde_json::from_slice(&bytes1).unwrap();
+
+        assert_eq!(resposta1.total, 1);
+        assert_eq!(resposta1.itens.len(), 1); // Garante compatibilidade com o front
+        let item = &resposta1.resultados[0];
+        assert_eq!(item.tipo, "SOCIO");
+        assert_eq!(item.titulo, "MARIO SERGIO SILVA");
+        assert_eq!(item.nome, "MARIO SERGIO SILVA"); // Garante campo .nome
+        assert!(item.subtitulo.as_ref().unwrap().contains("ALPHA SERVICOS"));
+
+        // 2. Testa busca pelo miolo do CPF (456789)
+        let req2 = Request::builder()
+            .uri("/api/v1/busca?q=456789")
+            .body(Body::empty())
+            .unwrap();
+
+        let res2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+
+        let bytes2 = axum::body::to_bytes(res2.into_body(), usize::MAX).await.unwrap();
+        let resposta2: RespostaBusca = serde_json::from_slice(&bytes2).unwrap();
+        assert_eq!(resposta2.total, 1);
+        assert_eq!(resposta2.resultados[0].tipo, "SOCIO");
     }
 }

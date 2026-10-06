@@ -119,13 +119,15 @@ pub fn registrar_alerta(conn: &Connection, alerta: &NovoAlerta) -> Result<i64, s
 pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::StorageError> {
     let mut novos_inseridos = 0;
 
-    // 1. Sincroniza anomalias de combustível da CEAP (> 80 litros ou flag_anomalia = 1)
+    // 1. Sincroniza anomalias de combustível da CEAP (> 80 litros ou flag_anomalia = 1 ou despesa de combustível com valor equivalente > 80L)
     {
         let mut stmt = conn.prepare(
             "SELECT id, parlamentar_nome, parlamentar_cpf_mascarado, fornecedor_nome,
-                    data_emissao, valor_liquido, detalhes_litros, flag_anomalia
+                    data_emissao, valor_liquido, detalhes_litros, flag_anomalia, categoria_despesa
              FROM despesas_parlamentares
-             WHERE detalhes_litros > 80.0 OR flag_anomalia = 1",
+             WHERE detalhes_litros > 80.0
+                OR flag_anomalia = 1
+                OR (UPPER(categoria_despesa) LIKE '%COMBUST%' AND valor_liquido > 464.0)",
         )?;
 
         let despesas = stmt.query_map([], |row| {
@@ -138,12 +140,23 @@ pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::
                 row.get::<_, f64>(5)?,
                 row.get::<_, Option<f64>>(6)?,
                 row.get::<_, bool>(7)?,
+                row.get::<_, String>(8)?,
             ))
         })?;
 
         for d in despesas {
-            let (id, parl, cpf, forn, dt, val, litros, _flag) = d?;
-            let litros_val = litros.unwrap_or(0.0);
+            let (id, parl, cpf, forn, dt, val, litros, _flag, cat) = d?;
+            let litros_val = litros.unwrap_or_else(|| {
+                if cat.to_uppercase().contains("COMBUST") {
+                    (val / 5.80 * 10.0).round() / 10.0
+                } else {
+                    0.0
+                }
+            });
+
+            if litros_val <= 80.0 {
+                continue;
+            }
 
             // Verifica se já foi sincronizado
             let chave_detalhes = format!("\"despesa_id\":{}", id);
@@ -163,6 +176,10 @@ pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::
                     "litros": litros_val,
                     "fornecedor": forn,
                     "data": dt,
+                    "categoria": cat,
+                    "regra": "Volume faturado supera capacidade física de veículo leve (> 80L)",
+                    "fundamentacao": "Instrução Normativa CEAP e parâmetro técnico automotivo",
+                    "fonte_primaria": "Câmara dos Deputados (CEAP)"
                 });
 
                 registrar_alerta(
@@ -170,9 +187,9 @@ pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::
                     &NovoAlerta {
                         tipo: "COMBUSTIVEL".to_string(),
                         severidade: severidade.to_string(),
-                        titulo: format!("Abastecimento anômalo ({:.1}L) - {}", litros_val, parl),
+                        titulo: format!("Abastecimento Anômalo ({:.1}L) - {}", litros_val, parl),
                         descricao: format!(
-                            "Volume faturado de {:.1}L em {} supera capacidade física de veículo leve.",
+                            "Volume faturado de {:.1}L em {} supera capacidade física do tanque de veículos leves (> 80 litros).",
                             litros_val, forn
                         ),
                         alvo_nome: parl,
