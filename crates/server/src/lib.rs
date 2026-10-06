@@ -2,10 +2,19 @@ pub mod alertas;
 pub mod api;
 pub mod busca;
 pub mod config;
+pub mod dossie;
 pub mod grafo;
 pub mod investigar;
 pub mod politico;
 pub mod routes;
+
+pub use dossie::{
+    dossie_cnpj_handler, dossie_cpf_handler, AlertaDossie, BeneficioEmergencialItem,
+    CandidaturaItemCpf, CandidaturaSocioTse, CompradorCeapResumo, ContratoPncpItem,
+    DiarioItem, DoacaoEleitoralItem, DoacaoSocioTse, DossieCnpjResponse, DossieCpfResponse,
+    EmpresaResumo, EmpresaSocioItem, NotaFiscalCeapItem, OrgaoContratanteResumo, PainelCeap,
+    PainelPncp, PainelSocietario, PainelTseSocios, RegistroProfissionalItem, SocioItem,
+};
 
 pub use alertas::{
     alertas_handler, auxilio_indevido_handler, carregar_alertas, registrar_alerta,
@@ -52,6 +61,8 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/health", get(|| async { "OK" }))
         .route("/api/v1/busca", get(busca_handler))
         .route("/api/v1/politico/:id", get(politico_dossie_handler))
+        .route("/api/v1/dossie/cnpj/:cnpj", get(dossie::dossie_cnpj_handler))
+        .route("/api/v1/dossie/cpf/:cpf", get(dossie::dossie_cpf_handler))
         .route("/api/v1/grafo/:id", get(grafo_subgrafo_handler))
         .route("/api/v1/auditoria/alertas", get(alertas_handler))
         .route("/api/v1/auditoria/auxilio-indevido", get(auxilio_indevido_handler))

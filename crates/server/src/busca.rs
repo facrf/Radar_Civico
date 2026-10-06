@@ -23,6 +23,8 @@ pub struct ItemBuscaUnificada {
     pub nome: String,
     #[serde(default)]
     pub detalhe: Option<String>,
+    #[serde(default)]
+    pub documento: Option<String>,
 }
 
 impl ItemBuscaUnificada {
@@ -35,7 +37,13 @@ impl ItemBuscaUnificada {
             subtitulo: subtitulo.clone(),
             nome: titulo.to_string(),
             detalhe: subtitulo,
+            documento: None,
         }
+    }
+
+    pub fn com_documento(mut self, doc: &str) -> Self {
+        self.documento = Some(doc.to_string());
+        self
     }
 }
 
@@ -93,7 +101,7 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
                 &sq,
                 &nome_completo,
                 Some(format!("Nome de urna: {}", nome_urna)),
-            ))
+            ).com_documento(&sq))
         })?;
 
         for r in rows.flatten() {
@@ -124,7 +132,7 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
                 let sq: String = row.get(3)?;
                 let cpf: Option<String> = row.get(4)?;
 
-                Ok(ItemBuscaUnificada::novo(
+                let mut item = ItemBuscaUnificada::novo(
                     "POLITICO",
                     id,
                     &sq,
@@ -132,9 +140,15 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
                     Some(format!(
                         "Nome de urna: {}{}",
                         nome_urna,
-                        cpf.map(|c| format!(" • CPF: {}", c)).unwrap_or_default()
+                        cpf.as_ref().map(|c| format!(" • CPF: {}", c)).unwrap_or_default()
                     )),
-                ))
+                );
+                if let Some(ref c) = cpf {
+                    item = item.com_documento(c);
+                } else {
+                    item = item.com_documento(&sq);
+                }
+                Ok(item)
             },
         )?;
 
@@ -170,7 +184,7 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
                     &doc,
                     &nome,
                     Some("Fornecedor contratado/declarado".to_string()),
-                ))
+                ).com_documento(&doc))
             })?;
 
             for r in rows.flatten() {
@@ -202,7 +216,7 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
                 &doc,
                 &nome,
                 Some("Doador eleitoral".to_string()),
-            ))
+            ).com_documento(&doc))
         })?;
 
         for r in rows.flatten() {
@@ -280,7 +294,7 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
                         &cnpj_fmt,
                         &titulo,
                         subtitulo,
-                    ))
+                    ).com_documento(&socio_doc))
                 })?;
 
                 for r in rows.flatten() {
@@ -333,7 +347,7 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
                         &cnpj_fmt,
                         &titulo,
                         subtitulo,
-                    ))
+                    ).com_documento(&cnpj_fmt))
                 })?;
 
                 for r in rows.flatten() {
