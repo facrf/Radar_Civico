@@ -1347,7 +1347,7 @@
 				</div>
 
 				<div class="flex flex-wrap items-center gap-3 pt-1">
-					<div class="flex items-center gap-2">
+					<div class="flex flex-wrap items-center gap-2">
 						<label for="ano-tse" class="text-xs text-slate-400">Ano Eleitoral:</label>
 						<select
 							id="ano-tse"
@@ -1359,7 +1359,31 @@
 							<option value={2022}>2022 (Geral)</option>
 							<option value={2020}>2020 (Municipal)</option>
 							<option value={2018}>2018 (Geral)</option>
+							<option value={2016}>2016 (Municipal)</option>
+							<option value={2014}>2014 (Geral)</option>
+							<option value={2012}>2012 (Municipal)</option>
+							<option value={2010}>2010 (Geral)</option>
+							<option value={2008}>2008 (Municipal)</option>
+							<option value={2006}>2006 (Geral)</option>
+							<option value={2004}>2004 (Municipal)</option>
+							<option value={2002}>2002 (Geral)</option>
+							<option value={2000}>2000 (Municipal)</option>
+							<option value={1998}>1998 (Geral)</option>
+							<option value={1996}>1996 (Municipal)</option>
 						</select>
+						<div class="flex items-center gap-1.5 text-xs text-slate-400">
+							<span class="text-[11px] text-slate-500">ou digite:</span>
+							<input
+								type="number"
+								min="1990"
+								max="2030"
+								step="2"
+								placeholder="Ano"
+								bind:value={anoTse}
+								class="w-20 bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-2 py-1.5 focus:ring-emerald-500 focus:border-emerald-500 text-center font-mono"
+								title="Informe qualquer ano eleitoral do TSE"
+							/>
+						</div>
 					</div>
 
 					<button

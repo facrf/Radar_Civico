@@ -334,6 +334,7 @@ export interface ItemPoliticoListagem {
 	foto_mime: string | null;
 	foto_url?: string | null;
 	mandatos?: string[];
+	ano_eleicao?: number | null;
 }
 
 export interface BuscarFotoResponse {
@@ -358,6 +359,7 @@ export interface ListarPoliticosResponse {
 	partidos_disponiveis: string[];
 	ufs_disponiveis: string[];
 	cargos_disponiveis: string[];
+	anos_disponiveis?: number[];
 	politicos: ItemPoliticoListagem[];
 }
 

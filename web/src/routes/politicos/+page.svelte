@@ -16,9 +16,13 @@
 	let partidoSelecionado = '';
 	let ufSelecionada = '';
 	let cargoSelecionado = '';
+	let anoSelecionado = '';
 	let apenasComGastos = false;
 	let paginaAtual = 1;
 	const limitePorPagina = 24;
+
+	// Modo de Visualização: Cards vs Tabulação
+	let modoVisualizacao: 'cards' | 'tabela' = 'cards';
 
 	async function navegarParaPolitico(id: number | string) {
 		const targetUrl = `/politicos/${id}`;
@@ -88,6 +92,7 @@
 		partidos_disponiveis: [],
 		ufs_disponiveis: [],
 		cargos_disponiveis: [],
+		anos_disponiveis: [],
 		politicos: []
 	};
 
@@ -112,6 +117,7 @@
 		if (partidoSelecionado) params.set('partido', partidoSelecionado);
 		if (ufSelecionada) params.set('uf', ufSelecionada);
 		if (cargoSelecionado) params.set('cargo', cargoSelecionado);
+		if (anoSelecionado) params.set('ano', anoSelecionado);
 		if (apenasComGastos) params.set('apenas_com_gastos', 'true');
 
 		try {
@@ -139,6 +145,7 @@
 		partidoSelecionado = '';
 		ufSelecionada = '';
 		cargoSelecionado = '';
+		anoSelecionado = '';
 		apenasComGastos = false;
 		carregarPoliticos(true);
 	}
@@ -256,8 +263,8 @@
 				</button>
 			</div>
 
-			<!-- Linha 2: Filtros Dropdowns (Partido, UF, Cargo, Checkbox CEAP) -->
-			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+			<!-- Linha 2: Filtros Dropdowns (Partido, UF, Cargo, Ano, Checkbox CEAP) -->
+			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
 				<!-- Filtro por Partido -->
 				<div>
 					<label for="filtro-partido" class="block text-slate-400 font-medium mb-1.5">Partido Político:</label>
@@ -306,6 +313,22 @@
 					</select>
 				</div>
 
+				<!-- Filtro por Ano da Eleição -->
+				<div>
+					<label for="filtro-ano" class="block text-slate-400 font-medium mb-1.5">Ano da Eleição:</label>
+					<select
+						id="filtro-ano"
+						bind:value={anoSelecionado}
+						on:change={() => carregarPoliticos(true)}
+						class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+					>
+						<option value="">Todos os Anos</option>
+						{#each dados.anos_disponiveis && dados.anos_disponiveis.length ? dados.anos_disponiveis : [2026, 2024, 2022, 2020, 2018, 2016, 2014, 2012, 2010] as ano}
+							<option value={ano.toString()}>{ano}</option>
+						{/each}
+					</select>
+				</div>
+
 				<!-- Checkbox Apenas com Gastos CEAP -->
 				<div class="flex items-end">
 					<label class="flex items-center gap-2.5 p-2 bg-slate-950/70 rounded-lg border border-slate-800 w-full hover:border-slate-700 transition-colors cursor-pointer select-none">
@@ -315,13 +338,13 @@
 							on:change={() => carregarPoliticos(true)}
 							class="rounded bg-slate-900 border-slate-700 text-emerald-500 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
 						/>
-						<span class="text-slate-300 font-medium">Apenas com gastos CEAP</span>
+						<span class="text-slate-300 font-medium truncate">Apenas gastos CEAP</span>
 					</label>
 				</div>
 			</div>
 
 			<!-- Tags de Filtros Ativos e Limpar -->
-			{#if termoBusca || partidoSelecionado || ufSelecionada || cargoSelecionado || apenasComGastos}
+			{#if termoBusca || partidoSelecionado || ufSelecionada || cargoSelecionado || anoSelecionado || apenasComGastos}
 				<div class="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
 					<div class="flex flex-wrap items-center gap-1.5">
 						<span class="text-slate-500 font-medium mr-1">Filtros ativos:</span>
@@ -347,6 +370,12 @@
 							<span class="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-300 flex items-center gap-1">
 								Cargo: {cargoSelecionado}
 								<button type="button" on:click={() => { cargoSelecionado = ''; carregarPoliticos(true); }} class="hover:text-white">✕</button>
+							</span>
+						{/if}
+						{#if anoSelecionado}
+							<span class="px-2 py-0.5 rounded-md bg-teal-500/10 border border-teal-500/30 text-teal-300 flex items-center gap-1">
+								Ano: {anoSelecionado}
+								<button type="button" on:click={() => { anoSelecionado = ''; carregarPoliticos(true); }} class="hover:text-white">✕</button>
 							</span>
 						{/if}
 						{#if apenasComGastos}
@@ -424,161 +453,378 @@
 			</div>
 		</div>
 	{:else}
-		<!-- Grade Responsiva de Cards de Parlamentares -->
+		<!-- Grade ou Tabulação de Parlamentares -->
 		<div class="space-y-6">
-			<div class="flex items-center justify-between text-xs text-slate-400 px-1">
+			<!-- Barra de Informações de Contagem e Alternador de Visualização -->
+			<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-400 px-1">
 				<span>
 					Mostrando <strong>{(paginaAtual - 1) * limitePorPagina + 1}</strong> a <strong>{Math.min(paginaAtual * limitePorPagina, dados.total)}</strong> de <strong>{dados.total}</strong> parlamentares
 				</span>
-				<span>Página <strong>{paginaAtual}</strong> de <strong>{dados.total_paginas}</strong></span>
+
+				<div class="flex items-center gap-3">
+					<!-- Alternador de Visualização: Cards vs Tabulação -->
+					<div class="flex items-center bg-slate-950 border border-slate-800 p-0.5 rounded-xl shadow-inner">
+						<button
+							type="button"
+							on:click={() => (modoVisualizacao = 'cards')}
+							class="px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors {modoVisualizacao === 'cards' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'}"
+							title="Visualização em Cards"
+						>
+							<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+							</svg>
+							<span>Cards</span>
+						</button>
+						<button
+							type="button"
+							on:click={() => (modoVisualizacao = 'tabela')}
+							class="px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors {modoVisualizacao === 'tabela' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'}"
+							title="Visualização em Tabulação / Tabela"
+						>
+							<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+							</svg>
+							<span>Tabulação</span>
+						</button>
+					</div>
+
+					<span>Página <strong>{paginaAtual}</strong> de <strong>{dados.total_paginas}</strong></span>
+				</div>
 			</div>
 
-			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-				{#each dados.politicos as politico (politico.id)}
-					<a
-						href="/politicos/{politico.id}"
-						on:click={(e) => {
-							if (e.ctrlKey || e.metaKey || e.button === 1) return;
-							e.preventDefault();
-							navegarParaPolitico(politico.id);
-						}}
-						class="group bg-slate-900/90 hover:bg-slate-850 border border-slate-800 hover:border-emerald-500/40 rounded-2xl p-5 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-950/20 flex flex-col justify-between relative overflow-hidden cursor-pointer"
-					>
-						<!-- Faixa sutil no topo com cor do partido -->
-						<div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r {getPartidoColor(politico.sigla_partido)}"></div>
+			{#if modoVisualizacao === 'cards'}
+				<!-- Grade Responsiva de Cards de Parlamentares -->
+				<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+					{#each dados.politicos as politico (politico.id)}
+						<a
+							href="/politicos/{politico.id}"
+							on:click={(e) => {
+								if (e.ctrlKey || e.metaKey || e.button === 1) return;
+								e.preventDefault();
+								navegarParaPolitico(politico.id);
+							}}
+							class="group bg-slate-900/90 hover:bg-slate-850 border border-slate-800 hover:border-emerald-500/40 rounded-2xl p-5 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-950/20 flex flex-col justify-between relative overflow-hidden cursor-pointer"
+						>
+							<!-- Faixa sutil no topo com cor do partido -->
+							<div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r {getPartidoColor(politico.sigla_partido)}"></div>
 
-						<div class="space-y-4">
-							<!-- Header do Card: Avatar / Foto + Badges de Partido e UF -->
-							<div class="flex items-start gap-3.5">
-								<div class="relative w-14 h-14 min-w-[3.5rem] min-h-[3.5rem] max-w-[3.5rem] max-h-[3.5rem] flex-shrink-0">
-									{#if politico.foto_base64}
-										<img
-											src={`data:${politico.foto_mime || 'image/jpeg'};base64,${politico.foto_base64}`}
-											alt={politico.nome_urna}
-											class="w-full h-full rounded-xl object-cover object-top border border-slate-700 bg-slate-950 shadow-sm"
-										/>
-									{:else if politico.foto_url}
-										<img
-											src={politico.foto_url}
-											alt={politico.nome_urna}
-											class="w-full h-full rounded-xl object-cover object-top border border-slate-700 bg-slate-950 shadow-sm"
-											loading="lazy"
-											on:error={() => {
-												politico.foto_url = null;
-											}}
-										/>
-									{:else}
-										<div class="w-full h-full rounded-xl bg-gradient-to-br {getPartidoColor(politico.sigla_partido)} flex items-center justify-center font-bold text-base text-white shadow-inner border border-slate-700/60">
-											{getIniciais(politico.nome_urna || politico.nome_completo)}
-										</div>
-									{/if}
+							<div class="space-y-4">
+								<!-- Header do Card: Avatar / Foto + Badges de Partido e UF -->
+								<div class="flex items-start gap-3.5">
+									<div class="relative w-14 h-14 min-w-[3.5rem] min-h-[3.5rem] max-w-[3.5rem] max-h-[3.5rem] flex-shrink-0">
+										{#if politico.foto_base64}
+											<img
+												src={`data:${politico.foto_mime || 'image/jpeg'};base64,${politico.foto_base64}`}
+												alt={politico.nome_urna}
+												class="w-full h-full rounded-xl object-cover object-top border border-slate-700 bg-slate-950 shadow-sm"
+											/>
+										{:else if politico.foto_url}
+											<img
+												src={politico.foto_url}
+												alt={politico.nome_urna}
+												class="w-full h-full rounded-xl object-cover object-top border border-slate-700 bg-slate-950 shadow-sm"
+												loading="lazy"
+												on:error={() => {
+													politico.foto_url = null;
+												}}
+											/>
+										{:else}
+											<div class="w-full h-full rounded-xl bg-gradient-to-br {getPartidoColor(politico.sigla_partido)} flex items-center justify-center font-bold text-base text-white shadow-inner border border-slate-700/60">
+												{getIniciais(politico.nome_urna || politico.nome_completo)}
+											</div>
+										{/if}
 
-									<!-- Botão de buscar foto oficial com 1 clique se não tiver foto salva -->
-									{#if !politico.foto_base64 && !politico.foto_url}
-										<button
-											type="button"
-											on:click={(e) => buscarFotoCard(politico, e)}
-											disabled={buscandoFotosCards[politico.id]}
-											class="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-slate-800 hover:bg-emerald-600 border border-slate-600 text-[10px] flex items-center justify-center text-slate-200 hover:text-white transition-colors shadow-sm"
-											title="Buscar foto oficial deste parlamentar nas bases públicas"
-										>
-											{#if buscandoFotosCards[politico.id]}
-												<span class="inline-block w-2.5 h-2.5 border border-white border-t-transparent rounded-full animate-spin"></span>
-											{:else}
-												<span>📸</span>
-											{/if}
-										</button>
-									{/if}
-								</div>
-
-								<div class="flex-1 min-w-0">
-									<div class="flex items-center gap-1.5 mb-1">
-										<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-800 border border-slate-700 text-white font-mono">
-											{politico.sigla_partido || 'S/P'}
-										</span>
-										<span class="px-1.5 py-0.5 rounded text-[11px] font-bold bg-slate-800/80 border border-slate-700/60 text-slate-300 font-mono">
-											{politico.uf || 'BR'}
-										</span>
-										{#if politico.tem_alertas}
-											<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 ml-auto" title="Anomalias identificadas">
-												⚠️ Alerta
-											</span>
+										<!-- Botão de buscar foto oficial com 1 clique se não tiver foto salva -->
+										{#if !politico.foto_base64 && !politico.foto_url}
+											<button
+												type="button"
+												on:click={(e) => buscarFotoCard(politico, e)}
+												disabled={buscandoFotosCards[politico.id]}
+												class="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-slate-800 hover:bg-emerald-600 border border-slate-600 text-[10px] flex items-center justify-center text-slate-200 hover:text-white transition-colors shadow-sm"
+												title="Buscar foto oficial deste parlamentar nas bases públicas"
+											>
+												{#if buscandoFotosCards[politico.id]}
+													<span class="inline-block w-2.5 h-2.5 border border-white border-t-transparent rounded-full animate-spin"></span>
+												{:else}
+													<span>📸</span>
+												{/if}
+											</button>
 										{/if}
 									</div>
 
-									<h3 class="text-sm font-bold text-white group-hover:text-emerald-400 transition-colors leading-snug truncate" title={politico.nome_urna}>
-										{politico.nome_urna}
-									</h3>
-									<p class="text-[11px] text-slate-400 truncate mt-0.5" title={politico.nome_completo}>
-										{politico.nome_completo}
-									</p>
-								</div>
-							</div>
+									<div class="flex-1 min-w-0">
+										<div class="flex items-center gap-1.5 mb-1">
+											<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-800 border border-slate-700 text-white font-mono">
+												{politico.sigla_partido || 'S/P'}
+											</span>
+											<span class="px-1.5 py-0.5 rounded text-[11px] font-bold bg-slate-800/80 border border-slate-700/60 text-slate-300 font-mono">
+												{politico.uf || 'BR'}
+											</span>
+											{#if politico.tem_alertas}
+												<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 ml-auto" title="Anomalias identificadas">
+													⚠️ Alerta
+												</span>
+											{/if}
+										</div>
 
-							<!-- Cargo e Mandatos do Político -->
-							<div class="space-y-1.5">
-								<div class="flex items-center gap-1.5 text-xs text-slate-400">
-									<svg class="w-3.5 h-3.5 text-slate-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-									</svg>
-									<span class="font-medium text-slate-300 truncate">{politico.cargo || 'Político / Candidato'}</span>
-									{#if politico.municipio}
-										<span class="text-slate-600">•</span>
-										<span class="truncate text-slate-400">{politico.municipio}</span>
+										<h3 class="text-sm font-bold text-white group-hover:text-emerald-400 transition-colors leading-snug truncate" title={politico.nome_urna}>
+											{politico.nome_urna}
+										</h3>
+										<p class="text-[11px] text-slate-400 truncate mt-0.5" title={politico.nome_completo}>
+											{politico.nome_completo}
+										</p>
+									</div>
+								</div>
+
+								<!-- Cargo, Ano Eleitoral e Mandatos do Político -->
+								<div class="space-y-1.5">
+									<div class="flex items-center gap-1.5 text-xs text-slate-400">
+										<svg class="w-3.5 h-3.5 text-slate-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+										</svg>
+										<span class="font-medium text-slate-300 truncate">{politico.cargo || 'Político / Candidato'}</span>
+										{#if politico.ano_eleicao}
+											<span class="px-1.5 py-0.5 rounded bg-slate-800 text-emerald-400 border border-slate-700 font-mono text-[10px] font-semibold">
+												{politico.ano_eleicao}
+											</span>
+										{/if}
+										{#if politico.municipio}
+											<span class="text-slate-600">•</span>
+											<span class="truncate text-slate-400">{politico.municipio}</span>
+										{/if}
+									</div>
+
+									<!-- Badges com todos os Mandatos / Disputas Históricas -->
+									{#if politico.mandatos && politico.mandatos.length > 0}
+										<div class="flex flex-wrap gap-1 pt-1">
+											{#each politico.mandatos as mandato}
+												{@const destacado = (cargoSelecionado && mandato.toUpperCase().includes(cargoSelecionado.toUpperCase())) || (anoSelecionado && mandato.includes(anoSelecionado))}
+												<span class="px-1.5 py-0.5 rounded text-[10px] {destacado ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold' : 'bg-slate-950/80 text-slate-400 border border-slate-800'}">
+													{mandato}
+												</span>
+											{/each}
+										</div>
 									{/if}
 								</div>
 
-								<!-- Badges com todos os Mandatos / Disputas Históricas -->
-								{#if politico.mandatos && politico.mandatos.length > 0}
-									<div class="flex flex-wrap gap-1 pt-1">
-										{#each politico.mandatos as mandato}
-											{@const destacado = cargoSelecionado && mandato.toUpperCase().includes(cargoSelecionado.toUpperCase())}
-											<span class="px-1.5 py-0.5 rounded text-[10px] {destacado ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold' : 'bg-slate-950/80 text-slate-400 border border-slate-800'}">
-												{mandato}
-											</span>
-										{/each}
-									</div>
-								{/if}
-							</div>
-
-							<!-- Painel Financeiro CEAP -->
-							<div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3 space-y-1.5 shadow-inner">
-								<div class="flex items-center justify-between text-xs">
-									<span class="text-slate-400">Total Cota CEAP:</span>
-									<span class="font-bold text-emerald-400 font-mono">
-										{formatarMoeda(politico.total_despesas_ceap)}
-									</span>
-								</div>
-								<div class="flex items-center justify-between text-[11px] text-slate-500">
-									<span>Notas Declaradas:</span>
-									<span class="font-mono text-slate-300 font-semibold">
-										{politico.total_itens_ceap} {politico.total_itens_ceap === 1 ? 'nota' : 'notas'}
-									</span>
-								</div>
-								{#if politico.total_bens_declarados > 0}
-									<div class="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-900">
-										<span>Bens Declarados:</span>
-										<span class="font-mono text-slate-400">
-											{formatarMoeda(politico.total_bens_declarados)}
+								<!-- Painel Financeiro CEAP -->
+								<div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3 space-y-1.5 shadow-inner">
+									<div class="flex items-center justify-between text-xs">
+										<span class="text-slate-400">Total Cota CEAP:</span>
+										<span class="font-bold text-emerald-400 font-mono">
+											{formatarMoeda(politico.total_despesas_ceap)}
 										</span>
 									</div>
-								{/if}
+									<div class="flex items-center justify-between text-[11px] text-slate-500">
+										<span>Notas Declaradas:</span>
+										<span class="font-mono text-slate-300 font-semibold">
+											{politico.total_itens_ceap} {politico.total_itens_ceap === 1 ? 'nota' : 'notas'}
+										</span>
+									</div>
+									{#if politico.total_bens_declarados > 0}
+										<div class="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-900">
+											<span>Bens Declarados:</span>
+											<span class="font-mono text-slate-400">
+												{formatarMoeda(politico.total_bens_declarados)}
+											</span>
+										</div>
+									{/if}
+								</div>
 							</div>
-						</div>
 
-						<!-- Rodapé do Card com CTA -->
-						<div class="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-xs text-slate-400 group-hover:text-emerald-400 transition-colors">
-							<span class="font-medium text-[11px]">Ver perfil & mapa</span>
-							<div class="flex items-center gap-1">
-								<span class="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity font-semibold">Acessar</span>
-								<svg class="w-4 h-4 transform group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-								</svg>
+							<!-- Rodapé do Card com CTA -->
+							<div class="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-xs text-slate-400 group-hover:text-emerald-400 transition-colors">
+								<span class="font-medium text-[11px]">Ver perfil & mapa</span>
+								<div class="flex items-center gap-1">
+									<span class="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity font-semibold">Acessar</span>
+									<svg class="w-4 h-4 transform group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+									</svg>
+								</div>
 							</div>
-						</div>
-					</a>
-				{/each}
-			</div>
+						</a>
+					{/each}
+				</div>
+			{:else}
+				<!-- Tabulação Detalhada de Parlamentares (Visualização em Tabela) -->
+				<div class="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/90 shadow-xl">
+					<table class="w-full text-left text-xs text-slate-300">
+						<thead class="bg-slate-950/80 text-[11px] uppercase font-bold text-slate-400 border-b border-slate-800 tracking-wider">
+							<tr>
+								<th class="py-3 px-4 w-12 text-center">Foto</th>
+								<th class="py-3 px-4 min-w-[200px]">Parlamentar / Nome</th>
+								<th class="py-3 px-3 w-28 text-center">Partido / UF</th>
+								<th class="py-3 px-4 min-w-[150px]">Cargo & Eleição</th>
+								<th class="py-3 px-4 min-w-[220px]">Tabulação de Mandatos</th>
+								<th class="py-3 px-4 text-right min-w-[120px]">Cota CEAP</th>
+								<th class="py-3 px-4 text-right min-w-[120px]">Bens Declarados</th>
+								<th class="py-3 px-3 text-center w-24">Status</th>
+								<th class="py-3 px-4 text-center w-28">Ação</th>
+							</tr>
+						</thead>
+						<tbody class="divide-y divide-slate-800/60">
+							{#each dados.politicos as politico (politico.id)}
+								<tr class="hover:bg-slate-800/50 transition-colors">
+									<!-- Foto miniatura -->
+									<td class="py-3 px-4 text-center">
+										<div class="relative w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] mx-auto">
+											{#if politico.foto_base64}
+												<img
+													src={`data:${politico.foto_mime || 'image/jpeg'};base64,${politico.foto_base64}`}
+													alt={politico.nome_urna}
+													class="w-full h-full rounded-lg object-cover object-top border border-slate-700 bg-slate-950 shadow-sm"
+												/>
+											{:else if politico.foto_url}
+												<img
+													src={politico.foto_url}
+													alt={politico.nome_urna}
+													class="w-full h-full rounded-lg object-cover object-top border border-slate-700 bg-slate-950 shadow-sm"
+													loading="lazy"
+													on:error={() => {
+														politico.foto_url = null;
+													}}
+												/>
+											{:else}
+												<div class="w-full h-full rounded-lg bg-gradient-to-br {getPartidoColor(politico.sigla_partido)} flex items-center justify-center font-bold text-xs text-white border border-slate-700/60">
+													{getIniciais(politico.nome_urna || politico.nome_completo)}
+												</div>
+											{/if}
+
+											{#if !politico.foto_base64 && !politico.foto_url}
+												<button
+													type="button"
+													on:click={(e) => buscarFotoCard(politico, e)}
+													disabled={buscandoFotosCards[politico.id]}
+													class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-slate-800 hover:bg-emerald-600 border border-slate-600 text-[9px] flex items-center justify-center text-slate-200 transition-colors shadow-sm"
+													title="Buscar foto oficial"
+												>
+													{#if buscandoFotosCards[politico.id]}
+														<span class="inline-block w-2 h-2 border border-white border-t-transparent rounded-full animate-spin"></span>
+													{:else}
+														<span>📸</span>
+													{/if}
+												</button>
+											{/if}
+										</div>
+									</td>
+
+									<!-- Nome Urna & Nome Completo -->
+									<td class="py-3 px-4">
+										<button
+											type="button"
+											on:click={() => navegarParaPolitico(politico.id)}
+											class="text-left font-bold text-white hover:text-emerald-400 transition-colors block text-sm"
+										>
+											{politico.nome_urna}
+										</button>
+										<div class="text-[11px] text-slate-400 truncate max-w-xs mt-0.5" title={politico.nome_completo}>
+											{politico.nome_completo}
+										</div>
+										{#if politico.cpf_mascarado && politico.cpf_mascarado !== '-4'}
+											<div class="text-[10px] text-slate-500 font-mono">
+												CPF: {politico.cpf_mascarado}
+											</div>
+										{/if}
+									</td>
+
+									<!-- Partido & UF -->
+									<td class="py-3 px-3 text-center">
+										<div class="inline-flex items-center gap-1">
+											<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-800 border border-slate-700 text-white font-mono">
+												{politico.sigla_partido || 'S/P'}
+											</span>
+											<span class="px-1.5 py-0.5 rounded text-[11px] font-bold bg-slate-800/80 border border-slate-700/60 text-slate-300 font-mono">
+												{politico.uf || 'BR'}
+											</span>
+										</div>
+									</td>
+
+									<!-- Cargo & Eleição -->
+									<td class="py-3 px-4">
+										<div class="font-medium text-slate-200">
+											{politico.cargo || 'Político / Candidato'}
+										</div>
+										<div class="flex items-center gap-1.5 text-[11px] text-slate-400 mt-0.5">
+											{#if politico.ano_eleicao}
+												<span class="px-1.5 py-0.2 rounded bg-slate-800 text-emerald-400 border border-slate-700 font-mono font-semibold">
+													{politico.ano_eleicao}
+												</span>
+											{/if}
+											{#if politico.municipio}
+												<span>{politico.municipio}</span>
+											{/if}
+										</div>
+									</td>
+
+									<!-- Tabulação de Mandatos -->
+									<td class="py-3 px-4">
+										{#if politico.mandatos && politico.mandatos.length > 0}
+											<div class="flex flex-wrap gap-1 max-w-sm">
+												{#each politico.mandatos as mandato}
+													{@const destacado = (cargoSelecionado && mandato.toUpperCase().includes(cargoSelecionado.toUpperCase())) || (anoSelecionado && mandato.includes(anoSelecionado))}
+													<span class="px-1.5 py-0.5 rounded text-[10px] {destacado ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold' : 'bg-slate-950/80 text-slate-400 border border-slate-800'}">
+														{mandato}
+													</span>
+												{/each}
+											</div>
+										{:else}
+											<span class="text-slate-500 text-[11px] italic">Sem histórico adicional</span>
+										{/if}
+									</td>
+
+									<!-- Cota CEAP -->
+									<td class="py-3 px-4 text-right">
+										<div class="font-mono font-bold {politico.total_despesas_ceap > 0 ? 'text-emerald-400' : 'text-slate-500'}">
+											{formatarMoeda(politico.total_despesas_ceap)}
+										</div>
+										<div class="text-[10px] text-slate-500">
+											{politico.total_itens_ceap} {politico.total_itens_ceap === 1 ? 'nota' : 'notas'}
+										</div>
+									</td>
+
+									<!-- Bens Declarados -->
+									<td class="py-3 px-4 text-right">
+										{#if politico.total_bens_declarados > 0}
+											<div class="font-mono text-slate-300 font-semibold">
+												{formatarMoeda(politico.total_bens_declarados)}
+											</div>
+										{:else}
+											<span class="text-slate-600 font-mono">-</span>
+										{/if}
+									</td>
+
+									<!-- Status / Alertas -->
+									<td class="py-3 px-3 text-center">
+										{#if politico.tem_alertas}
+											<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 whitespace-nowrap">
+												⚠️ Alerta
+											</span>
+										{:else}
+											<span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 whitespace-nowrap">
+												Regular
+											</span>
+										{/if}
+									</td>
+
+									<!-- Ações -->
+									<td class="py-3 px-4 text-center">
+										<button
+											type="button"
+											on:click={() => navegarParaPolitico(politico.id)}
+											class="px-2.5 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 text-[11px] font-semibold transition-colors flex items-center justify-center gap-1 mx-auto"
+										>
+											<span>Perfil</span>
+											<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+											</svg>
+										</button>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
 
 			<!-- Paginação -->
 			{#if dados.total_paginas > 1}

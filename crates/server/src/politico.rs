@@ -179,6 +179,8 @@ pub struct ListarPoliticosQueryParams {
     pub partido: Option<String>,
     pub uf: Option<String>,
     pub cargo: Option<String>,
+    pub ano: Option<i32>,
+    pub ano_eleicao: Option<i32>,
     pub apenas_com_gastos: Option<bool>,
     pub page: Option<usize>,
     pub limit: Option<usize>,
@@ -204,6 +206,8 @@ pub struct ItemPoliticoListagem {
     pub foto_url: Option<String>,
     #[serde(default)]
     pub mandatos: Vec<String>,
+    #[serde(default)]
+    pub ano_eleicao: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -231,6 +235,8 @@ pub struct ListarPoliticosResponse {
     pub partidos_disponiveis: Vec<String>,
     pub ufs_disponiveis: Vec<String>,
     pub cargos_disponiveis: Vec<String>,
+    #[serde(default)]
+    pub anos_disponiveis: Vec<i32>,
     pub politicos: Vec<ItemPoliticoListagem>,
 }
 
@@ -607,6 +613,18 @@ pub async fn listar_politicos_handler(
         }
     }
 
+    let mut anos_disponiveis = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT ano_eleicao FROM candidaturas WHERE ano_eleicao IS NOT NULL AND ano_eleicao > 1900 ORDER BY ano_eleicao DESC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, i32>(0)) {
+            for a in rows.flatten() {
+                anos_disponiveis.push(a);
+            }
+        }
+    }
+    if anos_disponiveis.is_empty() {
+        anos_disponiveis = vec![2024, 2022, 2020, 2018];
+    }
+
     let cargos_disponiveis = vec![
         "DEPUTADO FEDERAL".to_string(),
         "VEREADOR".to_string(),
@@ -674,7 +692,16 @@ pub async fn listar_politicos_handler(
         }
     }
 
-    // 5. Filtro Apenas com Gastos CEAP (usa subquery rápida indexada evitando produto cartesiano)
+    // 5. Filtro por Ano da Eleição
+    let filtro_ano = params.ano.or(params.ano_eleicao);
+    if let Some(ano) = filtro_ano {
+        if ano > 1900 {
+            where_clauses.push("c.ano_eleicao = ?".to_string());
+            sql_params.push(Box::new(ano));
+        }
+    }
+
+    // 6. Filtro Apenas com Gastos CEAP (usa subquery rápida indexada evitando produto cartesiano)
     if apenas_gastos {
         where_clauses.push(
             "(p.nome_urna IN (SELECT DISTINCT parlamentar_nome FROM despesas_parlamentares WHERE parlamentar_nome IS NOT NULL) \
@@ -720,7 +747,8 @@ pub async fn listar_politicos_handler(
                 COALESCE(c.cargo, 'PARLAMENTAR'), c.municipio,
                 COALESCE(c.total_bens_declarados, 0.0),
                 p.foto_blob, p.foto_mime, p.foto_url,
-                GROUP_CONCAT(DISTINCT c.cargo || ' (' || c.ano_eleicao || ')') as mandatos_str
+                GROUP_CONCAT(DISTINCT c.cargo || CASE WHEN c.ano_eleicao IS NOT NULL AND c.ano_eleicao > 0 THEN ' (' || c.ano_eleicao || ')' ELSE '' END) as mandatos_str,
+                MAX(c.ano_eleicao) as ano_eleicao
          FROM politicos p
          JOIN candidaturas c ON c.politico_id = p.id
          {}
@@ -749,6 +777,7 @@ pub async fn listar_politicos_handler(
                         .collect()
                 })
                 .unwrap_or_else(|| vec![cargo.clone()]);
+            let ano_eleicao: Option<i32> = row.get(14).ok();
 
             Ok(ItemPoliticoListagem {
                 id,
@@ -768,6 +797,7 @@ pub async fn listar_politicos_handler(
                 foto_mime: row.get(11)?,
                 foto_url: row.get(12)?,
                 mandatos,
+                ano_eleicao,
             })
         })
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -779,8 +809,8 @@ pub async fn listar_politicos_handler(
         let ceap_res: Option<(f64, i64)> = conn
             .query_row(
                 "SELECT COALESCE(SUM(valor_liquido), 0.0), COUNT(id)
-                 FROM despesas_parlamentares
-                 WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2",
+                  FROM despesas_parlamentares
+                  WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2",
                 [&pol.nome_urna, &pol.nome_completo],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -811,6 +841,7 @@ pub async fn listar_politicos_handler(
         partidos_disponiveis,
         ufs_disponiveis,
         cargos_disponiveis,
+        anos_disponiveis,
         politicos,
     }))
 }
@@ -1872,5 +1903,86 @@ mod tests {
         assert_eq!(list_resp.total, 1);
         assert!(list_resp.politicos[0].mandatos.iter().any(|m| m.contains("VEREADOR")));
         assert!(list_resp.politicos[0].foto_base64.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_listar_politicos_filtro_ano_e_tabulacao() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Político 1: concorreu em 2024 e 2020
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('CANDIDATO MULTIANO', 'MULTIANO')",
+            [],
+        ).unwrap();
+        let p1_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
+             VALUES (?1, 2024, 'PREFEITO', 'PSD', 'MG')",
+            [p1_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
+             VALUES (?1, 2020, 'VEREADOR', 'PSD', 'MG')",
+            [p1_id],
+        ).unwrap();
+
+        // Político 2: concorreu apenas em 2022
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('DEPUTADO FEDERAL 2022', 'DEP 2022')",
+            [],
+        ).unwrap();
+        let p2_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
+             VALUES (?1, 2022, 'DEPUTADO FEDERAL', 'PT', 'SP')",
+            [p2_id],
+        ).unwrap();
+
+        let app = Router::new()
+            .route("/api/politicos", get(listar_politicos_handler))
+            .with_state(pool);
+
+        // 1. Sem filtro de ano: deve listar ambos e trazer anos_disponiveis ordenados decrescente
+        let req_todos = Request::builder()
+            .uri("/api/politicos")
+            .body(Body::empty())
+            .unwrap();
+        let res_todos = app.clone().oneshot(req_todos).await.unwrap();
+        assert_eq!(res_todos.status(), StatusCode::OK);
+        let bytes_todos = axum::body::to_bytes(res_todos.into_body(), usize::MAX).await.unwrap();
+        let resp_todos: ListarPoliticosResponse = serde_json::from_slice(&bytes_todos).unwrap();
+        assert_eq!(resp_todos.total, 2);
+        assert!(resp_todos.anos_disponiveis.contains(&2024));
+        assert!(resp_todos.anos_disponiveis.contains(&2022));
+        assert!(resp_todos.anos_disponiveis.contains(&2020));
+
+        // 2. Filtro por ano 2022: deve retornar apenas DEP 2022
+        let req_2022 = Request::builder()
+            .uri("/api/politicos?ano=2022")
+            .body(Body::empty())
+            .unwrap();
+        let res_2022 = app.clone().oneshot(req_2022).await.unwrap();
+        assert_eq!(res_2022.status(), StatusCode::OK);
+        let bytes_2022 = axum::body::to_bytes(res_2022.into_body(), usize::MAX).await.unwrap();
+        let resp_2022: ListarPoliticosResponse = serde_json::from_slice(&bytes_2022).unwrap();
+        assert_eq!(resp_2022.total, 1);
+        assert_eq!(resp_2022.politicos[0].nome_urna, "DEP 2022");
+        assert_eq!(resp_2022.politicos[0].ano_eleicao, Some(2022));
+
+        // 3. Filtro por ano 2020: deve retornar MULTIANO e ter tabulação de mandatos
+        let req_2020 = Request::builder()
+            .uri("/api/politicos?ano=2020")
+            .body(Body::empty())
+            .unwrap();
+        let res_2020 = app.clone().oneshot(req_2020).await.unwrap();
+        assert_eq!(res_2020.status(), StatusCode::OK);
+        let bytes_2020 = axum::body::to_bytes(res_2020.into_body(), usize::MAX).await.unwrap();
+        let resp_2020: ListarPoliticosResponse = serde_json::from_slice(&bytes_2020).unwrap();
+        assert_eq!(resp_2020.total, 1);
+        assert_eq!(resp_2020.politicos[0].nome_urna, "MULTIANO");
     }
 }
