@@ -957,27 +957,47 @@ pub async fn dossie_cpf_handler(
     let mut total_pncp_global = 0.0;
 
     {
-        let mut sql_qsa = String::from(
-            "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio
-             FROM empresas_qsa
-             WHERE 1=0 ",
-        );
-        let mut params: Vec<String> = Vec::new();
-
+        let mut qsa_cpf_candidates: Vec<String> = Vec::new();
         if let Some(ref m) = miolo_opt {
-            sql_qsa.push_str("OR socio_cpf_cnpj_mascarado LIKE ? OR socio_cpf_cnpj_mascarado LIKE ? ");
-            params.push(format!("%{}%", m));
-            params.push(format!("%{}.{}%", &m[0..3], &m[3..6]));
+            qsa_cpf_candidates.push(format!("***{}**", m));
+            qsa_cpf_candidates.push(format!("***.{}.{}-**", &m[0..3], &m[3..6]));
+            qsa_cpf_candidates.push(format!("***{}***", m));
         }
-        if !termo_nome.is_empty() {
-            sql_qsa.push_str("OR socio_nome LIKE ? ");
-            params.push(format!("%{}%", termo_nome));
+        if digits.len() == 11 {
+            let m = &digits[3..9];
+            let cand1 = format!("***{}**", m);
+            if !qsa_cpf_candidates.contains(&cand1) {
+                qsa_cpf_candidates.push(cand1);
+            }
+            let cand2 = format!("***.{}.{}-**", &m[0..3], &m[3..6]);
+            if !qsa_cpf_candidates.contains(&cand2) {
+                qsa_cpf_candidates.push(cand2);
+            }
+            if !qsa_cpf_candidates.contains(&digits) {
+                qsa_cpf_candidates.push(digits.clone());
+            }
+        } else if digits.len() == 6 {
+            let cand1 = format!("***{}**", digits);
+            if !qsa_cpf_candidates.contains(&cand1) {
+                qsa_cpf_candidates.push(cand1);
+            }
+            let cand2 = format!("***.{}.{}-**", &digits[0..3], &digits[3..6]);
+            if !qsa_cpf_candidates.contains(&cand2) {
+                qsa_cpf_candidates.push(cand2);
+            }
         }
-        sql_qsa.push_str("LIMIT 30");
 
-        if !params.is_empty() {
+        if !qsa_cpf_candidates.is_empty() {
+            let placeholders = vec!["?"; qsa_cpf_candidates.len()].join(", ");
+            let sql_qsa = format!(
+                "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio
+                 FROM empresas_qsa
+                 WHERE socio_cpf_cnpj_mascarado IN ({})
+                 LIMIT 30",
+                placeholders
+            );
             if let Ok(mut stmt) = conn.prepare(&sql_qsa) {
-                let rusqlite_params = rusqlite::params_from_iter(params.iter());
+                let rusqlite_params = rusqlite::params_from_iter(qsa_cpf_candidates.iter());
                 if let Ok(rows) = stmt.query_map(rusqlite_params, |r| {
                     Ok((
                         r.get::<_, String>(0)?,

@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, RwLock};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -10,26 +10,34 @@ use ingestion::importers::{
 use serde::{Deserialize, Serialize};
 use storage::DbPool;
 
-static GLOBAL_IMPORTER_MANAGER: OnceLock<Arc<ImporterManager>> = OnceLock::new();
+static GLOBAL_IMPORTER_MANAGER: RwLock<Option<Arc<ImporterManager>>> = RwLock::new(None);
 
 pub fn get_or_init_importer_manager(pool: &DbPool) -> Arc<ImporterManager> {
-    GLOBAL_IMPORTER_MANAGER
-        .get_or_init(|| {
-            let sink = Arc::new(BatchSink::new(pool.clone()));
-            let manager = ImporterManager::new(sink);
-            manager.register(Arc::new(TseImporter::new(2024)));
-            manager.register(Arc::new(ReceitaFederalImporter::new()));
-            manager.register(Arc::new(CamaraCeapImporter::new(2024)));
-            manager.register(Arc::new(PncpImporter::new(2024)));
-            manager.register(Arc::new(QueridoDiarioImporter::new("", "")));
-            manager.register(Arc::new(CnaOabImporter::new()));
-            Arc::new(manager)
-        })
-        .clone()
+    if let Ok(guard) = GLOBAL_IMPORTER_MANAGER.read() {
+        if let Some(ref m) = *guard {
+            return m.clone();
+        }
+    }
+    let mut guard = GLOBAL_IMPORTER_MANAGER.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(ref m) = *guard {
+        return m.clone();
+    }
+    let sink = Arc::new(BatchSink::new(pool.clone()));
+    let manager = ImporterManager::new(sink);
+    manager.register(Arc::new(TseImporter::new(2024)));
+    manager.register(Arc::new(ReceitaFederalImporter::new()));
+    manager.register(Arc::new(CamaraCeapImporter::new(2024)));
+    manager.register(Arc::new(PncpImporter::new(2024)));
+    manager.register(Arc::new(QueridoDiarioImporter::new("", "")));
+    manager.register(Arc::new(CnaOabImporter::new()));
+    let arc = Arc::new(manager);
+    *guard = Some(arc.clone());
+    arc
 }
 
 pub fn set_importer_manager(manager: Arc<ImporterManager>) {
-    let _ = GLOBAL_IMPORTER_MANAGER.set(manager);
+    let mut guard = GLOBAL_IMPORTER_MANAGER.write().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(manager);
 }
 
 #[derive(Serialize, Deserialize)]

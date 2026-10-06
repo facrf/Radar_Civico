@@ -70,6 +70,7 @@ use tower_http::trace::TraceLayer;
 pub fn criar_router(pool: DbPool) -> Router {
     let mut router = Router::new()
         .route("/health", get(|| async { "OK" }))
+        .route("/api/busca", get(busca_handler))
         .route("/api/v1/busca", get(busca_handler))
         .route("/api/politicos", get(listar_politicos_handler))
         .route("/api/v1/politicos", get(listar_politicos_handler))
@@ -101,11 +102,17 @@ pub fn criar_router(pool: DbPool) -> Router {
         )
         .route("/api/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
         .route("/api/v1/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
+        .route("/api/politico/:id", get(politico_detalhe_handler))
         .route("/api/v1/politico/:id", get(politico_detalhe_handler))
+        .route("/api/dossie/cnpj/:cnpj", get(dossie::dossie_cnpj_handler))
         .route("/api/v1/dossie/cnpj/:cnpj", get(dossie::dossie_cnpj_handler))
+        .route("/api/dossie/cpf/:cpf", get(dossie::dossie_cpf_handler))
         .route("/api/v1/dossie/cpf/:cpf", get(dossie::dossie_cpf_handler))
+        .route("/api/grafo/:id", get(grafo_subgrafo_handler))
         .route("/api/v1/grafo/:id", get(grafo_subgrafo_handler))
+        .route("/api/auditoria/alertas", get(alertas_handler))
         .route("/api/v1/auditoria/alertas", get(alertas_handler))
+        .route("/api/auditoria/auxilio-indevido", get(auxilio_indevido_handler))
         .route("/api/v1/auditoria/auxilio-indevido", get(auxilio_indevido_handler))
         .route(
             "/api/v1/investigar/nomeacao/:doador_id",

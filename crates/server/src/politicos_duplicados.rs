@@ -397,6 +397,30 @@ pub fn mesclar_politicos_db(
 
     let tx = conn.transaction()?;
 
+    let existe_can: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM politicos WHERE id = ?1)",
+        [id_canonico],
+        |r| r.get(0),
+    )?;
+    if !existe_can {
+        return Err(storage::StorageError::NotFound(format!(
+            "Político canônico #{} não encontrado",
+            id_canonico
+        )));
+    }
+
+    let existe_dup: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM politicos WHERE id = ?1)",
+        [id_duplicado],
+        |r| r.get(0),
+    )?;
+    if !existe_dup {
+        return Err(storage::StorageError::NotFound(format!(
+            "Político duplicado #{} não encontrado",
+            id_duplicado
+        )));
+    }
+
     // 1. Migra candidaturas: para candidaturas que coincidem no mesmo (ano_eleicao, cargo), transfere bens e apaga a redundante
     {
         let mut stmt_cands = tx.prepare(
@@ -533,6 +557,7 @@ pub async fn mesclar_politicos_handler(
             id_removido: payload.id_duplicado,
             candidaturas_migradas: qtd,
         })),
+        Err(storage::StorageError::NotFound(msg)) => Err((StatusCode::NOT_FOUND, msg)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Falha ao mesclar políticos: {e}"))),
     }
 }
@@ -763,6 +788,34 @@ mod tests {
             .query_row("SELECT count(*) FROM candidaturas WHERE politico_id = ?1", [id1], |r| r.get(0))
             .unwrap();
         assert_eq!(count_cands_id1, 2);
+    }
+
+    #[tokio::test]
+    async fn test_mesclar_politico_inexistente_retorna_404() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+
+        let app = Router::new()
+            .route("/api/politicos/duplicados/mesclar", post(mesclar_politicos_handler))
+            .with_state(pool.clone());
+
+        let payload = serde_json::json!({
+            "id_canonico": 99991,
+            "id_duplicado": 99992
+        });
+
+        let req = Request::builder()
+            .uri("/api/politicos/duplicados/mesclar")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }
 
