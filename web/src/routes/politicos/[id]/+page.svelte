@@ -326,7 +326,7 @@
 								{politico.uf || 'BR'}
 							</span>
 							<span class="px-2.5 py-0.5 rounded-lg text-xs font-medium bg-slate-800/80 border border-slate-700/60 text-slate-300">
-								{politico.cargo || 'Deputado Federal'}
+								{politico.cargo || 'Político / Candidato'}
 							</span>
 							{#if politico.municipio}
 								<span class="text-xs text-slate-400">
