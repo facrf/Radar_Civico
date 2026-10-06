@@ -303,3 +303,36 @@ Diretrizes para o agente autônomo (YOLO Mode):
   *Validação:* `cargo test -p server -- test_sincronizar_tse_via_ckan && cd web && npm run check && npm run build`  
   *Commit:* `feat(server): integra sincronizacao tse via ckan com controle visual no painel`
 
+---
+
+## Fase 13: Framework Unificado de Ingestão em Lote e Conectores
+
+- [x] 053. Criar módulo central de abstração de ingestão (src/importers/traits.rs e src/importers/manager.rs) definindo a trait assíncrona SourceImporter, contexto thread-safe ImportContext e estruturas de progresso (ImportProgress, ImportStage).  
+  *Validação:* `cargo check`  
+  *Commit:* `feat(ingest): define traits base e gerenciador de estado para fontes de dados`
+
+- [x] 054. Implementar o motor de gravação em lote (src/importers/sink.rs) com conexão SQLite isolada em thread de fundo (spawn_blocking), PRAGMAs de alta velocidade (WAL, synchronous = NORMAL, cache_size = -64000) e transações explícitas a cada lote de registros.  
+  *Validação:* `cargo test importers::sink`  
+  *Commit:* `feat(db): implementa executor de persistencia em lote com transacoes explicitas e pragmas wal`
+
+- [x] 055. Criar endpoints HTTP em src/api/importers.rs expondo listagem geral (GET /api/importers), consulta de progresso detalhada (GET /api/importers/{id}/status) e ações assíncronas com controle gracioso (POST /api/importers/{id}/start e POST /api/importers/{id}/cancel).  
+  *Validação:* `cargo check`  
+  *Commit:* `feat(api): expoem rotas rest para gestao e acompanhamento de importacoes`
+
+- [x] 056. Refatorar o ingestor do TSE para implementar SourceImporter, consumindo dumps CSV/ZIP via streaming desacoplado do Tokio e enviando registros em bloco para o BatchSink.  
+  *Validação:* `cargo test importers::tse`  
+  *Commit:* `refactor(tse): desacopla ingestao do runtime tokio e migra gravacao para batch sink`
+
+- [x] 057. Implementar conectores base compatíveis com SourceImporter para Receita Federal (QSA/CNPJ), Câmara dos Deputados (CEAP), PNCP, Querido Diário e CNA/OAB.  
+  *Validação:* `cargo test importers`  
+  *Commit:* `feat(ingest): adiciona adaptadores de ingestao para receita federal ceap pncp querido diario e cna`
+
+- [x] 058. Desenvolver na interface web (web/src) o painel de monitoramento e controle das fontes públicas com atualização de progresso, arquivos processados, registros salvos e ações de disparo.  
+  *Validação:* `cd web && npm run build`  
+  *Commit:* `feat(web): implementa painel de monitoramento e controle de fontes publicas`
+
+- [x] 059. Criar teste de integração em tests/ingestion_pipeline.rs validando persistência concorrente em lote, isolamento das worker threads e integridade dos dados inseridos no SQLite.  
+  *Validação:* `cargo test --test ingestion_pipeline`  
+  *Commit:* `test(e2e): valida pipeline unificado de ingestao em lote e consumo de api de status`
+
+
