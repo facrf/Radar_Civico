@@ -1,6 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
+	import { versionStore, sincronizarVersaoServidor } from '$lib/version';
 
 	let brandTimestamp = Date.now();
 	let iconLoadFailed = false;
@@ -27,6 +28,7 @@
 		window.addEventListener('radar-icon-updated', atualizarIdentidade);
 		window.addEventListener('radar-alertas-updated', verificarAlertas);
 		verificarAlertas();
+		sincronizarVersaoServidor();
 		return () => {
 			window.removeEventListener('radar-icon-updated', atualizarIdentidade);
 			window.removeEventListener('radar-alertas-updated', verificarAlertas);
@@ -93,8 +95,23 @@
 		<slot />
 	</main>
 
-	<footer class="border-t border-slate-800 bg-slate-950 py-6 text-center text-xs text-slate-500">
-		<p>Radar Cívico - Plataforma Aberta de Inteligência, Cruzamento e Auditoria de Dados Públicos</p>
-		<p class="mt-1">Fontes Primárias: TSE, Câmara dos Deputados (CEAP), PNCP, Querido Diário e OAB/CNA.</p>
+	<footer class="border-t border-slate-800 bg-slate-950 py-6 text-xs text-slate-500">
+		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+			<div class="text-center sm:text-left">
+				<p>Radar Cívico - Plataforma Aberta de Inteligência, Cruzamento e Auditoria de Dados Públicos</p>
+				<p class="mt-1 text-slate-600">Fontes Primárias: TSE, Câmara dos Deputados (CEAP), PNCP, Querido Diário e OAB/CNA.</p>
+			</div>
+			<div class="flex items-center gap-2 flex-shrink-0">
+				<span
+					class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 font-mono text-xs text-slate-300 shadow-sm cursor-help hover:border-emerald-500/50 hover:text-emerald-400 transition-colors"
+					title={`Commit Git: ${$versionStore.commit}`}
+					aria-label={`Versão ${$versionStore.version}, commit ${$versionStore.commit}`}
+				>
+					<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+					<span>{$versionStore.version}</span>
+					<span class="text-slate-500 text-[11px]">({$versionStore.commit})</span>
+				</span>
+			</div>
+		</div>
 	</footer>
 </div>

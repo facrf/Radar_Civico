@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { versionStore, sincronizarVersaoServidor } from '$lib/version';
 
 	interface TotalRegistros {
 		politicos: number;
@@ -20,6 +21,8 @@
 		total_registros: TotalRegistros;
 		ultimo_evento_sincronizacao: string | null;
 		versao_sistema: string;
+		git_commit?: string;
+		commit_count?: number;
 	}
 
 	interface IdentidadeVisual {
@@ -245,6 +248,14 @@
 				throw new Error(`Erro ${res.status}: ${res.statusText}`);
 			}
 			status = await res.json();
+			if (status?.versao_sistema) {
+				versionStore.update((v) => ({
+					...v,
+					version: status?.versao_sistema || v.version,
+					commit: status?.git_commit || v.commit,
+					count: status?.commit_count || v.count
+				}));
+			}
 		} catch (e: any) {
 			erroStatus = e.message || 'Falha ao conectar à API de status';
 		} finally {
@@ -487,6 +498,7 @@
 		carregarStatus();
 		carregarIdentidade();
 		carregarImporters();
+		sincronizarVersaoServidor();
 		importersInterval = setInterval(carregarImporters, 2000);
 		return () => {
 			if (pollingInterval) clearInterval(pollingInterval);
@@ -519,6 +531,17 @@
 		</div>
 
 		<div class="flex items-center gap-3">
+			<div class="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-slate-800/80 border border-slate-700/60 rounded-lg text-xs text-slate-300">
+				<span class="text-slate-400">Versão:</span>
+				<span
+					class="font-mono text-emerald-400 font-semibold cursor-help"
+					title={`Commit Git: ${$versionStore.commit}`}
+					aria-label={`Versão ${$versionStore.version}, commit ${$versionStore.commit}`}
+				>
+					{$versionStore.version}
+				</span>
+			</div>
+
 			{#if status?.ultimo_evento_sincronizacao}
 				<div class="hidden lg:flex items-center gap-2 px-3 py-1.5 bg-slate-800/80 border border-slate-700/60 rounded-lg text-xs text-slate-300">
 					<span class="w-2 h-2 rounded-full bg-emerald-400"></span>
@@ -1565,4 +1588,24 @@
 			</div>
 		</div>
 	</div>
+
+	<!-- Rodapé Informativo da Tela de Configurações -->
+	<footer class="mt-8 pt-6 border-t border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
+		<div class="flex items-center gap-2">
+			<span class="inline-block w-2 h-2 rounded-full bg-indigo-400"></span>
+			<span>Painel Administrativo &bull; Radar Cívico</span>
+		</div>
+		<div class="flex items-center gap-3">
+			<span class="text-slate-400">Versão da Plataforma:</span>
+			<span
+				class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-slate-800/90 border border-slate-700/80 font-mono text-xs font-semibold text-emerald-400 shadow-sm cursor-help hover:border-emerald-500/50 transition-colors"
+				title={`Commit Git: ${$versionStore.commit}`}
+				aria-label={`Versão ${$versionStore.version}, commit ${$versionStore.commit}`}
+			>
+				<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+				<span>{$versionStore.version}</span>
+				<span class="text-slate-400 text-[11px] font-normal">({$versionStore.commit})</span>
+			</span>
+		</div>
+	</footer>
 </div>
