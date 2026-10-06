@@ -61,6 +61,73 @@
 		}
 		return { bg: 'bg-slate-700/30', text: 'text-slate-300', border: 'border-slate-700', label: tipo };
 	}
+
+	function obterUrlDossie(item: ItemBusca): string {
+		const t = (item.tipo || '').toUpperCase();
+		const doc = item.documento || item.identificador || '';
+		const digitos = doc.replace(/\D/g, '');
+
+		if (t === 'POLITICO' && item.id) {
+			return `/dossie/${item.id}`;
+		}
+
+		if (t === 'EMPRESA_QSA') {
+			if (digitos.length >= 8) {
+				return `/dossie/cnpj/${digitos}`;
+			}
+		}
+
+		if (t === 'SOCIO' || t === 'SOCIO_QSA') {
+			if (item.documento && (item.documento.includes('***') || digitos.length >= 6)) {
+				return `/dossie/cpf/${encodeURIComponent(item.documento)}`;
+			}
+			if (item.nome || item.titulo) {
+				return `/dossie/cpf/${encodeURIComponent(item.nome || item.titulo || '')}`;
+			}
+		}
+
+		if (t === 'FORNECEDOR' || t === 'DOADOR') {
+			if (digitos.length === 14 || digitos.length === 8) {
+				return `/dossie/cnpj/${digitos}`;
+			}
+			if (digitos.length === 11 || doc.includes('***')) {
+				return `/dossie/cpf/${encodeURIComponent(doc)}`;
+			}
+		}
+
+		// Fallbacks por formato de dígitos
+		if (digitos.length === 14 || digitos.length === 8) {
+			return `/dossie/cnpj/${digitos}`;
+		}
+		if (digitos.length === 11 || doc.includes('***')) {
+			return `/dossie/cpf/${encodeURIComponent(doc)}`;
+		}
+		if (item.id) {
+			return `/dossie/${item.id}`;
+		}
+		if (item.nome || item.titulo) {
+			return `/dossie/cpf/${encodeURIComponent(item.nome || item.titulo || '')}`;
+		}
+
+		return '#';
+	}
+
+	function obterUrlGrafo(item: ItemBusca): string {
+		if (item.id) {
+			return `/grafo/${item.id}?grau=2`;
+		}
+		const doc = item.documento || item.identificador || '';
+		const digitos = doc.replace(/\D/g, '');
+		const t = (item.tipo || '').toUpperCase();
+
+		if (t === 'EMPRESA_QSA' || digitos.length === 14 || digitos.length === 8) {
+			return `/grafo/cnpj_${digitos}?grau=2`;
+		}
+		if (t === 'SOCIO' || t === 'SOCIO_QSA') {
+			return `/grafo/socio_${encodeURIComponent(item.nome || item.titulo || doc)}?grau=2`;
+		}
+		return `/grafo/${encodeURIComponent(doc || item.titulo || '')}?grau=2`;
+	}
 </script>
 
 <div class="w-full max-w-3xl mx-auto">
@@ -116,21 +183,29 @@
 		<div class="mt-4 bg-slate-800/90 border border-slate-700/80 rounded-xl overflow-hidden shadow-2xl divide-y divide-slate-700/50">
 			<div class="px-4 py-2.5 bg-slate-900/60 border-b border-slate-700/50 flex items-center justify-between text-xs text-slate-400">
 				<span>Resultados encontrados: <strong class="text-slate-200">{resultados.length}</strong></span>
-				<span>Pressione Enter ou clique em Buscar</span>
+				<span>Clique no card para abrir o dossiê analítico</span>
 			</div>
 			{#each resultados as item}
 				{@const badge = corTipo(item.tipo)}
-				<div class="p-4 hover:bg-slate-750 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+				{@const urlDossie = obterUrlDossie(item)}
+				{@const urlGrafo = obterUrlGrafo(item)}
+				<a
+					href={urlDossie}
+					class="p-4 hover:bg-slate-750/90 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 group cursor-pointer border-l-4 border-transparent hover:border-emerald-500 block no-underline"
+				>
 					<div class="flex items-start sm:items-center gap-3">
 						<span class={`px-2.5 py-1 text-xs font-semibold rounded-full tracking-wide border ${badge.bg} ${badge.text} ${badge.border} flex-shrink-0 mt-0.5 sm:mt-0`}>
 							{badge.label}
 						</span>
 						<div>
-							<h4 class="font-medium text-slate-100 text-sm sm:text-base leading-snug">
-								{item.titulo || item.nome}
+							<h4 class="font-medium text-slate-100 text-sm sm:text-base leading-snug group-hover:text-emerald-400 transition-colors flex items-center gap-1.5">
+								<span>{item.titulo || item.nome}</span>
+								<svg class="w-4 h-4 text-slate-500 group-hover:text-emerald-400 group-hover:translate-x-0.5 transition-all opacity-0 group-hover:opacity-100" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+								</svg>
 							</h4>
 							<p class="text-xs text-slate-400 mt-0.5 leading-relaxed">
-								<span class="font-mono text-slate-300">{item.identificador}</span>
+								<span class="font-mono text-slate-300">{item.documento || item.identificador}</span>
 								{#if item.subtitulo || item.detalhe}
 									• <span class="text-slate-300">{item.subtitulo || item.detalhe}</span>
 								{/if}
@@ -139,28 +214,27 @@
 					</div>
 
 					<div class="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
-						{#if item.tipo === 'POLITICO' && item.id}
-							<a
-								href={`/dossie/${item.id}`}
-								class="px-3 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors shadow"
-							>
-								Ver Dossiê
-							</a>
-						{/if}
-						{#if item.id}
-							<a
-								href={`/grafo/${item.id}?grau=2`}
-								class="px-3 py-1.5 text-xs font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition-colors"
-							>
-								Ver Grafo
-							</a>
-						{:else if item.tipo === 'SOCIO' || item.tipo === 'EMPRESA_QSA'}
-							<span class="px-2.5 py-1 text-[11px] font-mono text-purple-300/80 bg-purple-950/40 rounded-lg border border-purple-800/40">
-								Base Receita Federal
-							</span>
-						{/if}
+						<span
+							class="px-3 py-1.5 text-xs font-medium bg-emerald-600 group-hover:bg-emerald-500 text-white rounded-lg transition-colors shadow flex items-center gap-1.5"
+						>
+							<span>Ver Dossiê</span>
+							<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+							</svg>
+						</span>
+						<a
+							href={urlGrafo}
+							on:click|stopPropagation
+							class="px-3 py-1.5 text-xs font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition-colors flex items-center gap-1"
+							title="Visualizar conexões e rede no grafo"
+						>
+							<svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+							</svg>
+							<span>Grafo</span>
+						</a>
 					</div>
-				</div>
+				</a>
 			{/each}
 		</div>
 	{:else if buscou && !loading}

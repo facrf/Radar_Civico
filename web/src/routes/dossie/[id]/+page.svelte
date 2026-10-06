@@ -4,12 +4,24 @@
 	import Dossie from '$lib/components/Dossie.svelte';
 	import type { DossiePolitico } from '$lib/types';
 
+	import { goto } from '$app/navigation';
+
 	let id = $page.params.id;
 	let dossie: DossiePolitico | null = null;
 	let loading = true;
 	let erro: string | null = null;
 
 	async function carregarDossie() {
+		const apenasDigitos = id.replace(/\D/g, '');
+		if (apenasDigitos.length === 14) {
+			goto(`/dossie/cnpj/${apenasDigitos}`);
+			return;
+		}
+		if (apenasDigitos.length === 11 || id.startsWith('***')) {
+			goto(`/dossie/cpf/${encodeURIComponent(id)}`);
+			return;
+		}
+
 		loading = true;
 		erro = null;
 		try {
