@@ -71,6 +71,7 @@ pub struct DossiePolitico {
     pub ocupacao: Option<String>,
     pub foto_base64: Option<String>,
     pub foto_mime: Option<String>,
+    pub foto_url: Option<String>,
     pub candidaturas: Vec<CandidaturaItem>,
     pub historico_bens: Vec<BemItem>,
     pub doadores: Vec<DoadorItem>,
@@ -125,6 +126,7 @@ pub struct PoliticoDetalheResponse {
     pub ocupacao: Option<String>,
     pub foto_base64: Option<String>,
     pub foto_mime: Option<String>,
+    pub foto_url: Option<String>,
     pub partido: String,
     pub uf: String,
     pub cargo: String,
@@ -199,6 +201,7 @@ pub struct ItemPoliticoListagem {
     pub tem_alertas: bool,
     pub foto_base64: Option<String>,
     pub foto_mime: Option<String>,
+    pub foto_url: Option<String>,
     #[serde(default)]
     pub mandatos: Vec<String>,
 }
@@ -402,7 +405,7 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
 
     let mut stmt = conn.prepare(
         "SELECT id, sq_candidato, cpf_mascarado, nome_completo, nome_urna,
-                data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime
+                data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime, foto_url
          FROM politicos WHERE id = ?1",
     )?;
 
@@ -422,6 +425,7 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
                 ocupacao: row.get(7)?,
                 foto_base64,
                 foto_mime: row.get(9)?,
+                foto_url: row.get(10)?,
                 candidaturas: Vec::new(),
                 historico_bens: Vec::new(),
                 doadores: Vec::new(),
@@ -690,7 +694,7 @@ pub async fn listar_politicos_handler(
                     COALESCE(SUM(dp.valor_liquido), 0.0) as total_ceap,
                     COUNT(dp.id) as qtd_ceap,
                     COALESCE(c.total_bens_declarados, 0.0),
-                    p.foto_blob, p.foto_mime,
+                    p.foto_blob, p.foto_mime, p.foto_url,
                     GROUP_CONCAT(DISTINCT c.cargo || ' (' || c.ano_eleicao || ')') as mandatos_str
              FROM politicos p
              LEFT JOIN candidaturas c ON c.politico_id = p.id
@@ -714,7 +718,7 @@ pub async fn listar_politicos_handler(
                 let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
                 let total_ceap: f64 = row.get(9)?;
                 let cargo: String = row.get(7)?;
-                let mandatos_str: Option<String> = row.get(14)?;
+                let mandatos_str: Option<String> = row.get(15)?;
                 let mandatos = mandatos_str
                     .map(|s| {
                         s.split(',')
@@ -740,6 +744,7 @@ pub async fn listar_politicos_handler(
                     tem_alertas: total_ceap > 350000.0,
                     foto_base64,
                     foto_mime: row.get(13)?,
+                    foto_url: row.get(14)?,
                     mandatos,
                 })
             })
@@ -764,7 +769,7 @@ pub async fn listar_politicos_handler(
                     COALESCE(c.sigla_partido, 'S/P'), COALESCE(c.uf, 'BR'),
                     COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), c.municipio,
                     COALESCE(c.total_bens_declarados, 0.0),
-                    p.foto_blob, p.foto_mime,
+                    p.foto_blob, p.foto_mime, p.foto_url,
                     GROUP_CONCAT(DISTINCT c.cargo || ' (' || c.ano_eleicao || ')') as mandatos_str
              FROM politicos p
              LEFT JOIN candidaturas c ON c.politico_id = p.id
@@ -785,7 +790,7 @@ pub async fn listar_politicos_handler(
                 let foto_blob: Option<Vec<u8>> = row.get(10)?;
                 let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
                 let cargo: String = row.get(7)?;
-                let mandatos_str: Option<String> = row.get(12)?;
+                let mandatos_str: Option<String> = row.get(13)?;
                 let mandatos = mandatos_str
                     .map(|s| {
                         s.split(',')
@@ -811,6 +816,7 @@ pub async fn listar_politicos_handler(
                     tem_alertas: false,
                     foto_base64,
                     foto_mime: row.get(11)?,
+                    foto_url: row.get(12)?,
                     mandatos,
                 })
             })
@@ -866,12 +872,12 @@ pub async fn politico_detalhe_handler(
     let mut stmt = conn
         .prepare(
             "SELECT id, sq_candidato, cpf_mascarado, nome_completo, nome_urna,
-                    data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime
+                    data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime, foto_url
              FROM politicos WHERE id = ?1",
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let (id_pol, sq, cpf_masc, nome_completo, nome_urna, dt_nasc, grau, ocup, foto_blob, foto_mime) =
+    let (id_pol, sq, cpf_masc, nome_completo, nome_urna, dt_nasc, grau, ocup, foto_blob, foto_mime, foto_url) =
         match stmt.query_row([id], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -884,6 +890,7 @@ pub async fn politico_detalhe_handler(
                 r.get::<_, Option<String>>(7)?,
                 r.get::<_, Option<Vec<u8>>>(8)?,
                 r.get::<_, Option<String>>(9)?,
+                r.get::<_, Option<String>>(10)?,
             ))
         }) {
             Ok(tuple) => tuple,
@@ -1048,6 +1055,7 @@ pub async fn politico_detalhe_handler(
             ocupacao: ocup.clone(),
             foto_base64: foto_base64.clone(),
             foto_mime: foto_mime.clone(),
+            foto_url: foto_url.clone(),
             candidaturas: Vec::new(),
             historico_bens: Vec::new(),
             doadores: Vec::new(),
@@ -1065,6 +1073,7 @@ pub async fn politico_detalhe_handler(
         ocupacao: ocup,
         foto_base64,
         foto_mime,
+        foto_url,
         partido,
         uf,
         cargo,
@@ -1276,8 +1285,26 @@ pub async fn buscar_foto_tse_handler(
     let mut foto_baixada: Option<(Vec<u8>, String, String)> = None;
     let mut erros_detalhados: Vec<String> = Vec::new();
 
+    // 2.5 Se tiver foto_url já cadastrada, tenta baixar diretamente dela primeiro
+    let foto_url_cadastrada: Option<String> = conn
+        .query_row("SELECT foto_url FROM politicos WHERE id = ?1", [id], |r| r.get(0))
+        .ok()
+        .flatten();
+
+    if let Some(ref url_direta) = foto_url_cadastrada {
+        if let Ok(resp_img) = client.get(url_direta).send().await {
+            if resp_img.status().is_success() {
+                if let Ok(bytes) = resp_img.bytes().await {
+                    if !bytes.is_empty() {
+                        foto_baixada = Some((bytes.to_vec(), "image/jpeg".to_string(), "CAMARA_DEPUTADOS".to_string()));
+                    }
+                }
+            }
+        }
+    }
+
     // 3. Se for Deputado Federal (ou Câmara), consulta API da Câmara dos Deputados
-    if cargo.to_uppercase().contains("DEPUTADO") || cargo.to_uppercase().contains("PARLAMENTAR") || sq_opt.is_none() {
+    if foto_baixada.is_none() && (cargo.to_uppercase().contains("DEPUTADO") || cargo.to_uppercase().contains("PARLAMENTAR") || sq_opt.is_none()) {
         let nomes_para_buscar = vec![nome_urna.clone(), nome_completo.clone()];
         for n in nomes_para_buscar {
             if foto_baixada.is_some() {
@@ -1574,7 +1601,19 @@ pub async fn obter_foto_handler(
                 .body(axum::body::Body::from(bytes))
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         }
-        _ => Err(StatusCode::NOT_FOUND),
+        _ => {
+            use axum::response::IntoResponse;
+            let url_opt: Option<String> = conn
+                .query_row("SELECT foto_url FROM politicos WHERE id = ?1", [id], |r| r.get(0))
+                .ok()
+                .flatten();
+
+            if let Some(url) = url_opt {
+                Ok(axum::response::Redirect::temporary(&url).into_response())
+            } else {
+                Err(StatusCode::NOT_FOUND)
+            }
+        }
     }
 }
 
@@ -1597,7 +1636,7 @@ pub async fn remover_foto_handler(
     })?;
 
     let _ = conn.execute(
-        "UPDATE politicos SET foto_blob = NULL, foto_mime = NULL WHERE id = ?1",
+        "UPDATE politicos SET foto_blob = NULL, foto_mime = NULL, foto_url = NULL WHERE id = ?1",
         [id],
     );
 
@@ -1608,6 +1647,57 @@ pub async fn remover_foto_handler(
         foto_mime: None,
         origem: None,
     }))
+}
+
+/// Sincroniza fotos oficiais da Câmara dos Deputados para parlamentares cadastrados
+pub async fn sincronizar_fotos_camara(pool: &DbPool) -> Result<usize, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut total_atualizados = 0;
+    for leg in [57, 56] {
+        let url = format!("https://dadosabertos.camara.leg.br/api/v2/deputados?idLegislatura={}", leg);
+        if let Ok(resp) = client.get(&url).header("User-Agent", "RadarCivico/0.1.0").send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(dados) = json.get("dados").and_then(|d| d.as_array()) {
+                        if let Ok(conn) = pool.get() {
+                            for d in dados {
+                                let nome = d.get("nome").and_then(|n| n.as_str()).unwrap_or("").trim();
+                                let foto = d.get("urlFoto").and_then(|f| f.as_str()).unwrap_or("").trim();
+                                if !nome.is_empty() && !foto.is_empty() {
+                                    if let Ok(affected) = conn.execute(
+                                        "UPDATE politicos SET foto_url = ?1 WHERE (UPPER(nome_urna) = UPPER(?2) OR UPPER(nome_completo) = UPPER(?2)) AND (foto_url IS NULL OR foto_url = '')",
+                                        storage::rusqlite::params![foto, nome],
+                                    ) {
+                                        total_atualizados += affected;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(total_atualizados)
+}
+
+/// POST /api/politicos/sincronizar-fotos-camara e /api/v1/politicos/sincronizar-fotos-camara
+pub async fn sincronizar_fotos_camara_handler(
+    State(pool): State<DbPool>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match sincronizar_fotos_camara(&pool).await {
+        Ok(count) => Ok(Json(serde_json::json!({
+            "sucesso": true,
+            "total_atualizados": count,
+            "mensagem": format!("Sincronização concluída: {} parlamentares atualizados com foto oficial.", count)
+        }))),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 #[cfg(test)]
