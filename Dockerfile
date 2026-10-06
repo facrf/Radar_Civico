@@ -1,6 +1,6 @@
-# Multi-stage Dockerfile
+# Multi-stage Dockerfile para Radar Cívico
 
-# Stage 1: Build frontend SPA
+# Stage 1: Build frontend SPA (SvelteKit + Tailwind CSS)
 FROM node:20-slim AS web-builder
 WORKDIR /app/web
 COPY web/package*.json ./
@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 RUN cargo build --release -p server
 
-# Stage 3: Runner
+# Stage 3: Runner de produção
 FROM debian:bookworm-slim AS runner
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -42,5 +42,8 @@ ENV RUST_LOG=info
 EXPOSE 8080
 
 VOLUME ["/app/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 CMD ["/app/server"]
