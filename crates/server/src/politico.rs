@@ -578,9 +578,6 @@ pub async fn listar_politicos_handler(
 ) -> Result<Json<ListarPoliticosResponse>, (StatusCode, String)> {
     let conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Garante sincronização inicial dos deputados da CEAP se necessário
-    let _ = sincronizar_parlamentares_ceap(&conn);
-
     let page = params.page.unwrap_or(1).max(1);
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
     let offset = (page - 1) * limit;
@@ -622,43 +619,68 @@ pub async fn listar_politicos_handler(
     let mut where_clauses = Vec::new();
     let mut sql_params: Vec<Box<dyn storage::rusqlite::ToSql>> = Vec::new();
 
+    // 1. Busca textual inteligente (nome completo, nome de urna ou CPF real diferente de -4)
     if !q_term.is_empty() {
-        where_clauses.push(
-            "(UPPER(p.nome_completo) LIKE ? OR UPPER(p.nome_urna) LIKE ? OR p.cpf_mascarado LIKE ?)"
-                .to_string(),
-        );
-        let q_like = format!("%{}%", q_term.to_uppercase());
-        sql_params.push(Box::new(q_like.clone()));
-        sql_params.push(Box::new(q_like.clone()));
-        sql_params.push(Box::new(format!("%{}%", q_term)));
+        let q_clean = q_term.replace('.', "").replace('-', "");
+        if q_clean.len() >= 3 && q_clean.chars().all(|c| c.is_ascii_digit()) {
+            where_clauses.push(
+                "(UPPER(p.nome_completo) LIKE ? OR UPPER(p.nome_urna) LIKE ? OR (p.cpf_mascarado IS NOT NULL AND p.cpf_mascarado != '-4' AND p.cpf_mascarado LIKE ?))"
+                    .to_string(),
+            );
+            let q_like = format!("%{}%", q_term.to_uppercase());
+            sql_params.push(Box::new(q_like.clone()));
+            sql_params.push(Box::new(q_like));
+            sql_params.push(Box::new(format!("%{}%", q_clean)));
+        } else {
+            where_clauses.push(
+                "(UPPER(p.nome_completo) LIKE ? OR UPPER(p.nome_urna) LIKE ?)"
+                    .to_string(),
+            );
+            let q_like = format!("%{}%", q_term.to_uppercase());
+            sql_params.push(Box::new(q_like.clone()));
+            sql_params.push(Box::new(q_like));
+        }
     }
 
+    // 2. Filtro por Partido
     if !filtro_partido.is_empty() {
         where_clauses.push("UPPER(c.sigla_partido) = ?".to_string());
         sql_params.push(Box::new(filtro_partido.to_uppercase()));
     }
 
+    // 3. Filtro por UF
     if !filtro_uf.is_empty() {
         where_clauses.push("UPPER(c.uf) = ?".to_string());
         sql_params.push(Box::new(filtro_uf.to_uppercase()));
     }
 
+    // 4. Filtro por Cargo com distinção estrita (evita que PREFEITO traga VICE-PREFEITO e vice-versa)
     if !filtro_cargo.is_empty() {
         let cargo_upper = filtro_cargo.to_uppercase();
         if cargo_upper == "VEREADOR" {
             where_clauses.push("(UPPER(c.cargo) LIKE '%VEREADOR%' OR c.cargo = '13')".to_string());
         } else if cargo_upper == "PREFEITO" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%PREFEITO%' OR c.cargo = '11')".to_string());
+            where_clauses.push("((UPPER(c.cargo) LIKE '%PREFEITO%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '11')".to_string());
         } else if cargo_upper == "VICE-PREFEITO" {
             where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-PREFEITO%' OR c.cargo = '12')".to_string());
         } else if cargo_upper == "DEPUTADO FEDERAL" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO%' OR UPPER(p.ocupacao) LIKE '%DEPUTADO%')".to_string());
+            where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO FEDERAL%' OR c.cargo = '6' OR UPPER(c.cargo) = 'DEPUTADO')".to_string());
+        } else if cargo_upper == "SENADOR" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%SENADOR%' OR c.cargo = '5')".to_string());
         } else {
-            where_clauses.push("(UPPER(c.cargo) LIKE ? OR UPPER(p.ocupacao) LIKE ?)".to_string());
+            where_clauses.push("(UPPER(c.cargo) LIKE ?)".to_string());
             let clike = format!("%{}%", cargo_upper);
-            sql_params.push(Box::new(clike.clone()));
             sql_params.push(Box::new(clike));
         }
+    }
+
+    // 5. Filtro Apenas com Gastos CEAP (usa subquery rápida indexada evitando produto cartesiano)
+    if apenas_gastos {
+        where_clauses.push(
+            "(p.nome_urna IN (SELECT DISTINCT parlamentar_nome FROM despesas_parlamentares WHERE parlamentar_nome IS NOT NULL) \
+             OR p.nome_completo IN (SELECT DISTINCT parlamentar_nome FROM despesas_parlamentares WHERE parlamentar_nome IS NOT NULL))"
+                .to_string(),
+        );
     }
 
     let where_str = if where_clauses.is_empty() {
@@ -670,178 +692,109 @@ pub async fn listar_politicos_handler(
     let params_refs: Vec<&dyn storage::rusqlite::ToSql> =
         sql_params.iter().map(|b| b.as_ref()).collect();
 
-    let total: usize;
-    let mut politicos: Vec<ItemPoliticoListagem>;
+    // Contagem rápida e precisa
+    let sql_contagem = format!(
+        "SELECT COUNT(DISTINCT p.id)
+         FROM politicos p
+         JOIN candidaturas c ON c.politico_id = p.id
+         {}",
+        where_str
+    );
+
+    let total: usize = conn
+        .query_row(&sql_contagem, params_refs.as_slice(), |r| r.get(0))
+        .unwrap_or(0);
+
+    // Ordenação: se usuário está navegando sem busca específica, prioriza deputados federais e mais recentes
+    let order_clause = if !q_term.is_empty() {
+        "p.nome_urna ASC"
+    } else if !filtro_cargo.is_empty() {
+        "c.ano_eleicao DESC, p.nome_urna ASC"
+    } else {
+        "(CASE WHEN c.cargo = 'DEPUTADO FEDERAL' THEN 1 WHEN c.cargo LIKE '%PREFEITO%' THEN 2 ELSE 3 END) ASC, c.ano_eleicao DESC, p.id ASC"
+    };
+
+    let sql_dados = format!(
+        "SELECT p.id, p.sq_candidato, p.cpf_mascarado, p.nome_completo, p.nome_urna,
+                COALESCE(c.sigla_partido, 'S/P'), COALESCE(c.uf, 'BR'),
+                COALESCE(c.cargo, 'PARLAMENTAR'), c.municipio,
+                COALESCE(c.total_bens_declarados, 0.0),
+                p.foto_blob, p.foto_mime, p.foto_url,
+                GROUP_CONCAT(DISTINCT c.cargo || ' (' || c.ano_eleicao || ')') as mandatos_str
+         FROM politicos p
+         JOIN candidaturas c ON c.politico_id = p.id
+         {}
+         GROUP BY p.id
+         ORDER BY {}
+         LIMIT {} OFFSET {}",
+        where_str, order_clause, limit, offset
+    );
+
+    let mut stmt_dados = conn
+        .prepare(&sql_dados)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut politicos: Vec<ItemPoliticoListagem> = stmt_dados
+        .query_map(params_refs.as_slice(), |row| {
+            let id: i64 = row.get(0)?;
+            let foto_blob: Option<Vec<u8>> = row.get(10)?;
+            let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
+            let cargo: String = row.get(7)?;
+            let mandatos_str: Option<String> = row.get(13)?;
+            let mandatos = mandatos_str
+                .map(|s| {
+                    s.split(',')
+                        .map(|m| m.trim().to_string())
+                        .filter(|m| !m.is_empty())
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![cargo.clone()]);
+
+            Ok(ItemPoliticoListagem {
+                id,
+                sq_candidato: row.get(1)?,
+                cpf_mascarado: row.get(2)?,
+                nome_completo: row.get(3)?,
+                nome_urna: row.get(4)?,
+                sigla_partido: row.get(5)?,
+                uf: row.get(6)?,
+                cargo,
+                municipio: row.get(8)?,
+                total_despesas_ceap: 0.0,
+                total_itens_ceap: 0,
+                total_bens_declarados: row.get(9)?,
+                tem_alertas: false,
+                foto_base64,
+                foto_mime: row.get(11)?,
+                foto_url: row.get(12)?,
+                mandatos,
+            })
+        })
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+
+    // Preenche despesas CEAP de forma indexada e instantânea para os itens paginados
+    for pol in &mut politicos {
+        let ceap_res: Option<(f64, i64)> = conn
+            .query_row(
+                "SELECT COALESCE(SUM(valor_liquido), 0.0), COUNT(id)
+                 FROM despesas_parlamentares
+                 WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2",
+                [&pol.nome_urna, &pol.nome_completo],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+
+        if let Some((tot, qtd)) = ceap_res {
+            pol.total_despesas_ceap = tot;
+            pol.total_itens_ceap = qtd;
+            pol.tem_alertas = tot > 350000.0;
+        }
+    }
 
     if apenas_gastos {
-        let sql_contagem = format!(
-            "SELECT COUNT(DISTINCT p.id)
-             FROM politicos p
-             LEFT JOIN candidaturas c ON c.politico_id = p.id
-             JOIN despesas_parlamentares dp ON (dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo)
-             {}",
-            where_str
-        );
-
-        total = conn
-            .query_row(&sql_contagem, params_refs.as_slice(), |r| r.get(0))
-            .unwrap_or(0);
-
-        let sql_dados = format!(
-            "SELECT p.id, p.sq_candidato, p.cpf_mascarado, p.nome_completo, p.nome_urna,
-                    COALESCE(c.sigla_partido, 'S/P'), COALESCE(c.uf, 'BR'),
-                    COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), c.municipio,
-                    COALESCE(SUM(dp.valor_liquido), 0.0) as total_ceap,
-                    COUNT(dp.id) as qtd_ceap,
-                    COALESCE(c.total_bens_declarados, 0.0),
-                    p.foto_blob, p.foto_mime, p.foto_url,
-                    GROUP_CONCAT(DISTINCT c.cargo || ' (' || c.ano_eleicao || ')') as mandatos_str
-             FROM politicos p
-             LEFT JOIN candidaturas c ON c.politico_id = p.id
-             JOIN despesas_parlamentares dp ON (dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo)
-             {}
-             GROUP BY p.id
-             HAVING total_ceap > 0
-             ORDER BY total_ceap DESC, p.nome_completo ASC
-             LIMIT {} OFFSET {}",
-            where_str, limit, offset
-        );
-
-        let mut stmt_dados = conn
-            .prepare(&sql_dados)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        politicos = stmt_dados
-            .query_map(params_refs.as_slice(), |row| {
-                let id: i64 = row.get(0)?;
-                let foto_blob: Option<Vec<u8>> = row.get(12)?;
-                let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
-                let total_ceap: f64 = row.get(9)?;
-                let cargo: String = row.get(7)?;
-                let mandatos_str: Option<String> = row.get(15)?;
-                let mandatos = mandatos_str
-                    .map(|s| {
-                        s.split(',')
-                            .map(|m| m.trim().to_string())
-                            .filter(|m| !m.is_empty())
-                            .collect()
-                    })
-                    .unwrap_or_else(|| vec![cargo.clone()]);
-
-                Ok(ItemPoliticoListagem {
-                    id,
-                    sq_candidato: row.get(1)?,
-                    cpf_mascarado: row.get(2)?,
-                    nome_completo: row.get(3)?,
-                    nome_urna: row.get(4)?,
-                    sigla_partido: row.get(5)?,
-                    uf: row.get(6)?,
-                    cargo,
-                    municipio: row.get(8)?,
-                    total_despesas_ceap: total_ceap,
-                    total_itens_ceap: row.get(10)?,
-                    total_bens_declarados: row.get(11)?,
-                    tem_alertas: total_ceap > 350000.0,
-                    foto_base64,
-                    foto_mime: row.get(13)?,
-                    foto_url: row.get(14)?,
-                    mandatos,
-                })
-            })
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect::<Vec<_>>();
-    } else {
-        let sql_contagem = format!(
-            "SELECT COUNT(DISTINCT p.id)
-             FROM politicos p
-             LEFT JOIN candidaturas c ON c.politico_id = p.id
-             {}",
-            where_str
-        );
-
-        total = conn
-            .query_row(&sql_contagem, params_refs.as_slice(), |r| r.get(0))
-            .unwrap_or(0);
-
-        let sql_dados = format!(
-            "SELECT p.id, p.sq_candidato, p.cpf_mascarado, p.nome_completo, p.nome_urna,
-                    COALESCE(c.sigla_partido, 'S/P'), COALESCE(c.uf, 'BR'),
-                    COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), c.municipio,
-                    COALESCE(c.total_bens_declarados, 0.0),
-                    p.foto_blob, p.foto_mime, p.foto_url,
-                    GROUP_CONCAT(DISTINCT c.cargo || ' (' || c.ano_eleicao || ')') as mandatos_str
-             FROM politicos p
-             LEFT JOIN candidaturas c ON c.politico_id = p.id
-             {}
-             GROUP BY p.id
-             ORDER BY p.id ASC
-             LIMIT {} OFFSET {}",
-            where_str, limit, offset
-        );
-
-        let mut stmt_dados = conn
-            .prepare(&sql_dados)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        politicos = stmt_dados
-            .query_map(params_refs.as_slice(), |row| {
-                let id: i64 = row.get(0)?;
-                let foto_blob: Option<Vec<u8>> = row.get(10)?;
-                let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
-                let cargo: String = row.get(7)?;
-                let mandatos_str: Option<String> = row.get(13)?;
-                let mandatos = mandatos_str
-                    .map(|s| {
-                        s.split(',')
-                            .map(|m| m.trim().to_string())
-                            .filter(|m| !m.is_empty())
-                            .collect()
-                    })
-                    .unwrap_or_else(|| vec![cargo.clone()]);
-
-                Ok(ItemPoliticoListagem {
-                    id,
-                    sq_candidato: row.get(1)?,
-                    cpf_mascarado: row.get(2)?,
-                    nome_completo: row.get(3)?,
-                    nome_urna: row.get(4)?,
-                    sigla_partido: row.get(5)?,
-                    uf: row.get(6)?,
-                    cargo,
-                    municipio: row.get(8)?,
-                    total_despesas_ceap: 0.0,
-                    total_itens_ceap: 0,
-                    total_bens_declarados: row.get(9)?,
-                    tem_alertas: false,
-                    foto_base64,
-                    foto_mime: row.get(11)?,
-                    foto_url: row.get(12)?,
-                    mandatos,
-                })
-            })
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect::<Vec<_>>();
-
-        // Preenche despesas CEAP apenas para os registros paginados (máximo 100)
-        for pol in &mut politicos {
-            let ceap_res: Option<(f64, i64)> = conn
-                .query_row(
-                    "SELECT COALESCE(SUM(valor_liquido), 0.0), COUNT(id)
-                     FROM despesas_parlamentares
-                     WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2",
-                    [&pol.nome_urna, &pol.nome_completo],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .ok();
-
-            if let Some((tot, qtd)) = ceap_res {
-                pol.total_despesas_ceap = tot;
-                pol.total_itens_ceap = qtd;
-                pol.tem_alertas = tot > 350000.0;
-            }
-        }
+        politicos.sort_by(|a, b| b.total_despesas_ceap.partial_cmp(&a.total_despesas_ceap).unwrap_or(std::cmp::Ordering::Equal));
     }
 
     let total_paginas = if total == 0 {
