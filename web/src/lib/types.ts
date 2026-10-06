@@ -315,3 +315,120 @@ export interface DossieCpf {
 	notas_ceap_empresas: NotaFiscalCeapItem[];
 	contratos_pncp_empresas: ContratoPncpItem[];
 }
+
+export interface ItemPoliticoListagem {
+	id: number;
+	sq_candidato: string | null;
+	cpf_mascarado: string | null;
+	nome_completo: string;
+	nome_urna: string;
+	sigla_partido: string;
+	uf: string;
+	cargo: string;
+	municipio: string | null;
+	total_despesas_ceap: number;
+	total_itens_ceap: number;
+	total_bens_declarados: number;
+	tem_alertas: boolean;
+	foto_base64: string | null;
+	foto_mime: string | null;
+}
+
+export interface ListarPoliticosResponse {
+	total: number;
+	page: number;
+	limit: number;
+	total_paginas: number;
+	partidos_disponiveis: string[];
+	ufs_disponiveis: string[];
+	cargos_disponiveis: string[];
+	politicos: ItemPoliticoListagem[];
+}
+
+export interface DespesaCeapResumoItem {
+	id: number;
+	data_emissao: string;
+	categoria_despesa: string;
+	fornecedor_nome: string;
+	fornecedor_cnpj_cpf: string;
+	valor_liquido: number;
+	detalhes_litros: number | null;
+	numero_documento: string | null;
+	url_nota_fiscal: string | null;
+	flag_anomalia: boolean;
+}
+
+export interface GastoCategoriaItem {
+	categoria: string;
+	total: number;
+	quantidade: number;
+	percentual: number;
+}
+
+export interface ResumoFinanceiroPolitico {
+	total_gasto_ceap: number;
+	total_notas_ceap: number;
+	media_mensal_ceap: number;
+	total_bens_declarados: number;
+	total_doacoes_campanha: number;
+	total_fora_uf: number;
+	notas_fora_uf: number;
+	categoria_mais_gasta: string | null;
+	valor_categoria_mais_gasta: number;
+}
+
+export interface PoliticoDetalheResponse {
+	id: number;
+	sq_candidato: string | null;
+	cpf_mascarado: string | null;
+	nome_completo: string;
+	nome_urna: string;
+	data_nascimento: string | null;
+	grau_instrucao: string | null;
+	ocupacao: string | null;
+	foto_base64: string | null;
+	foto_mime: string | null;
+	partido: string;
+	uf: string;
+	cargo: string;
+	municipio: string | null;
+	resumo_financeiro: ResumoFinanceiroPolitico;
+	gastos_por_categoria: GastoCategoriaItem[];
+	despesas_recentes: DespesaCeapResumoItem[];
+	candidaturas: CandidaturaItem[];
+	historico_bens: BemItem[];
+	doadores: DoadorItem[];
+	alertas_auxilio?: AlertaAuxilioItem[];
+}
+
+export interface PontoDespesaGeo {
+	id: number;
+	fornecedor_nome: string;
+	fornecedor_cnpj: string;
+	municipio: string;
+	uf: string;
+	latitude: number;
+	longitude: number;
+	valor: number;
+	data: string;
+	categoria: string;
+	litros: number | null;
+	numero_documento: string | null;
+	url_documento: string | null;
+	fora_uf_origem: boolean;
+	alerta_distancia: boolean;
+	distancia_origem_km: number;
+	motivo_alerta: string | null;
+}
+
+export interface PoliticoDespesasGeoResponse {
+	politico_id: number;
+	politico_nome: string;
+	politico_uf: string;
+	total_despesas_geo: number;
+	total_valor_geo: number;
+	despesas_fora_uf_total: number;
+	despesas_fora_uf_valor: number;
+	pontos: PontoDespesaGeo[];
+}
+
