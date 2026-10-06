@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function getVersionInfo() {
-	let version = process.env.APP_VERSION;
-	let commit = process.env.APP_COMMIT;
-	let count = process.env.APP_COUNT ? parseInt(process.env.APP_COUNT, 10) : 0;
+	let version = process.env.APP_VERSION && process.env.APP_VERSION.trim() ? process.env.APP_VERSION.trim() : undefined;
+	let commit = process.env.APP_COMMIT && process.env.APP_COMMIT.trim() ? process.env.APP_COMMIT.trim() : undefined;
+	let count = process.env.APP_COUNT && parseInt(process.env.APP_COUNT, 10) > 0 ? parseInt(process.env.APP_COUNT, 10) : 0;
 
 	// 1. Tentar ler diretamente do Git
 	if (!version) {

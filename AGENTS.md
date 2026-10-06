@@ -65,3 +65,10 @@ Para manter o repositório estável durante operações contínuas:
    * `feat(storage): adiciona migration para registros da oab`
    * `feat(auditor): implementa heuristica de limite de combustivel`
    * `feat(ingestion): adiciona parser streaming para receitas tse`
+   
+   
+Critérios obrigatórios de execução e entrega:
+1. Faça as modificações necessárias nos arquivos de código e configuração.
+2. REQUISITO DE RUNTIME: Não encerre a tarefa apenas editando os arquivos. Como a aplicação roda conteinerizada, você DEVE executar o rebuild da imagem Docker e recriar/reiniciar o contêiner (ex.: `docker compose up --build -d` ou comando equivalente do projeto).
+3. Verifique os logs do contêiner (`docker logs`) e o status da execução para garantir que a aplicação subiu sem quebras.
+4. Apenas dê a tarefa por concluída após o serviço estar rodando com a nova imagem ativa.

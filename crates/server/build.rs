@@ -4,14 +4,24 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-env-changed=APP_VERSION");
     println!("cargo:rerun-if-env-changed=APP_COMMIT");
-    println!("cargo:rerun-if-changed=../../version.json");
+    println!("cargo:rerun-if-env-changed=../../version.json");
     if Path::new("../../.git/HEAD").exists() {
         println!("cargo:rerun-if-changed=../../.git/HEAD");
     }
 
-    let mut version = std::env::var("APP_VERSION").ok();
-    let mut commit = std::env::var("APP_COMMIT").ok();
-    let mut count = std::env::var("APP_COUNT").ok().and_then(|c| c.parse::<u64>().ok());
+    // Variáveis de ambiente com limpeza de strings vazias
+    let mut version = std::env::var("APP_VERSION")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let mut commit = std::env::var("APP_COMMIT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let mut count = std::env::var("APP_COUNT")
+        .ok()
+        .and_then(|c| c.trim().parse::<u64>().ok())
+        .filter(|&c| c > 0);
 
     // 1. Tentar ler do Git caso não fornecido por variável de ambiente
     if version.is_none() {
@@ -51,20 +61,35 @@ fn main() {
 
     // 2. Fallback: tentar ler do arquivo version.json se existir
     if version.is_none() || commit.is_none() {
-        let candidate_paths = ["../../version.json", "version.json"];
-        for p in candidate_paths {
-            if let Ok(content) = std::fs::read_to_string(p) {
-                if let Ok(v) = serde_json_lite(&content) {
-                    if version.is_none() && !v.0.is_empty() {
-                        version = Some(v.0);
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+        let from_manifest = Path::new(&manifest_dir)
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("version.json"));
+
+        let candidate_paths = [
+            from_manifest.as_deref(),
+            Some(Path::new("../../version.json")),
+            Some(Path::new("../version.json")),
+            Some(Path::new("version.json")),
+            Some(Path::new("/app/version.json")),
+        ];
+
+        for opt_p in candidate_paths.into_iter().flatten() {
+            if opt_p.exists() {
+                if let Ok(content) = std::fs::read_to_string(opt_p) {
+                    if let Ok(v) = serde_json_lite(&content) {
+                        if version.is_none() && !v.0.is_empty() {
+                            version = Some(v.0);
+                        }
+                        if commit.is_none() && !v.1.is_empty() {
+                            commit = Some(v.1);
+                        }
+                        if count.is_none() && v.2 > 0 {
+                            count = Some(v.2);
+                        }
+                        break;
                     }
-                    if commit.is_none() && !v.1.is_empty() {
-                        commit = Some(v.1);
-                    }
-                    if count.is_none() && v.2 > 0 {
-                        count = Some(v.2);
-                    }
-                    break;
                 }
             }
         }
