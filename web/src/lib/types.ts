@@ -451,3 +451,63 @@ export interface PoliticoDespesasGeoResponse {
 	pontos: PontoDespesaGeo[];
 }
 
+export interface ItemPoliticoDuplicado {
+	id: number;
+	sq_candidato: string | null;
+	cpf_mascarado: string | null;
+	nome_completo: string;
+	nome_urna: string;
+	data_nascimento: string | null;
+	sigla_partido: string;
+	uf: string;
+	cargo: string;
+	ano_eleicao?: number | null;
+	mandatos: string[];
+	total_despesas_ceap: number;
+	total_itens_ceap: number;
+	total_bens: number;
+	foto_base64: string | null;
+	foto_mime: string | null;
+	foto_url?: string | null;
+}
+
+export interface GrupoPoliticosDuplicados {
+	id_grupo: string;
+	criterio: string;
+	confianca: string;
+	motivo: string;
+	sugestao_canonico_id: number;
+	politicos: ItemPoliticoDuplicado[];
+}
+
+export interface ResumoDuplicadosResponse {
+	total_grupos: number;
+	total_registros_duplicados: number;
+	grupos_nascimento_exato: number;
+	grupos_ceap_tse: number;
+	explicacao_tecnica: string;
+}
+
+export interface RelatorioDuplicadosResponse {
+	total_grupos: number;
+	page: number;
+	limit: number;
+	total_paginas: number;
+	resumo: ResumoDuplicadosResponse;
+	grupos: GrupoPoliticosDuplicados[];
+}
+
+export interface MesclarPoliticosRequest {
+	id_canonico: number;
+	id_duplicado: number;
+}
+
+export interface MesclarPoliticosResponse {
+	sucesso: boolean;
+	mensagem: string;
+	id_canonico: number;
+	id_removido: number;
+	candidaturas_migradas: number;
+}
+
+

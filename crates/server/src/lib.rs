@@ -7,8 +7,10 @@ pub mod geo;
 pub mod grafo;
 pub mod investigar;
 pub mod politico;
+pub mod politicos_duplicados;
 pub mod routes;
 
+pub use politicos_duplicados::*;
 pub use geo::{calcular_distancia_km, coordenadas_capital_uf, resolver_coordenadas_despesa, CoordenadaResolvida};
 pub use dossie::{
     dossie_cnpj_handler, dossie_cpf_handler, AlertaDossie, BeneficioEmergencialItem,
@@ -71,6 +73,14 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/busca", get(busca_handler))
         .route("/api/politicos", get(listar_politicos_handler))
         .route("/api/v1/politicos", get(listar_politicos_handler))
+        .route("/api/politicos/duplicados", get(listar_politicos_duplicados_handler))
+        .route("/api/v1/politicos/duplicados", get(listar_politicos_duplicados_handler))
+        .route("/api/politicos/duplicados/resumo", get(resumo_politicos_duplicados_handler))
+        .route("/api/v1/politicos/duplicados/resumo", get(resumo_politicos_duplicados_handler))
+        .route("/api/politicos/duplicados/mesclar", post(mesclar_politicos_handler))
+        .route("/api/v1/politicos/duplicados/mesclar", post(mesclar_politicos_handler))
+        .route("/api/politicos/duplicados/mesclar-automatico", post(mesclar_automatico_handler))
+        .route("/api/v1/politicos/duplicados/mesclar-automatico", post(mesclar_automatico_handler))
         .route("/api/politicos/sincronizar-fotos-camara", post(sincronizar_fotos_camara_handler))
         .route("/api/v1/politicos/sincronizar-fotos-camara", post(sincronizar_fotos_camara_handler))
         .route("/api/politicos/:id", get(politico_detalhe_handler))

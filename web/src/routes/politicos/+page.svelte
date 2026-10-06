@@ -1,7 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import type { ItemPoliticoListagem, ListarPoliticosResponse } from '$lib/types';
+	import type {
+		ItemPoliticoListagem,
+		ListarPoliticosResponse,
+		RelatorioDuplicadosResponse,
+		ResumoDuplicadosResponse
+	} from '$lib/types';
 
 	let loading = true;
 	let erro: string | null = null;
@@ -10,6 +15,15 @@
 	let buscandoFotosCards: Record<number, boolean> = {};
 	let sincronizandoFotosGeral = false;
 	let msgSincronizacao: string | null = null;
+
+	// Estados de Duplicados
+	let resumoDuplicados: ResumoDuplicadosResponse | null = null;
+	let relatorioDuplicados: RelatorioDuplicadosResponse | null = null;
+	let carregandoDuplicados = false;
+	let paginaDuplicados = 1;
+	let mesclandoIds: Record<number, boolean> = {};
+	let mesclandoAutomatico = false;
+	let msgAuditoria: string | null = null;
 
 	// Parâmetros de Filtro
 	let termoBusca = '';
@@ -21,8 +35,108 @@
 	let paginaAtual = 1;
 	const limitePorPagina = 24;
 
-	// Modo de Visualização: Cards vs Tabulação
-	let modoVisualizacao: 'cards' | 'tabela' = 'cards';
+	// Modo de Visualização: Cards vs Tabulação vs Duplicados
+	let modoVisualizacao: 'cards' | 'tabela' | 'duplicados' = 'cards';
+
+	async function carregarResumoDuplicados() {
+		try {
+			const res = await fetch('/api/politicos/duplicados/resumo');
+			if (res.ok) {
+				resumoDuplicados = await res.json();
+			}
+		} catch (e) {
+			console.warn('Erro ao obter resumo de duplicados:', e);
+		}
+	}
+
+	async function carregarRelatorioDuplicados(p = 1) {
+		paginaDuplicados = p;
+		carregandoDuplicados = true;
+		msgAuditoria = null;
+		try {
+			const res = await fetch(`/api/politicos/duplicados?page=${paginaDuplicados}&limit=10`);
+			if (res.ok) {
+				relatorioDuplicados = await res.json();
+				if (relatorioDuplicados?.resumo) {
+					resumoDuplicados = relatorioDuplicados.resumo;
+				}
+			}
+		} catch (e: any) {
+			msgAuditoria = `Erro ao carregar duplicados: ${e?.message || 'Falha de rede'}`;
+		} finally {
+			carregandoDuplicados = false;
+		}
+	}
+
+	function mudarParaModoDuplicados() {
+		modoVisualizacao = 'duplicados';
+		if (!relatorioDuplicados) {
+			carregarRelatorioDuplicados(1);
+		}
+	}
+
+	async function mesclarRegistros(idCanonico: number, idDuplicado: number) {
+		if (mesclandoIds[idDuplicado]) return;
+		if (
+			!confirm(
+				`Deseja unificar o cadastro redundante #${idDuplicado} no registro principal #${idCanonico}? As candidaturas, bens e histórico serão consolidados de forma atômica.`
+			)
+		) {
+			return;
+		}
+		mesclandoIds[idDuplicado] = true;
+		try {
+			const res = await fetch('/api/politicos/duplicados/mesclar', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id_canonico: idCanonico, id_duplicado: idDuplicado })
+			});
+			const data = await res.json();
+			if (res.ok && data.sucesso) {
+				msgAuditoria = data.mensagem;
+				carregarRelatorioDuplicados(paginaDuplicados);
+				carregarResumoDuplicados();
+				carregarPoliticos(false);
+			} else {
+				alert(data.mensagem || 'Falha ao unificar registros.');
+			}
+		} catch (e: any) {
+			alert(`Erro: ${e?.message || 'Falha na requisição'}`);
+		} finally {
+			mesclandoIds[idDuplicado] = false;
+		}
+	}
+
+	async function unificarAutomaticoTodos() {
+		if (mesclandoAutomatico) return;
+		if (
+			!confirm(
+				'Deseja consolidar automaticamente os grupos com 100% de certeza cadastral (mesmo nome completo civil e mesma data de nascimento)?'
+			)
+		) {
+			return;
+		}
+		mesclandoAutomatico = true;
+		msgAuditoria = null;
+		try {
+			const res = await fetch('/api/politicos/duplicados/mesclar-automatico', {
+				method: 'POST'
+			});
+			const data = await res.json();
+			if (res.ok && data.sucesso) {
+				msgAuditoria = data.mensagem;
+				carregarRelatorioDuplicados(1);
+				carregarResumoDuplicados();
+				carregarPoliticos(false);
+			} else {
+				alert(data.mensagem || 'Falha na unificação automática.');
+			}
+		} catch (e: any) {
+			alert(`Erro: ${e?.message || 'Falha na requisição'}`);
+		} finally {
+			mesclandoAutomatico = false;
+		}
+	}
 
 	async function navegarParaPolitico(id: number | string) {
 		const targetUrl = `/politicos/${id}`;
@@ -182,6 +296,7 @@
 
 	onMount(() => {
 		carregarPoliticos(false);
+		carregarResumoDuplicados();
 	});
 </script>
 
@@ -486,6 +601,22 @@
 							</svg>
 							<span>Tabulação</span>
 						</button>
+						<button
+							type="button"
+							on:click={mudarParaModoDuplicados}
+							class="px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors {modoVisualizacao === 'duplicados' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-400 hover:text-amber-300 hover:bg-slate-900'}"
+							title="Auditoria e diagnóstico de cadastros repetidos de políticos"
+						>
+							<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+							</svg>
+							<span>Auditoria de Duplicados</span>
+							{#if resumoDuplicados && resumoDuplicados.total_grupos > 0}
+								<span class="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold {modoVisualizacao === 'duplicados' ? 'bg-amber-800 text-white' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'}">
+									{resumoDuplicados.total_grupos}
+								</span>
+							{/if}
+						</button>
 					</div>
 
 					<span>Página <strong>{paginaAtual}</strong> de <strong>{dados.total_paginas}</strong></span>
@@ -645,7 +776,7 @@
 						</a>
 					{/each}
 				</div>
-			{:else}
+			{:else if modoVisualizacao === 'tabela'}
 				<!-- Tabulação Detalhada de Parlamentares (Visualização em Tabela) -->
 				<div class="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/90 shadow-xl">
 					<table class="w-full text-left text-xs text-slate-300">
@@ -824,10 +955,296 @@
 						</tbody>
 					</table>
 				</div>
+			{:else if modoVisualizacao === 'duplicados'}
+				<!-- Painel de Auditoria de Cadastros Repetidos & Divergências de Ingestão -->
+				<div class="space-y-6">
+					<!-- Banner Analítico de Diagnóstico -->
+					<div class="bg-gradient-to-r from-amber-950/40 via-slate-900 to-slate-900 border border-amber-500/30 rounded-2xl p-6 shadow-xl space-y-4">
+						<div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+							<div class="flex items-start gap-3">
+								<div class="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center text-xl flex-shrink-0">
+									⚖️
+								</div>
+								<div>
+									<h2 class="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+										Diagnóstico de Cadastros Repetidos
+										<span class="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-mono">
+											Auditoria Cadastral
+										</span>
+									</h2>
+									<p class="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
+										Identificação analítica de pessoas físicas com múltiplos registros na base devido à rotação de identificadores oficiais e falta de chave primária natural consistente.
+									</p>
+								</div>
+							</div>
+
+							<!-- Botão de Ação: Mesclar Automático com 100% de Certeza -->
+							<button
+								type="button"
+								on:click={unificarAutomaticoTodos}
+								disabled={mesclandoAutomatico}
+								class="px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg hover:shadow-amber-950/40 disabled:opacity-50 flex items-center gap-2 flex-shrink-0"
+							>
+								{#if mesclandoAutomatico}
+									<div class="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+									<span>Unificando grupos...</span>
+								{:else}
+									<span>⚡ Unificar Grupos Confirmados</span>
+								{/if}
+							</button>
+						</div>
+
+						<!-- Métricas do Diagnóstico -->
+						<div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+							<div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
+								<div class="text-[11px] text-slate-400 font-medium">Grupos Repetidos Identificados</div>
+								<div class="text-xl font-extrabold text-amber-400 font-mono mt-0.5">
+									{resumoDuplicados?.total_grupos || 0}
+								</div>
+								<div class="text-[10px] text-slate-500 mt-0.5">candidatos com múltiplos registros</div>
+							</div>
+
+							<div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
+								<div class="text-[11px] text-slate-400 font-medium">Cadastros Redundantes Estimados</div>
+								<div class="text-xl font-extrabold text-rose-400 font-mono mt-0.5">
+									{resumoDuplicados?.total_registros_duplicados || 0}
+								</div>
+								<div class="text-[10px] text-slate-500 mt-0.5">linhas excedentes que podem ser consolidadas</div>
+							</div>
+
+							<div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
+								<div class="text-[11px] text-slate-400 font-medium">Confirmação Máxima (100% Certeza)</div>
+								<div class="text-xl font-extrabold text-emerald-400 font-mono mt-0.5">
+									{resumoDuplicados?.grupos_nascimento_exato || 0}
+								</div>
+								<div class="text-[10px] text-slate-500 mt-0.5">mesmo nome civil completo e data de nascimento</div>
+							</div>
+						</div>
+
+						<!-- Análise Técnica da Causa Raiz -->
+						<div class="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5 text-xs text-slate-300 space-y-1.5 leading-relaxed">
+							<div class="font-bold text-white flex items-center gap-1.5 text-[11px]">
+								<span>📌</span> Por que existem cadastros repetidos na base?
+							</div>
+							<p class="text-[11px] text-slate-400">
+								<strong>1. Identificador de Pleito do TSE:</strong> O TSE gera um novo código sequencial (<code>sq_candidato</code>) a cada nova eleição ou substituição de candidatura. Se a ingestão tratar o sequencial como identificador de pessoa física, o mesmo político é recriado como um novo registro.
+							</p>
+							<p class="text-[11px] text-slate-400">
+								<strong>2. Divergência CEAP x TSE:</strong> Gastos parlamentares da Câmara trazem o nome parlamentar (ex: "Abilio Brunini"), enquanto o TSE registra o nome civil (ex: "ABILIO JACQUES BRUNINI MOUMER"), provocando duplicação quando não há conciliação prévia.
+							</p>
+							<p class="text-[11px] text-slate-400">
+								<strong>3. Mascaramento LGPD:</strong> Nas bases recentes de 2022/2024, o TSE oculta o CPF público colocando <code>-4</code>, impedindo validação documental unívoca simples e exigindo cruzamento determinístico por data de nascimento e nome completo.
+							</p>
+						</div>
+					</div>
+
+					<!-- Feedback de Ação -->
+					{#if msgAuditoria}
+						<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-center justify-between">
+							<span>✅ {msgAuditoria}</span>
+							<button type="button" on:click={() => (msgAuditoria = null)} class="hover:text-white font-bold">✕</button>
+						</div>
+					{/if}
+
+					<!-- Lista de Grupos Duplicados -->
+					{#if carregandoDuplicados}
+						<div class="py-16 flex flex-col justify-center items-center gap-3">
+							<div class="w-8 h-8 border-3 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+							<p class="text-xs text-slate-400">Varrendo base e agrupando candidatos repetidos...</p>
+						</div>
+					{:else if !relatorioDuplicados || relatorioDuplicados.grupos.length === 0}
+						<div class="p-10 text-center bg-slate-900/60 border border-slate-800 rounded-2xl max-w-lg mx-auto space-y-2">
+							<div class="text-2xl">🎉</div>
+							<h3 class="text-sm font-bold text-white">Nenhum cadastro duplicado pendente!</h3>
+							<p class="text-xs text-slate-400">
+								Todos os registros analisados estão unificados e consistentes.
+							</p>
+						</div>
+					{:else}
+						<div class="space-y-4">
+							{#each relatorioDuplicados.grupos as grupo (grupo.id_grupo)}
+								<div class="bg-slate-900/90 border border-amber-500/20 hover:border-amber-500/40 rounded-2xl p-5 shadow-lg space-y-4 transition-colors">
+									<!-- Cabeçalho do Grupo -->
+									<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+										<div class="flex items-center gap-2">
+											<span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+											<h3 class="font-bold text-white text-sm">
+												{grupo.politicos[0].nome_completo}
+											</h3>
+											{#if grupo.politicos[0].data_nascimento}
+												<span class="text-xs text-slate-400 font-mono">
+													(Nasc: {grupo.politicos[0].data_nascimento})
+												</span>
+											{/if}
+										</div>
+
+										<div class="flex items-center gap-2">
+											<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+												{grupo.confianca}
+											</span>
+											<span class="text-[11px] text-slate-400">
+												{grupo.politicos.length} registros repetidos
+											</span>
+										</div>
+									</div>
+
+									<p class="text-[11px] text-slate-400 italic">
+										ℹ️ {grupo.motivo}
+									</p>
+
+									<!-- Grade Comparativa dos Registros Repetidos -->
+									<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+										{#each grupo.politicos as p (p.id)}
+											{@const isCanonico = p.id === grupo.sugestao_canonico_id}
+											<div class="p-4 rounded-xl border {isCanonico ? 'bg-emerald-950/20 border-emerald-500/40 ring-1 ring-emerald-500/30' : 'bg-slate-950/80 border-slate-800'} space-y-3 relative">
+												<div class="flex items-start justify-between gap-2">
+													<div class="flex items-center gap-2.5">
+														<div class="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-slate-900 border border-slate-800">
+															{#if p.foto_base64}
+																<img
+																	src={`data:${p.foto_mime || 'image/jpeg'};base64,${p.foto_base64}`}
+																	alt={p.nome_urna}
+																	class="w-full h-full object-cover object-top"
+																/>
+															{:else if p.foto_url}
+																<img
+																	src={p.foto_url}
+																	alt={p.nome_urna}
+																	class="w-full h-full object-cover object-top"
+																/>
+															{:else}
+																<div class="w-full h-full flex items-center justify-center font-bold text-xs text-white bg-slate-800">
+																	{getIniciais(p.nome_urna || p.nome_completo)}
+																</div>
+															{/if}
+														</div>
+
+														<div class="min-w-0">
+															<div class="flex items-center gap-1.5">
+																<span class="text-xs font-bold text-white truncate" title={p.nome_urna}>
+																	{p.nome_urna}
+																</span>
+																<span class="text-[10px] text-slate-500 font-mono">#{p.id}</span>
+															</div>
+															<div class="text-[11px] text-slate-400 truncate" title={p.nome_completo}>
+																{p.nome_completo}
+															</div>
+														</div>
+													</div>
+
+													{#if isCanonico}
+														<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 whitespace-nowrap">
+															⭐ Registro Principal
+														</span>
+													{/if}
+												</div>
+
+												<!-- Metadados -->
+												<div class="space-y-1 text-[11px] text-slate-300 pt-1 border-t border-slate-800/80">
+													<div class="flex justify-between">
+														<span class="text-slate-500">Partido / UF:</span>
+														<span class="font-bold text-slate-200">{p.sigla_partido} - {p.uf}</span>
+													</div>
+													<div class="flex justify-between">
+														<span class="text-slate-500">Cargo:</span>
+														<span class="text-slate-200">{p.cargo} {#if p.ano_eleicao}({p.ano_eleicao}){/if}</span>
+													</div>
+													{#if p.sq_candidato}
+														<div class="flex justify-between font-mono text-[10px]">
+															<span class="text-slate-500">SQ TSE:</span>
+															<span class="text-slate-400">{p.sq_candidato}</span>
+														</div>
+													{/if}
+													{#if p.total_despesas_ceap > 0}
+														<div class="flex justify-between">
+															<span class="text-slate-500">Gastos CEAP:</span>
+															<span class="text-emerald-400 font-mono font-bold">{formatarMoeda(p.total_despesas_ceap)}</span>
+														</div>
+													{/if}
+												</div>
+
+												<!-- Mandatos Tabulados -->
+												{#if p.mandatos && p.mandatos.length > 0}
+													<div class="pt-1">
+														<div class="text-[10px] text-slate-500 mb-1">Mandatos neste ID:</div>
+														<div class="flex flex-wrap gap-1">
+															{#each p.mandatos as m}
+																<span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-900 border border-slate-800 text-slate-300">
+																	{m}
+																</span>
+															{/each}
+														</div>
+													</div>
+												{/if}
+
+												<!-- Botões de Ação -->
+												<div class="pt-2 flex items-center justify-between gap-2 border-t border-slate-800/80">
+													<button
+														type="button"
+														on:click={() => navegarParaPolitico(p.id)}
+														class="text-[11px] text-slate-400 hover:text-white underline"
+													>
+														Ver Dossiê
+													</button>
+
+													{#if !isCanonico}
+														<button
+															type="button"
+															on:click={() => mesclarRegistros(grupo.sugestao_canonico_id, p.id)}
+															disabled={mesclandoIds[p.id]}
+															class="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition-colors disabled:opacity-50 flex items-center gap-1 shadow-sm"
+															title="Transfere candidaturas e bens para o registro #{grupo.sugestao_canonico_id} e remove este registro redundante"
+														>
+															{#if mesclandoIds[p.id]}
+																<span class="w-2.5 h-2.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+																<span>Mesclando...</span>
+															{:else}
+																<span>⚡ Unificar no #{grupo.sugestao_canonico_id}</span>
+															{/if}
+														</button>
+													{/if}
+												</div>
+											</div>
+										{/each}
+									</div>
+								</div>
+							{/each}
+
+							<!-- Paginação de Duplicados -->
+							{#if relatorioDuplicados && relatorioDuplicados.total_paginas > 1}
+								<div class="pt-4 flex items-center justify-between text-xs text-slate-400">
+									<div>
+										Página <strong class="text-white">{paginaDuplicados}</strong> de <strong class="text-white">{relatorioDuplicados.total_paginas}</strong>
+										({relatorioDuplicados.total_grupos} grupos identificados)
+									</div>
+
+									<div class="flex items-center gap-2">
+										<button
+											type="button"
+											on:click={() => carregarRelatorioDuplicados(paginaDuplicados - 1)}
+											disabled={paginaDuplicados <= 1}
+											class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg disabled:opacity-40"
+										>
+											Anterior
+										</button>
+										<button
+											type="button"
+											on:click={() => carregarRelatorioDuplicados(paginaDuplicados + 1)}
+											disabled={paginaDuplicados >= relatorioDuplicados.total_paginas}
+											class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg disabled:opacity-40"
+										>
+											Próxima
+										</button>
+									</div>
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</div>
 			{/if}
 
-			<!-- Paginação -->
-			{#if dados.total_paginas > 1}
+			<!-- Paginação Normal (Cards e Tabela) -->
+			{#if modoVisualizacao !== 'duplicados' && dados.total_paginas > 1}
 				<div class="pt-6 pb-2 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs">
 					<div class="text-slate-400">
 						Página <span class="font-bold text-white">{paginaAtual}</span> de <span class="font-bold text-white">{dados.total_paginas}</span>
