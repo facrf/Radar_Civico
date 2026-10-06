@@ -14,6 +14,7 @@ O **Radar Cívico** consolida bases de dados governamentais abertas em um Mini D
 * **Querido Diário (Open Knowledge Brasil):** Atos, decretos e portarias de nomeações em diários oficiais municipais.
 * **CNA / OAB (Conselho Federal da OAB):** Cadastro Nacional dos Advogados para checagem de regularidade e conflito de interesses.
 * **Receita Federal:** Quadro de Sócios e Administradores (QSA) e situação cadastral de empresas.
+* **Auxílio Emergencial (CGU / Portal da Transparência):** Histórico de pagamentos de benefícios sociais com auditoria determinística de agentes políticos. *(Consulte o [Guia de Extração do Auxílio](docs/extracao_auxilio_emergencial.md))*.
 
 ---
 
@@ -29,6 +30,8 @@ radar-civico/
 │   ├── auditor/    # Regras determinísticas de detecção de fraudes, anomalias e conflito de interesses
 │   ├── graph/      # Modelagem e travessia de redes (petgraph), caminhos até 3 graus e nós Hub
 │   └── server/     # API HTTP Axum com compressão, CORS, graceful shutdown e servidor web SPA
+├── scripts/        # Utilitários de linha de comando de alta velocidade (ex.: extrator cirúrgico de auxílio)
+├── docs/           # Guias de auditoria, ingestão e documentação do sistema
 ├── tests/
 │   └── e2e_pipeline.rs # Teste de integração ponta a ponta (Ingestão -> Auditoria -> Grafo -> API)
 ├── web/            # Interface SPA em SvelteKit, Tailwind CSS e Cytoscape.js
@@ -48,6 +51,7 @@ radar-civico/
 | **Fornecedor Hub** | Empresas que concentram mais de 70% de repasses de candidatos de uma mesma coligação ou família política. | *Betweenness Centrality* |
 | **Fornecedores Fantasmas** | Empresas abertas a menos de 30 dias da eleição ou com CNPJ inapto/baixado recebendo verbas eleitorais. | Receita Federal / TSE |
 | **Ubiquidade Geotemporal** | Notas fiscais emitidas presencialmente pelo mesmo parlamentar em cidades distantes exigindo velocidade > 800 km/h. | Análise Geotemporal |
+| **Auxílio Emergencial Indevido** | Recebimento de benefício social por detentor de mandato ativo (Prefeito/Vereador) ou patrimônio > R$ 300.000,00. | Lei 13.982/2020 e TCU Acórdão 2.438/2020 |
 
 ---
 
