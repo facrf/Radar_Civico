@@ -354,6 +354,70 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_alertas_beneficio_motivo ON alertas_beneficio_indevido(motivo);
         ",
     },
+    Migration {
+        version: 11,
+        name: "create_municipios_ibge",
+        sql: "
+            CREATE TABLE IF NOT EXISTS municipios_ibge (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                codigo_ibge INTEGER UNIQUE,
+                nome TEXT NOT NULL,
+                uf TEXT NOT NULL,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                is_capital BOOLEAN DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_municipios_uf ON municipios_ibge(uf);
+            CREATE INDEX IF NOT EXISTS idx_municipios_nome ON municipios_ibge(nome);
+
+            INSERT OR IGNORE INTO municipios_ibge (codigo_ibge, nome, uf, latitude, longitude, is_capital) VALUES
+            (5300108, 'Brasília', 'DF', -15.793889, -47.882778, 1),
+            (3550308, 'São Paulo', 'SP', -23.550520, -46.633308, 1),
+            (3304557, 'Rio de Janeiro', 'RJ', -22.906847, -43.172896, 1),
+            (3106200, 'Belo Horizonte', 'MG', -19.920831, -43.937778, 1),
+            (4314902, 'Porto Alegre', 'RS', -30.034647, -51.217658, 1),
+            (4106902, 'Curitiba', 'PR', -25.428954, -49.267137, 1),
+            (4205407, 'Florianópolis', 'SC', -27.595378, -48.548050, 1),
+            (2927408, 'Salvador', 'BA', -12.977749, -38.501630, 1),
+            (2611606, 'Recife', 'PE', -8.047562, -34.876964, 1),
+            (2304400, 'Fortaleza', 'CE', -3.731862, -38.526671, 1),
+            (5208707, 'Goiânia', 'GO', -16.686891, -49.264794, 1),
+            (5103403, 'Cuiabá', 'MT', -15.601411, -56.097892, 1),
+            (5002704, 'Campo Grande', 'MS', -20.469711, -54.620121, 1),
+            (1501402, 'Belém', 'PA', -1.455755, -48.490180, 1),
+            (2111300, 'São Luís', 'MA', -2.530730, -44.306800, 1),
+            (2507507, 'João Pessoa', 'PB', -7.119496, -34.845012, 1),
+            (2408102, 'Natal', 'RN', -5.794480, -35.211000, 1),
+            (2704302, 'Maceió', 'AL', -9.665800, -35.735300, 1),
+            (2211001, 'Teresina', 'PI', -5.091900, -42.803400, 1),
+            (2800308, 'Aracaju', 'SE', -10.947200, -37.073100, 1),
+            (3205309, 'Vitória', 'ES', -20.315500, -40.312800, 1),
+            (1100205, 'Porto Velho', 'RO', -8.761900, -63.903900, 1),
+            (1721000, 'Palmas', 'TO', -10.249100, -48.324300, 1),
+            (1600303, 'Macapá', 'AP', 0.035500, -51.070500, 1),
+            (1400100, 'Boa Vista', 'RR', 2.823500, -60.675800, 1),
+            (1200401, 'Rio Branco', 'AC', -9.975300, -67.824900, 1),
+            (1302603, 'Manaus', 'AM', -3.119028, -60.021731, 1),
+            (4305108, 'Caxias do Sul', 'RS', -29.1678, -51.1794, 0),
+            (4314407, 'Pelotas', 'RS', -31.7654, -52.3376, 0),
+            (4316907, 'Santa Maria', 'RS', -29.6842, -53.8069, 0),
+            (4304606, 'Canoas', 'RS', -29.9178, -51.1836, 0),
+            (3509502, 'Campinas', 'SP', -22.9099, -47.0626, 0),
+            (3548500, 'Santos', 'SP', -23.9608, -46.3336, 0),
+            (3543402, 'Ribeirão Preto', 'SP', -21.1775, -47.8103, 0),
+            (3549904, 'São José dos Campos', 'SP', -23.1794, -45.8869, 0),
+            (3303302, 'Niterói', 'RJ', -22.8833, -43.1036, 0),
+            (3170206, 'Uberlândia', 'MG', -18.9186, -48.2772, 0),
+            (3136702, 'Juiz de Fora', 'MG', -21.7642, -43.3497, 0),
+            (4113700, 'Londrina', 'PR', -23.3045, -51.1696, 0),
+            (4115200, 'Maringá', 'PR', -23.4209, -51.9331, 0),
+            (4209102, 'Joinville', 'SC', -26.3045, -48.8487, 0),
+            (4202404, 'Blumenau', 'SC', -26.9194, -49.0661, 0),
+            (2910800, 'Feira de Santana', 'BA', -12.2667, -38.9667, 0),
+            (5201108, 'Anápolis', 'GO', -16.3267, -48.9533, 0);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -750,6 +814,29 @@ mod tests {
         assert_eq!(alerta_count, 1);
 
         // Verify idempotency of migration 10
+        run_migrations(&mut conn)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_municipios_ibge() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        let count: i64 = conn.query_row("SELECT count(*) FROM municipios_ibge", [], |r| r.get(0))?;
+        assert!(count >= 27, "Deveria ter ao menos as 27 capitais inseridas");
+
+        let (lat, lon): (f64, f64) = conn.query_row(
+            "SELECT latitude, longitude FROM municipios_ibge WHERE uf = 'DF' AND nome = 'Brasília'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert!((lat - (-15.793889)).abs() < 0.001);
+        assert!((lon - (-47.882778)).abs() < 0.001);
+
+        // Verify idempotency
         run_migrations(&mut conn)?;
 
         Ok(())
