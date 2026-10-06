@@ -450,25 +450,25 @@
 						<div class="space-y-4">
 							<!-- Header do Card: Avatar / Foto + Badges de Partido e UF -->
 							<div class="flex items-start gap-3.5">
-								<div class="relative flex-shrink-0">
+								<div class="relative w-14 h-14 min-w-[3.5rem] min-h-[3.5rem] max-w-[3.5rem] max-h-[3.5rem] flex-shrink-0">
 									{#if politico.foto_base64}
 										<img
 											src={`data:${politico.foto_mime || 'image/jpeg'};base64,${politico.foto_base64}`}
 											alt={politico.nome_urna}
-											class="w-13 h-13 rounded-xl object-cover border border-slate-700 bg-slate-950 shadow-sm"
+											class="w-full h-full rounded-xl object-cover object-top border border-slate-700 bg-slate-950 shadow-sm"
 										/>
 									{:else if politico.foto_url}
 										<img
 											src={politico.foto_url}
 											alt={politico.nome_urna}
-											class="w-13 h-13 rounded-xl object-cover border border-slate-700 bg-slate-950 shadow-sm"
+											class="w-full h-full rounded-xl object-cover object-top border border-slate-700 bg-slate-950 shadow-sm"
 											loading="lazy"
 											on:error={() => {
 												politico.foto_url = null;
 											}}
 										/>
 									{:else}
-										<div class="w-13 h-13 rounded-xl bg-gradient-to-br {getPartidoColor(politico.sigla_partido)} flex items-center justify-center font-bold text-base text-white shadow-inner border border-slate-700/60">
+										<div class="w-full h-full rounded-xl bg-gradient-to-br {getPartidoColor(politico.sigla_partido)} flex items-center justify-center font-bold text-base text-white shadow-inner border border-slate-700/60">
 											{getIniciais(politico.nome_urna || politico.nome_completo)}
 										</div>
 									{/if}
