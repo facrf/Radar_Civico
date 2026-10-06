@@ -54,10 +54,11 @@
 			if (res.ok) {
 				dados = await res.json();
 			} else {
-				erro = 'Não foi possível carregar a lista de políticos.';
+				const errData = await res.json().catch(() => null);
+				erro = errData?.error || errData?.mensagem || `Erro HTTP ${res.status}: Não foi possível carregar a lista de políticos.`;
 			}
-		} catch (err) {
-			erro = 'Erro de comunicação com o servidor ao consultar parlamentares.';
+		} catch (err: any) {
+			erro = `Erro de comunicação com o servidor: ${err?.message || 'Falha ao consultar parlamentares'}`;
 		} finally {
 			loading = false;
 		}
@@ -211,7 +212,7 @@
 						class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
 					>
 						<option value="">Todos os Cargos</option>
-						{#each dados.cargos_disponiveis.length ? dados.cargos_disponiveis : ['DEPUTADO FEDERAL', 'SENADOR', 'PREFEITO', 'VEREADOR'] as cargo}
+						{#each dados.cargos_disponiveis.length ? dados.cargos_disponiveis : ['DEPUTADO FEDERAL', 'VEREADOR', 'PREFEITO', 'VICE-PREFEITO', 'SENADOR'] as cargo}
 							<option value={cargo}>{cargo}</option>
 						{/each}
 					</select>
@@ -288,15 +289,31 @@
 			<p class="text-xs text-slate-500">Consultando bases da Câmara dos Deputados e TSE</p>
 		</div>
 	{:else if erro}
-		<div class="p-8 text-center bg-rose-500/10 border border-rose-500/30 rounded-2xl text-rose-300 text-sm max-w-lg mx-auto space-y-3">
-			<p class="font-semibold">{erro}</p>
-			<button
-				type="button"
-				on:click={() => carregarPoliticos(false)}
-				class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-white rounded-lg transition-colors font-medium"
-			>
-				Tentar Novamente
-			</button>
+		<!-- Alerta visual explícito de erro na busca -->
+		<div class="p-6 bg-rose-500/10 border-2 border-rose-500/40 rounded-2xl text-rose-300 text-sm max-w-xl mx-auto space-y-3 shadow-xl">
+			<div class="flex items-center gap-2.5">
+				<span class="text-xl">⚠️</span>
+				<h3 class="text-base font-bold text-rose-200">Erro na Consulta de Parlamentares</h3>
+			</div>
+			<p class="text-xs text-rose-300 leading-relaxed bg-rose-950/40 p-3 rounded-lg border border-rose-800/40 font-mono">
+				{erro}
+			</p>
+			<div class="flex items-center gap-2 pt-1">
+				<button
+					type="button"
+					on:click={() => carregarPoliticos(false)}
+					class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-xs text-white rounded-lg transition-colors font-semibold shadow-sm"
+				>
+					Tentar Novamente
+				</button>
+				<button
+					type="button"
+					on:click={limparFiltros}
+					class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-lg transition-colors font-medium"
+				>
+					Limpar Filtros
+				</button>
+			</div>
 		</div>
 	{:else if dados.politicos.length === 0}
 		<!-- Estado Vazio -->
@@ -376,15 +393,29 @@
 								</div>
 							</div>
 
-							<!-- Cargo / Mandato -->
-							<div class="flex items-center gap-1.5 text-xs text-slate-400">
-								<svg class="w-3.5 h-3.5 text-slate-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-								</svg>
-								<span class="truncate">{politico.cargo || 'Deputado Federal'}</span>
-								{#if politico.municipio}
-									<span class="text-slate-600">•</span>
-									<span class="truncate text-slate-500">{politico.municipio}</span>
+							<!-- Cargo e Mandatos do Político -->
+							<div class="space-y-1.5">
+								<div class="flex items-center gap-1.5 text-xs text-slate-400">
+									<svg class="w-3.5 h-3.5 text-slate-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+									</svg>
+									<span class="font-medium text-slate-300 truncate">{politico.cargo || 'Deputado Federal'}</span>
+									{#if politico.municipio}
+										<span class="text-slate-600">•</span>
+										<span class="truncate text-slate-400">{politico.municipio}</span>
+									{/if}
+								</div>
+
+								<!-- Badges com todos os Mandatos / Disputas Históricas -->
+								{#if politico.mandatos && politico.mandatos.length > 0}
+									<div class="flex flex-wrap gap-1 pt-1">
+										{#each politico.mandatos as mandato}
+											{@const destacado = cargoSelecionado && mandato.toUpperCase().includes(cargoSelecionado.toUpperCase())}
+											<span class="px-1.5 py-0.5 rounded text-[10px] {destacado ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold' : 'bg-slate-950/80 text-slate-400 border border-slate-800'}">
+												{mandato}
+											</span>
+										{/each}
+									</div>
 								{/if}
 							</div>
 

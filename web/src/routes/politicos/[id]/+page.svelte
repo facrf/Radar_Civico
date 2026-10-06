@@ -2,7 +2,7 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import MapaDespesas from '$lib/components/MapaDespesas.svelte';
-	import type { PoliticoDetalheResponse, PoliticoDespesasGeoResponse } from '$lib/types';
+	import type { PoliticoDetalheResponse, PoliticoDespesasGeoResponse, BuscarFotoResponse } from '$lib/types';
 
 	const id = $page.params.id;
 
@@ -11,6 +11,20 @@
 	let politico: PoliticoDetalheResponse | null = null;
 	let geoData: PoliticoDespesasGeoResponse | null = null;
 	let abaAtiva: 'mapa' | 'categorias' | 'despesas' | 'eleitoral' = 'mapa';
+
+	// Gerenciamento de Foto Oficial (TSE/Câmara)
+	let buscandoFoto = false;
+	let salvandoFoto = false;
+	let fotoLocalUrl: string | null = null;
+	let msgFotoSucesso: string | null = null;
+	let msgFotoErro: string | null = null;
+	let mostrarModalFoto = false;
+	let fotoUrlInput = '';
+	let uploadFileInput: HTMLInputElement;
+
+	$: mandatosDistintos = politico?.candidaturas
+		? Array.from(new Set(politico.candidaturas.map((c) => `${c.cargo} (${c.ano_eleicao})`)))
+		: [];
 
 	async function carregarDados() {
 		loading = true;
@@ -50,6 +64,130 @@
 			erro = 'Falha de conexão com a API do Radar Cívico.';
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function buscarFotoTse() {
+		if (buscandoFoto || !politico) return;
+		buscandoFoto = true;
+		msgFotoSucesso = null;
+		msgFotoErro = null;
+
+		try {
+			const res = await fetch(`/api/politicos/${id}/buscar-foto-tse`, {
+				method: 'POST'
+			});
+			const data: BuscarFotoResponse = await res.json();
+			if (res.ok && data.sucesso) {
+				msgFotoSucesso = data.mensagem;
+				if (data.foto_base64) {
+					politico.foto_base64 = data.foto_base64;
+					politico.foto_mime = data.foto_mime || 'image/jpeg';
+				}
+				fotoLocalUrl = `/api/politicos/${id}/foto?t=${Date.now()}`;
+			} else {
+				msgFotoErro = data.mensagem || 'Não foi possível encontrar a foto oficial no TSE ou Câmara.';
+			}
+		} catch (err: any) {
+			msgFotoErro = `Erro de comunicação ao buscar foto: ${err?.message || 'Falha de conexão com a API'}`;
+		} finally {
+			buscandoFoto = false;
+		}
+	}
+
+	async function salvarFotoPorUrl() {
+		if (!fotoUrlInput.trim() || !politico) return;
+		salvandoFoto = true;
+		msgFotoSucesso = null;
+		msgFotoErro = null;
+
+		try {
+			const res = await fetch(`/api/politicos/${id}/foto`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ foto_url: fotoUrlInput.trim() })
+			});
+			const data: BuscarFotoResponse = await res.json();
+			if (res.ok && data.sucesso) {
+				msgFotoSucesso = data.mensagem;
+				if (data.foto_base64) {
+					politico.foto_base64 = data.foto_base64;
+					politico.foto_mime = data.foto_mime || 'image/jpeg';
+				}
+				fotoLocalUrl = `/api/politicos/${id}/foto?t=${Date.now()}`;
+				mostrarModalFoto = false;
+				fotoUrlInput = '';
+			} else {
+				msgFotoErro = data.mensagem || 'Falha ao salvar foto pela URL informada.';
+			}
+		} catch (err: any) {
+			msgFotoErro = `Erro ao salvar foto: ${err?.message || 'Falha de rede'}`;
+		} finally {
+			salvandoFoto = false;
+		}
+	}
+
+	function handleUploadArquivo(e: Event) {
+		const target = e.target as HTMLInputElement;
+		const file = target?.files?.[0];
+		if (!file || !politico) return;
+
+		salvandoFoto = true;
+		msgFotoSucesso = null;
+		msgFotoErro = null;
+
+		const reader = new FileReader();
+		reader.onload = async () => {
+			const base64Str = reader.result as string;
+			try {
+				const res = await fetch(`/api/politicos/${id}/foto`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						foto_base64: base64Str,
+						foto_mime: file.type || 'image/jpeg'
+					})
+				});
+				const data: BuscarFotoResponse = await res.json();
+				if (res.ok && data.sucesso) {
+					msgFotoSucesso = data.mensagem;
+					if (politico && data.foto_base64) {
+						politico.foto_base64 = data.foto_base64;
+						politico.foto_mime = data.foto_mime || file.type || 'image/jpeg';
+					}
+					fotoLocalUrl = `/api/politicos/${id}/foto?t=${Date.now()}`;
+					mostrarModalFoto = false;
+				} else {
+					msgFotoErro = data.mensagem || 'Falha ao salvar a imagem enviada.';
+				}
+			} catch (err: any) {
+				msgFotoErro = `Erro no envio da imagem: ${err?.message || 'Falha de rede'}`;
+			} finally {
+				salvandoFoto = false;
+				if (target) target.value = '';
+			}
+		};
+		reader.onerror = () => {
+			salvandoFoto = false;
+			msgFotoErro = 'Erro ao processar o arquivo de imagem selecionado.';
+		};
+		reader.readAsDataURL(file);
+	}
+
+	async function removerFoto() {
+		if (!politico) return;
+		if (!confirm('Deseja realmente remover a foto salva deste parlamentar?')) return;
+		try {
+			const res = await fetch(`/api/politicos/${id}/foto`, { method: 'DELETE' });
+			if (res.ok) {
+				politico.foto_base64 = null;
+				politico.foto_mime = null;
+				fotoLocalUrl = null;
+				msgFotoSucesso = 'Foto removida com sucesso do banco de dados.';
+				msgFotoErro = null;
+			}
+		} catch (err: any) {
+			msgFotoErro = `Erro ao remover foto: ${err?.message || 'Falha'}`;
 		}
 	}
 
@@ -144,24 +282,32 @@
 		</div>
 	{:else if politico}
 		<!-- Header Principal do Parlamentar -->
-		<section class="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden">
+		<section class="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden space-y-4">
 			<!-- Detalhe Gradiente no Topo -->
 			<div class="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r {getPartidoColor(politico.partido)}"></div>
 
 			<div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
 				<!-- Avatar / Foto + Dados Principais -->
-				<div class="flex items-start sm:items-center gap-5">
-					{#if politico.foto_base64}
-						<img
-							src={`data:${politico.foto_mime || 'image/jpeg'};base64,${politico.foto_base64}`}
-							alt={politico.nome_urna}
-							class="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl object-cover border-2 border-slate-700 bg-slate-950 shadow-lg flex-shrink-0"
-						/>
-					{:else}
-						<div class="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-gradient-to-br {getPartidoColor(politico.partido)} flex items-center justify-center font-extrabold text-2xl sm:text-3xl text-white shadow-xl flex-shrink-0 border-2 border-slate-700">
-							{getIniciais(politico.nome_urna || politico.nome_completo)}
-						</div>
-					{/if}
+				<div class="flex flex-col sm:flex-row items-start sm:items-center gap-5">
+					<div class="relative group flex-shrink-0">
+						{#if fotoLocalUrl}
+							<img
+								src={fotoLocalUrl}
+								alt={politico.nome_urna}
+								class="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl object-cover border-2 border-slate-700 bg-slate-950 shadow-xl"
+							/>
+						{:else if politico.foto_base64}
+							<img
+								src={`data:${politico.foto_mime || 'image/jpeg'};base64,${politico.foto_base64}`}
+								alt={politico.nome_urna}
+								class="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl object-cover border-2 border-slate-700 bg-slate-950 shadow-xl"
+							/>
+						{:else}
+							<div class="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl bg-gradient-to-br {getPartidoColor(politico.partido)} flex items-center justify-center font-extrabold text-3xl text-white shadow-xl border-2 border-slate-700">
+								{getIniciais(politico.nome_urna || politico.nome_completo)}
+							</div>
+						{/if}
+					</div>
 
 					<div class="space-y-1.5">
 						<div class="flex flex-wrap items-center gap-2">
@@ -189,7 +335,7 @@
 							{politico.nome_completo}
 						</p>
 
-						<div class="flex flex-wrap items-center gap-3 text-xs text-slate-400 pt-1 font-mono">
+						<div class="flex flex-wrap items-center gap-3 text-xs text-slate-400 pt-0.5 font-mono">
 							{#if politico.cpf_mascarado}
 								<span>CPF: <strong class="text-slate-300">{politico.cpf_mascarado}</strong></span>
 							{/if}
@@ -198,6 +344,51 @@
 							{/if}
 							{#if politico.grau_instrucao}
 								<span class="font-sans">• {politico.grau_instrucao}</span>
+							{/if}
+						</div>
+
+						<!-- Ações da Foto Oficial (TSE/Câmara) -->
+						<div class="flex flex-wrap items-center gap-2 pt-2">
+							<button
+								type="button"
+								on:click={buscarFotoTse}
+								disabled={buscandoFoto}
+								class="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 shadow-sm"
+								title="Busca a foto oficial nas bases do TSE / Câmara dos Deputados e armazena permanentemente no banco local"
+							>
+								{#if buscandoFoto}
+									<div class="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
+									<span>Buscando foto oficial...</span>
+								{:else}
+									<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+									</svg>
+									<span>Buscar Foto Oficial (TSE)</span>
+								{/if}
+							</button>
+
+							<button
+								type="button"
+								on:click={() => (mostrarModalFoto = true)}
+								class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1.5 transition-colors"
+								title="Inserir foto via link de imagem da web ou upload de arquivo"
+							>
+								<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+								</svg>
+								<span>Personalizar Foto</span>
+							</button>
+
+							{#if politico.foto_base64 || fotoLocalUrl}
+								<button
+									type="button"
+									on:click={removerFoto}
+									class="px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-medium transition-colors"
+									title="Remover foto salva do banco de dados"
+								>
+									Remover Foto ✕
+								</button>
 							{/if}
 						</div>
 					</div>
@@ -215,6 +406,44 @@
 					</div>
 				</div>
 			</div>
+
+			<!-- Badges de Mandatos e Disputas Históricas do Político -->
+			{#if mandatosDistintos.length > 0}
+				<div class="pt-3 border-t border-slate-800/80 flex flex-wrap items-center gap-2">
+					<span class="text-xs text-slate-400 font-medium">Mandatos & Disputas Registradas:</span>
+					{#each mandatosDistintos as mandato}
+						<span class="px-2.5 py-1 rounded-lg text-xs font-mono bg-slate-950 border border-slate-700/80 text-emerald-300 font-semibold shadow-inner">
+							{mandato}
+						</span>
+					{/each}
+				</div>
+			{/if}
+
+			<!-- Alertas de Feedback da Busca / Salvamento de Foto -->
+			{#if msgFotoSucesso}
+				<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-center justify-between shadow-sm">
+					<div class="flex items-center gap-2">
+						<span class="font-bold text-sm">✓</span>
+						<span>{msgFotoSucesso}</span>
+					</div>
+					<button type="button" on:click={() => (msgFotoSucesso = null)} class="text-slate-400 hover:text-white font-bold ml-2">✕</button>
+				</div>
+			{/if}
+
+			{#if msgFotoErro}
+				<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs flex items-start justify-between gap-3 shadow-sm">
+					<div class="flex items-start gap-2">
+						<span class="text-base leading-none">⚠️</span>
+						<div>
+							<p class="font-semibold">{msgFotoErro}</p>
+							<p class="text-slate-400 text-[11px] mt-0.5">
+								Dica: Caso a foto oficial não esteja disponível no TSE ou o serviço bloqueie temporariamente, utilize o botão <strong>Personalizar Foto</strong> para colar o link direto ou enviar a imagem do seu computador.
+							</p>
+						</div>
+					</div>
+					<button type="button" on:click={() => (msgFotoErro = null)} class="text-slate-400 hover:text-white font-bold flex-shrink-0">✕</button>
+				</div>
+			{/if}
 		</section>
 
 		<!-- Cards de Métricas e KPIs Financeiros -->
@@ -554,3 +783,86 @@
 		{/if}
 	{/if}
 </div>
+
+<!-- Modal para Inserir / Personalizar Foto -->
+{#if mostrarModalFoto}
+	<div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+		<div class="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5">
+			<div class="flex items-center justify-between pb-3 border-b border-slate-800">
+				<h3 class="text-base font-bold text-white flex items-center gap-2">
+					<span class="text-lg">📸</span>
+					<span>Personalizar Foto do Político</span>
+				</h3>
+				<button
+					type="button"
+					on:click={() => (mostrarModalFoto = false)}
+					class="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center text-sm transition-colors"
+				>
+					✕
+				</button>
+			</div>
+
+			<p class="text-xs text-slate-400 leading-relaxed">
+				A imagem enviada ou informada via link será gravada permanentemente no banco de dados SQLite local, servindo como ícone oficial sem necessidade de novo download.
+			</p>
+
+			<!-- Opção 1: Inserir via URL direta da web -->
+			<div class="space-y-2 bg-slate-950/60 p-3.5 rounded-2xl border border-slate-800">
+				<label for="input-foto-url" class="block text-xs font-semibold text-slate-200">
+					Opção 1: Informar URL da Foto na Web
+				</label>
+				<div class="flex gap-2">
+					<input
+						id="input-foto-url"
+						type="url"
+						bind:value={fotoUrlInput}
+						placeholder="https://exemplo.com/foto_politico.jpg"
+						class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+					/>
+					<button
+						type="button"
+						on:click={salvarFotoPorUrl}
+						disabled={salvandoFoto || !fotoUrlInput.trim()}
+						class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold disabled:opacity-50 transition-colors shadow-sm"
+					>
+						{salvandoFoto ? 'Salvando...' : 'Salvar'}
+					</button>
+				</div>
+			</div>
+
+			<div class="relative flex items-center justify-center">
+				<div class="w-full border-t border-slate-800"></div>
+				<span class="absolute bg-slate-900 px-3 text-[11px] text-slate-500 uppercase font-mono font-bold tracking-wider">
+					ou
+				</span>
+			</div>
+
+			<!-- Opção 2: Upload de Arquivo Local -->
+			<div class="space-y-2 bg-slate-950/60 p-3.5 rounded-2xl border border-slate-800">
+				<span class="block text-xs font-semibold text-slate-200">
+					Opção 2: Enviar Arquivo de Imagem
+				</span>
+				<input
+					type="file"
+					accept="image/jpeg,image/png,image/webp"
+					bind:this={uploadFileInput}
+					on:change={handleUploadArquivo}
+					disabled={salvandoFoto}
+					class="block w-full text-xs text-slate-400 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-800 file:text-emerald-300 hover:file:bg-slate-700 cursor-pointer disabled:opacity-50"
+				/>
+				<p class="text-[10px] text-slate-500">Formatos aceitos: JPEG, PNG, WebP (máximo 2 MB)</p>
+			</div>
+
+			<div class="pt-2 border-t border-slate-800 flex justify-end">
+				<button
+					type="button"
+					on:click={() => (mostrarModalFoto = false)}
+					class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 hover:text-white rounded-xl font-medium transition-colors"
+				>
+					Fechar
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+

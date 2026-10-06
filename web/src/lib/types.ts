@@ -332,6 +332,21 @@ export interface ItemPoliticoListagem {
 	tem_alertas: boolean;
 	foto_base64: string | null;
 	foto_mime: string | null;
+	mandatos?: string[];
+}
+
+export interface BuscarFotoResponse {
+	sucesso: boolean;
+	mensagem: string;
+	foto_base64: string | null;
+	foto_mime: string | null;
+	origem: string | null;
+}
+
+export interface SalvarFotoManualRequest {
+	foto_base64?: string;
+	foto_url?: string;
+	foto_mime?: string;
 }
 
 export interface ListarPoliticosResponse {
