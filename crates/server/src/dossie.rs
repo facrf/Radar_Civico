@@ -465,6 +465,8 @@ pub async fn dossie_cnpj_handler(
         }
     }
 
+    let params_auditoria = crate::routes::config::carregar_parametros_auditoria(&conn);
+
     // 3. Gastos Parlamentares (CEAP)
     let mut notas_fiscais: Vec<NotaFiscalCeapItem> = Vec::new();
     let mut total_faturado_ceap = 0.0;
@@ -476,7 +478,8 @@ pub async fn dossie_cnpj_handler(
             .prepare(
                 "SELECT dp.id, dp.parlamentar_nome, dp.data_emissao, dp.categoria_despesa,
                         dp.valor_liquido, dp.numero_documento, dp.url_nota_fiscal, dp.flag_anomalia,
-                        (SELECT p.id FROM politicos p WHERE p.nome_completo = dp.parlamentar_nome OR p.nome_urna = dp.parlamentar_nome LIMIT 1) as politico_id
+                        (SELECT p.id FROM politicos p WHERE p.nome_completo = dp.parlamentar_nome OR p.nome_urna = dp.parlamentar_nome LIMIT 1) as politico_id,
+                        dp.detalhes_litros
                  FROM despesas_parlamentares dp
                  WHERE dp.fornecedor_cnpj_cpf LIKE ?1
                  ORDER BY dp.data_emissao DESC
@@ -487,15 +490,31 @@ pub async fn dossie_cnpj_handler(
         if let Some(mut stmt) = stmt_ceap {
             let rows = stmt
                 .query_map([&like_basico], |row| {
+                    let cat: String = row.get(3)?;
+                    let val: f64 = row.get(4)?;
+                    let flag_banco: bool = row.get::<_, i32>(7).unwrap_or(0) != 0;
+                    let litros_opt: Option<f64> = row.get(9)?;
+                    let litros_val = litros_opt.unwrap_or_else(|| {
+                        if cat.to_uppercase().contains("COMBUST") {
+                            (val / 5.80 * 10.0).round() / 10.0
+                        } else {
+                            0.0
+                        }
+                    });
+
+                    // Flag de anomalia dinâmica respeitando o limiar configurado pelo usuário
+                    let flag_anomalia = (litros_val > params_auditoria.limite_combustivel_litros)
+                        || (flag_banco && litros_val > params_auditoria.limite_combustivel_litros);
+
                     Ok(NotaFiscalCeapItem {
                         id: row.get(0)?,
                         parlamentar_nome: row.get(1)?,
                         data_emissao: row.get(2)?,
-                        categoria_despesa: row.get(3)?,
-                        valor_liquido: row.get(4)?,
+                        categoria_despesa: cat,
+                        valor_liquido: val,
                         numero_documento: row.get(5)?,
                         url_nota_fiscal: row.get(6)?,
-                        flag_anomalia: row.get::<_, i32>(7).unwrap_or(0) != 0,
+                        flag_anomalia,
                         politico_id: row.get(8)?,
                     })
                 })
@@ -747,8 +766,34 @@ pub async fn dossie_cnpj_handler(
         }
     }
 
-    // REGRA 2: Fornecedor Hub com Alto Faturamento em Gabinetes
-    if total_faturado_ceap > 500_000.0 || compradores.len() >= 5 {
+    // REGRA 2: Fornecedor Hub / Concentração de Fornecedor por Parlamentar
+    let mut max_concentracao = 0.0;
+    let mut max_comprador_nome = String::new();
+    let mut max_comprador_gasto = 0.0;
+    if total_faturado_ceap > 0.0 {
+        for c in &compradores {
+            let pct = (c.total_gasto / total_faturado_ceap) * 100.0;
+            if pct > max_concentracao {
+                max_concentracao = pct;
+                max_comprador_nome = c.parlamentar_nome.clone();
+                max_comprador_gasto = c.total_gasto;
+            }
+        }
+    }
+
+    if max_concentracao >= params_auditoria.concentracao_fornecedor_percentual && total_faturado_ceap > 10_000.0 {
+        alertas.push(AlertaDossie {
+            tipo: "FORNECEDOR_HUB".to_string(),
+            severidade: "ALTA".to_string(),
+            titulo: "Alta Concentração de Fornecedor CEAP".to_string(),
+            descricao: format!(
+                "O parlamentar {} concentrou {:.1}% do faturamento desta empresa na CEAP (limiar configurado: {:.0}%). Total pago: R$ {:.2} de R$ {:.2}.",
+                max_comprador_nome, max_concentracao, params_auditoria.concentracao_fornecedor_percentual, max_comprador_gasto, total_faturado_ceap
+            ),
+            valor_envolvido: Some(max_comprador_gasto),
+            fonte: "Câmara dos Deputados (CEAP)".to_string(),
+        });
+    } else if total_faturado_ceap > 500_000.0 || compradores.len() >= 5 {
         alertas.push(AlertaDossie {
             tipo: "FORNECEDOR_HUB".to_string(),
             severidade: "ALTA".to_string(),
@@ -763,16 +808,16 @@ pub async fn dossie_cnpj_handler(
         });
     }
 
-    // REGRA 3: Notas com Anomalia de Combustível ou Sinalização de Auditoria
+    // REGRA 3: Notas com Anomalia de Combustível (Volume > Limite Configurado)
     let notas_anomalas = notas_fiscais.iter().filter(|n| n.flag_anomalia).count();
     if notas_anomalas > 0 {
         alertas.push(AlertaDossie {
             tipo: "COMBUSTIVEL_VOLUME".to_string(),
             severidade: "MEDIA".to_string(),
-            titulo: "Notas Fiscais Sinalizadas com Anomalia".to_string(),
+            titulo: "Notas Fiscais de Combustível com Volume Excessivo".to_string(),
             descricao: format!(
-                "{} nota(s) fiscal(is) deste fornecedor foram sinalizadas por irregularidade na auditoria de cotas.",
-                notas_anomalas
+                "{} nota(s) fiscal(is) deste fornecedor ultrapassam o limiar configurado de {:.0} L por abastecimento.",
+                notas_anomalas, params_auditoria.limite_combustivel_litros
             ),
             valor_envolvido: None,
             fonte: "Auditor CEAP Determinístico".to_string(),
@@ -884,6 +929,8 @@ pub async fn dossie_cpf_handler(
         )
     })?;
 
+    let params_auditoria = crate::routes::config::carregar_parametros_auditoria(&conn);
+
     let digits = limpar_documento(&cpf_param);
     let miolo_opt = extrair_miolo_cpf(&cpf_param);
     let termo_nome = if digits.len() < 6 {
@@ -951,19 +998,34 @@ pub async fn dossie_cpf_handler(
                         let mut total_ceap_emp = 0.0;
                         let like_cnpj = format!("%{}%", r.0);
                         if let Ok(mut stmt_c) = conn.prepare(
-                            "SELECT id, parlamentar_nome, data_emissao, categoria_despesa, valor_liquido, numero_documento, url_nota_fiscal, flag_anomalia
+                            "SELECT id, parlamentar_nome, data_emissao, categoria_despesa, valor_liquido, numero_documento, url_nota_fiscal, flag_anomalia, detalhes_litros
                              FROM despesas_parlamentares WHERE fornecedor_cnpj_cpf LIKE ?1 LIMIT 20"
                         ) {
                             if let Ok(c_rows) = stmt_c.query_map([&like_cnpj], |nr| {
+                                let cat: String = nr.get(3)?;
+                                let val: f64 = nr.get(4)?;
+                                let flag_banco: bool = nr.get::<_, i32>(7).unwrap_or(0) != 0;
+                                let litros_opt: Option<f64> = nr.get(8)?;
+                                let litros_val = litros_opt.unwrap_or_else(|| {
+                                    if cat.to_uppercase().contains("COMBUST") {
+                                        (val / 5.80 * 10.0).round() / 10.0
+                                    } else {
+                                        0.0
+                                    }
+                                });
+
+                                let flag_anomalia = (litros_val > params_auditoria.limite_combustivel_litros)
+                                    || (flag_banco && litros_val > params_auditoria.limite_combustivel_litros);
+
                                 Ok(NotaFiscalCeapItem {
                                     id: nr.get(0)?,
                                     parlamentar_nome: nr.get(1)?,
                                     data_emissao: nr.get(2)?,
-                                    categoria_despesa: nr.get(3)?,
-                                    valor_liquido: nr.get(4)?,
+                                    categoria_despesa: cat,
+                                    valor_liquido: val,
                                     numero_documento: nr.get(5)?,
                                     url_nota_fiscal: nr.get(6)?,
-                                    flag_anomalia: nr.get::<_, i32>(7).unwrap_or(0) != 0,
+                                    flag_anomalia,
                                     politico_id: None,
                                 })
                             }) {

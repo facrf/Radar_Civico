@@ -116,21 +116,53 @@ pub fn registrar_alerta(conn: &Connection, alerta: &NovoAlerta) -> Result<i64, s
     Ok(conn.last_insert_rowid())
 }
 
+pub fn expurgar_alertas_combustivel_obsoletos(conn: &Connection, novo_limite_litros: f64) -> Result<usize, storage::StorageError> {
+    let mut stmt = conn.prepare("SELECT id, detalhes_json FROM alertas_auditoria WHERE tipo = 'COMBUSTIVEL'")?;
+    let mut ids_para_remover = Vec::new();
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)))?;
+    for item in rows.flatten() {
+        if let Some(json_str) = item.1 {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if let Some(litros) = v.get("litros").and_then(|l| l.as_f64()) {
+                    if litros <= novo_limite_litros {
+                        ids_para_remover.push(item.0);
+                    }
+                }
+            }
+        }
+    }
+
+    let total = ids_para_remover.len();
+    for id in ids_para_remover {
+        let _ = conn.execute("DELETE FROM alertas_auditoria WHERE id = ?1", [id]);
+    }
+    Ok(total)
+}
+
 pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::StorageError> {
+    let params = crate::routes::config::carregar_parametros_auditoria(conn);
+    sincronizar_alertas_sistema_com_parametros(conn, &params)
+}
+
+pub fn sincronizar_alertas_sistema_com_parametros(
+    conn: &Connection,
+    parametros: &crate::routes::config::ParametrosAuditoria,
+) -> Result<usize, storage::StorageError> {
     let mut novos_inseridos = 0;
 
-    // 1. Sincroniza anomalias de combustível da CEAP (> 80 litros ou flag_anomalia = 1 ou despesa de combustível com valor equivalente > 80L)
+    // 1. Sincroniza anomalias de combustível da CEAP com base no limite dinâmico configurado
     {
+        let limite_litros = parametros.limite_combustivel_litros;
+        let valor_ref = limite_litros * 5.80;
         let mut stmt = conn.prepare(
             "SELECT id, parlamentar_nome, parlamentar_cpf_mascarado, fornecedor_nome,
                     data_emissao, valor_liquido, detalhes_litros, flag_anomalia, categoria_despesa
              FROM despesas_parlamentares
-             WHERE detalhes_litros > 80.0
-                OR flag_anomalia = 1
-                OR (UPPER(categoria_despesa) LIKE '%COMBUST%' AND valor_liquido > 464.0)",
+             WHERE detalhes_litros > ?1
+                OR (UPPER(categoria_despesa) LIKE '%COMBUST%' AND valor_liquido > ?2)",
         )?;
 
-        let despesas = stmt.query_map([], |row| {
+        let despesas = stmt.query_map(params![limite_litros, valor_ref], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -154,7 +186,7 @@ pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::
                 }
             });
 
-            if litros_val <= 80.0 {
+            if litros_val <= limite_litros {
                 continue;
             }
 
@@ -170,15 +202,16 @@ pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::
 
             if !ja_existe {
                 let ano = dt.get(0..4).and_then(|y| y.parse::<i32>().ok());
-                let severidade = if litros_val > 150.0 { "CRITICA" } else { "ALTA" };
+                let severidade = if litros_val > (limite_litros * 1.5) { "CRITICA" } else { "ALTA" };
                 let detalhes = serde_json::json!({
                     "despesa_id": id,
                     "litros": litros_val,
+                    "limite_configurado": limite_litros,
                     "fornecedor": forn,
                     "data": dt,
                     "categoria": cat,
-                    "regra": "Volume faturado supera capacidade física de veículo leve (> 80L)",
-                    "fundamentacao": "Instrução Normativa CEAP e parâmetro técnico automotivo",
+                    "regra": format!("Volume faturado supera capacidade configurada (> {:.0}L)", limite_litros),
+                    "fundamentacao": "Instrução Normativa CEAP e parâmetro de auditoria configurado",
                     "fonte_primaria": "Câmara dos Deputados (CEAP)"
                 });
 
@@ -189,8 +222,8 @@ pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::
                         severidade: severidade.to_string(),
                         titulo: format!("Abastecimento Anômalo ({:.1}L) - {}", litros_val, parl),
                         descricao: format!(
-                            "Volume faturado de {:.1}L em {} supera capacidade física do tanque de veículos leves (> 80 litros).",
-                            litros_val, forn
+                            "Volume faturado de {:.1}L em {} supera o limite configurado de auditoria (> {:.0} litros).",
+                            litros_val, forn, limite_litros
                         ),
                         alvo_nome: parl,
                         alvo_documento: cpf,
@@ -686,7 +719,7 @@ mod tests {
         assert_eq!(resp_2023.total, 1);
         assert_eq!(resp_2023.alertas[0].tipo, "CONFLITO_OAB");
 
-        // 4. Teste sincronização automática de combustível da CEAP
+        // 4. Teste sincronização automática de combustível da CEAP (> 250L padrão)
         conn.execute(
             "INSERT INTO despesas_parlamentares (
                 casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado,
@@ -695,7 +728,7 @@ mod tests {
              ) VALUES (
                 'CAMARA', 'DEPUTADO X', '***.000.111-**',
                 '2024-05-10', 'COMBUSTIVEL', 'POSTO 1', '12345678000100',
-                600.0, 95.0, 1
+                1800.0, 300.0, 1
              )",
             [],
         ).unwrap();

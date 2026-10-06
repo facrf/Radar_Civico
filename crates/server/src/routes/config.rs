@@ -105,6 +105,204 @@ pub struct VersaoResponse {
     pub count: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ParametrosAuditoria {
+    pub limite_combustivel_litros: f64,
+    pub janela_triangulacao_dias: i64,
+    pub concentracao_fornecedor_percentual: f64,
+}
+
+impl Default for ParametrosAuditoria {
+    fn default() -> Self {
+        Self {
+            limite_combustivel_litros: 250.0,
+            janela_triangulacao_dias: 180,
+            concentracao_fornecedor_percentual: 60.0,
+        }
+    }
+}
+
+impl ParametrosAuditoria {
+    pub fn validar(&self) -> Result<(), String> {
+        if self.limite_combustivel_litros < 1.0 || self.limite_combustivel_litros > 10000.0 {
+            return Err("Limite de combustível deve estar entre 1 L e 10.000 L.".to_string());
+        }
+        if self.janela_triangulacao_dias < 1 || self.janela_triangulacao_dias > 730 {
+            return Err("Janela de triangulação deve estar entre 1 e 730 dias.".to_string());
+        }
+        if self.concentracao_fornecedor_percentual < 0.0 || self.concentracao_fornecedor_percentual > 100.0 {
+            return Err("Concentração de fornecedor deve estar entre 0% e 100%.".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SalvarAuditRulesResponse {
+    pub status: String,
+    pub mensagem: String,
+    pub parametros: ParametrosAuditoria,
+    pub alertas_recalculados: usize,
+    pub alertas_obsoletos_expurgados: usize,
+}
+
+pub fn carregar_parametros_auditoria(conn: &rusqlite::Connection) -> ParametrosAuditoria {
+    // 1. Tenta carregar chave consolidada audit_rules
+    if let Ok(json_str) = conn.query_row(
+        "SELECT valor_texto FROM configuracoes_sistema WHERE chave = 'audit_rules'",
+        [],
+        |r| r.get::<_, String>(0),
+    ) {
+        if let Ok(params) = serde_json::from_str::<ParametrosAuditoria>(&json_str) {
+            if params.validar().is_ok() {
+                return params;
+            }
+        }
+    }
+
+    // 2. Fallback de chaves individuais em configuracoes_sistema
+    let limite_combustivel = conn
+        .query_row(
+            "SELECT valor_texto FROM configuracoes_sistema WHERE chave = 'audit_rule_combustivel_max_litros'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(250.0);
+
+    let janela_triangulacao = conn
+        .query_row(
+            "SELECT valor_texto FROM configuracoes_sistema WHERE chave = 'audit_rule_triangulacao_dias_janela'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(180);
+
+    let concentracao_fornecedor = conn
+        .query_row(
+            "SELECT valor_texto FROM configuracoes_sistema WHERE chave = 'audit_rule_concentracao_fornecedor_pct'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(60.0);
+
+    ParametrosAuditoria {
+        limite_combustivel_litros: limite_combustivel,
+        janela_triangulacao_dias: janela_triangulacao,
+        concentracao_fornecedor_percentual: concentracao_fornecedor,
+    }
+}
+
+pub fn salvar_parametros_auditoria(
+    conn: &rusqlite::Connection,
+    params: &ParametrosAuditoria,
+) -> Result<(), rusqlite::Error> {
+    let json_str = serde_json::to_string(params).unwrap_or_default();
+
+    // Salva na tabela configuracoes_sistema
+    conn.execute(
+        "INSERT INTO configuracoes_sistema (chave, valor_texto, atualizado_em)
+         VALUES ('audit_rules', ?1, CURRENT_TIMESTAMP)
+         ON CONFLICT(chave) DO UPDATE SET valor_texto = ?1, atualizado_em = CURRENT_TIMESTAMP",
+        [&json_str],
+    )?;
+
+    conn.execute(
+        "INSERT INTO configuracoes_sistema (chave, valor_texto, atualizado_em)
+         VALUES ('audit_rule_combustivel_max_litros', ?1, CURRENT_TIMESTAMP)
+         ON CONFLICT(chave) DO UPDATE SET valor_texto = ?1, atualizado_em = CURRENT_TIMESTAMP",
+        [&params.limite_combustivel_litros.to_string()],
+    )?;
+    conn.execute(
+        "INSERT INTO configuracoes_sistema (chave, valor_texto, atualizado_em)
+         VALUES ('audit_rule_triangulacao_dias_janela', ?1, CURRENT_TIMESTAMP)
+         ON CONFLICT(chave) DO UPDATE SET valor_texto = ?1, atualizado_em = CURRENT_TIMESTAMP",
+        [&params.janela_triangulacao_dias.to_string()],
+    )?;
+    conn.execute(
+        "INSERT INTO configuracoes_sistema (chave, valor_texto, atualizado_em)
+         VALUES ('audit_rule_concentracao_fornecedor_pct', ?1, CURRENT_TIMESTAMP)
+         ON CONFLICT(chave) DO UPDATE SET valor_texto = ?1, atualizado_em = CURRENT_TIMESTAMP",
+        [&params.concentracao_fornecedor_percentual.to_string()],
+    )?;
+
+    // Persiste também em system_settings como réplica de compatibilidade
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        [],
+    );
+    let _ = conn.execute(
+        "INSERT INTO system_settings (key, value, updated_at) VALUES ('audit_rules', ?1, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = CURRENT_TIMESTAMP",
+        [&json_str],
+    );
+
+    Ok(())
+}
+
+pub async fn obter_audit_rules_handler(
+    State(pool): State<DbPool>,
+) -> Result<Json<ParametrosAuditoria>, (StatusCode, Json<serde_json::Value>)> {
+    let conn = pool.get().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "erro", "mensagem": format!("Erro ao obter conexão: {e}")})),
+        )
+    })?;
+    let params = carregar_parametros_auditoria(&conn);
+    Ok(Json(params))
+}
+
+pub async fn salvar_audit_rules_handler(
+    State(pool): State<DbPool>,
+    Json(payload): Json<ParametrosAuditoria>,
+) -> Result<Json<SalvarAuditRulesResponse>, (StatusCode, Json<serde_json::Value>)> {
+    if let Err(e) = payload.validar() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "erro",
+                "mensagem": e
+            })),
+        ));
+    }
+
+    let conn = pool.get().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "erro", "mensagem": format!("Erro ao obter conexão: {e}")})),
+        )
+    })?;
+
+    if let Err(e) = salvar_parametros_auditoria(&conn, &payload) {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "erro", "mensagem": format!("Falha ao salvar parâmetros: {e}")})),
+        ));
+    }
+
+    // Expurgar alertas de combustível obsoletos que agora estão abaixo do novo limite
+    let obsoletos = crate::alertas::expurgar_alertas_combustivel_obsoletos(&conn, payload.limite_combustivel_litros)
+        .unwrap_or(0);
+
+    // Recalcular alertas do sistema com base nas novas réguas
+    let recalculados = crate::alertas::sincronizar_alertas_sistema_com_parametros(&conn, &payload)
+        .unwrap_or(0);
+
+    Ok(Json(SalvarAuditRulesResponse {
+        status: "sucesso".to_string(),
+        mensagem: "Parâmetros do motor de auditoria atualizados e persistidos com sucesso.".to_string(),
+        parametros: payload,
+        alertas_recalculados: recalculados,
+        alertas_obsoletos_expurgados: obsoletos,
+    }))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutarIngestaoRequest {
     pub fonte: String, // "TSE" | "CEAP" | "RECEITA_QSA" | "PNCP"
@@ -2629,6 +2827,94 @@ mod tests {
 
         let res_v1 = app_v1.oneshot(req_v1).await.unwrap();
         assert_eq!(res_v1.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_obter_e_salvar_audit_rules_endpoint() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+
+            // Insere uma despesa com 120 litros (acima dos 80L antigos, mas abaixo do novo padrão de 250L)
+            conn.execute(
+                "INSERT INTO despesas_parlamentares (
+                    casa_legislativa, parlamentar_nome, data_emissao, categoria_despesa,
+                    fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, detalhes_litros, flag_anomalia
+                ) VALUES (
+                    'CAMARA', 'DEPUTADO TESTE', '2024-05-10', 'COMBUSTIVEL',
+                    'POSTO MARINA', '12345678000100', 696.0, 120.0, 1
+                )",
+                [],
+            ).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+
+        // 1. GET /api/settings/audit-rules deve retornar valores padrão (250 L, 180 dias, 60%)
+        let req_get = Request::builder()
+            .uri("/api/settings/audit-rules")
+            .body(Body::empty())
+            .unwrap();
+        let res_get = app.clone().oneshot(req_get).await.unwrap();
+        assert_eq!(res_get.status(), StatusCode::OK);
+        let bytes_get = axum::body::to_bytes(res_get.into_body(), usize::MAX).await.unwrap();
+        let rules_init: ParametrosAuditoria = serde_json::from_slice(&bytes_get).unwrap();
+        assert_eq!(rules_init.limite_combustivel_litros, 250.0);
+        assert_eq!(rules_init.janela_triangulacao_dias, 180);
+        assert_eq!(rules_init.concentracao_fornecedor_percentual, 60.0);
+
+        // 2. POST /api/settings/audit-rules com valores customizados válidos
+        let app2 = crate::criar_router(pool.clone());
+        let payload = json!({
+            "limite_combustivel_litros": 300.0,
+            "janela_triangulacao_dias": 90,
+            "concentracao_fornecedor_percentual": 75.0
+        });
+        let req_post = Request::builder()
+            .method("POST")
+            .uri("/api/settings/audit-rules")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap();
+        let res_post = app2.oneshot(req_post).await.unwrap();
+        assert_eq!(res_post.status(), StatusCode::OK);
+        let bytes_post = axum::body::to_bytes(res_post.into_body(), usize::MAX).await.unwrap();
+        let resp_salvar: SalvarAuditRulesResponse = serde_json::from_slice(&bytes_post).unwrap();
+        assert_eq!(resp_salvar.status, "sucesso");
+        assert_eq!(resp_salvar.parametros.limite_combustivel_litros, 300.0);
+        assert_eq!(resp_salvar.parametros.janela_triangulacao_dias, 90);
+        assert_eq!(resp_salvar.parametros.concentracao_fornecedor_percentual, 75.0);
+
+        // 3. GET /api/v1/settings/audit-rules deve refletir os novos valores persistidos
+        let app3 = crate::criar_router(pool.clone());
+        let req_get2 = Request::builder()
+            .uri("/api/v1/settings/audit-rules")
+            .body(Body::empty())
+            .unwrap();
+        let res_get2 = app3.oneshot(req_get2).await.unwrap();
+        assert_eq!(res_get2.status(), StatusCode::OK);
+        let bytes_get2 = axum::body::to_bytes(res_get2.into_body(), usize::MAX).await.unwrap();
+        let rules_updated: ParametrosAuditoria = serde_json::from_slice(&bytes_get2).unwrap();
+        assert_eq!(rules_updated.limite_combustivel_litros, 300.0);
+        assert_eq!(rules_updated.janela_triangulacao_dias, 90);
+        assert_eq!(rules_updated.concentracao_fornecedor_percentual, 75.0);
+
+        // 4. Teste de validação: parâmetros fora do intervalo permitido retornam 400 Bad Request
+        let app4 = crate::criar_router(pool.clone());
+        let payload_invalido = json!({
+            "limite_combustivel_litros": 0.5, // menor que 1 L
+            "janela_triangulacao_dias": 90,
+            "concentracao_fornecedor_percentual": 75.0
+        });
+        let req_invalido = Request::builder()
+            .method("POST")
+            .uri("/api/settings/audit-rules")
+            .header("content-type", "application/json")
+            .body(Body::from(payload_invalido.to_string()))
+            .unwrap();
+        let res_invalido = app4.oneshot(req_invalido).await.unwrap();
+        assert_eq!(res_invalido.status(), StatusCode::BAD_REQUEST);
     }
 }
 

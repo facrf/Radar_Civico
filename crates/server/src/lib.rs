@@ -23,14 +23,15 @@ pub use alertas::{
 };
 pub use busca::{busca_handler, BuscaParams, ItemBuscaUnificada, RespostaBusca};
 pub use config::{
-    executar_ingestao_handler, exportar_banco_handler, exportar_tabela_handler, import_status_handler,
-    job_status_handler, obter_favicon_handler, obter_icone_handler, obter_identidade_handler,
-    remover_icone_handler, salvar_icone_handler, sincronizar_camara_handler, sincronizar_tse_handler,
-    status_handler, upload_arquivo_handler, verificar_tse_ano_handler, versao_handler,
-    ConfigStatusResponse, ExecutarIngestaoRequest, ExecutarIngestaoResponse,
-    IdentidadeVisualResponse, ImportProgress, JobInfo, SalvarIconeResponse,
-    SincronizarCamaraRequest, SincronizarTseRequest, TotalRegistros, UploadResponse,
-    VersaoResponse,
+    carregar_parametros_auditoria, executar_ingestao_handler, exportar_banco_handler,
+    exportar_tabela_handler, import_status_handler, job_status_handler, obter_audit_rules_handler,
+    obter_favicon_handler, obter_icone_handler, obter_identidade_handler, remover_icone_handler,
+    salvar_audit_rules_handler, salvar_icone_handler, salvar_parametros_auditoria,
+    sincronizar_camara_handler, sincronizar_tse_handler, status_handler, upload_arquivo_handler,
+    verificar_tse_ano_handler, versao_handler, ConfigStatusResponse, ExecutarIngestaoRequest,
+    ExecutarIngestaoResponse, IdentidadeVisualResponse, ImportProgress, JobInfo,
+    ParametrosAuditoria, SalvarAuditRulesResponse, SalvarIconeResponse, SincronizarCamaraRequest,
+    SincronizarTseRequest, TotalRegistros, UploadResponse, VersaoResponse,
 };
 pub use grafo::{
     formatar_subgrafo, grafo_subgrafo_handler, CytoscapeEdge, CytoscapeEdgeData,
@@ -69,6 +70,24 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route(
             "/api/v1/investigar/nomeacao/:doador_id",
             get(investigar_nomeacao_handler),
+        )
+        .route(
+            "/api/settings/audit-rules",
+            get(obter_audit_rules_handler)
+                .post(salvar_audit_rules_handler)
+                .put(salvar_audit_rules_handler),
+        )
+        .route(
+            "/api/v1/settings/audit-rules",
+            get(obter_audit_rules_handler)
+                .post(salvar_audit_rules_handler)
+                .put(salvar_audit_rules_handler),
+        )
+        .route(
+            "/api/v1/config/audit-rules",
+            get(obter_audit_rules_handler)
+                .post(salvar_audit_rules_handler)
+                .put(salvar_audit_rules_handler),
         )
         .route("/api/v1/config/status", get(status_handler))
         .route("/api/v1/config/versao", get(versao_handler))
