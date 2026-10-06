@@ -45,11 +45,13 @@ pub use investigar::{
     InvestigacaoNomeacaoResponse, InvestigarParams,
 };
 pub use politico::{
-    carregar_dossie, listar_politicos_handler, politico_despesas_geo_handler,
-    politico_detalhe_handler, politico_dossie_handler, AlertaAuxilioItem, BemItem, CandidaturaItem,
-    DespesaCeapResumoItem, DoadorItem, DossiePolitico, GastoCategoriaItem, ItemPoliticoListagem,
-    ListarPoliticosQueryParams, ListarPoliticosResponse, PoliticoDespesasGeoResponse,
-    PoliticoDetalheResponse, PontoDespesaGeo, ResumoFinanceiroPolitico,
+    buscar_foto_tse_handler, carregar_dossie, listar_politicos_handler, obter_foto_handler,
+    politico_despesas_geo_handler, politico_detalhe_handler, politico_dossie_handler,
+    remover_foto_handler, salvar_foto_manual_handler, AlertaAuxilioItem, BemItem, BuscarFotoResponse,
+    CandidaturaItem, DespesaCeapResumoItem, DoadorItem, DossiePolitico, GastoCategoriaItem,
+    ItemPoliticoListagem, ListarPoliticosQueryParams, ListarPoliticosResponse,
+    PoliticoDespesasGeoResponse, PoliticoDetalheResponse, PontoDespesaGeo, ResumoFinanceiroPolitico,
+    SalvarFotoManualRequest,
 };
 
 use std::path::Path;
@@ -70,6 +72,20 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/politicos", get(listar_politicos_handler))
         .route("/api/politicos/:id", get(politico_detalhe_handler))
         .route("/api/v1/politicos/:id", get(politico_detalhe_handler))
+        .route("/api/politicos/:id/buscar-foto-tse", post(buscar_foto_tse_handler))
+        .route("/api/v1/politicos/:id/buscar-foto-tse", post(buscar_foto_tse_handler))
+        .route(
+            "/api/politicos/:id/foto",
+            get(obter_foto_handler)
+                .post(salvar_foto_manual_handler)
+                .delete(remover_foto_handler),
+        )
+        .route(
+            "/api/v1/politicos/:id/foto",
+            get(obter_foto_handler)
+                .post(salvar_foto_manual_handler)
+                .delete(remover_foto_handler),
+        )
         .route("/api/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
         .route("/api/v1/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
         .route("/api/v1/politico/:id", get(politico_detalhe_handler))

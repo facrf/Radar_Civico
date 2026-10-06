@@ -199,6 +199,24 @@ pub struct ItemPoliticoListagem {
     pub tem_alertas: bool,
     pub foto_base64: Option<String>,
     pub foto_mime: Option<String>,
+    #[serde(default)]
+    pub mandatos: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BuscarFotoResponse {
+    pub sucesso: bool,
+    pub mensagem: String,
+    pub foto_base64: Option<String>,
+    pub foto_mime: Option<String>,
+    pub origem: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SalvarFotoManualRequest {
+    pub foto_base64: Option<String>,
+    pub foto_url: Option<String>,
+    pub foto_mime: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -590,9 +608,10 @@ pub async fn listar_politicos_handler(
 
     let cargos_disponiveis = vec![
         "DEPUTADO FEDERAL".to_string(),
-        "SENADOR".to_string(),
-        "PREFEITO".to_string(),
         "VEREADOR".to_string(),
+        "PREFEITO".to_string(),
+        "VICE-PREFEITO".to_string(),
+        "SENADOR".to_string(),
     ];
 
     // Construção dinâmica da query
@@ -621,8 +640,21 @@ pub async fn listar_politicos_handler(
     }
 
     if !filtro_cargo.is_empty() {
-        where_clauses.push("UPPER(c.cargo) LIKE ?".to_string());
-        sql_params.push(Box::new(format!("%{}%", filtro_cargo.to_uppercase())));
+        let cargo_upper = filtro_cargo.to_uppercase();
+        if cargo_upper == "VEREADOR" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%VEREADOR%' OR c.cargo = '13')".to_string());
+        } else if cargo_upper == "PREFEITO" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%PREFEITO%' OR c.cargo = '11')".to_string());
+        } else if cargo_upper == "VICE-PREFEITO" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-PREFEITO%' OR c.cargo = '12')".to_string());
+        } else if cargo_upper == "DEPUTADO FEDERAL" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO%' OR UPPER(p.ocupacao) LIKE '%DEPUTADO%')".to_string());
+        } else {
+            where_clauses.push("(UPPER(c.cargo) LIKE ? OR UPPER(p.ocupacao) LIKE ?)".to_string());
+            let clike = format!("%{}%", cargo_upper);
+            sql_params.push(Box::new(clike.clone()));
+            sql_params.push(Box::new(clike));
+        }
     }
 
     let where_str = if where_clauses.is_empty() {
@@ -631,86 +663,180 @@ pub async fn listar_politicos_handler(
         format!("WHERE {}", where_clauses.join(" AND "))
     };
 
-    let having_str = if apenas_gastos {
-        "HAVING COALESCE(SUM(dp.valor_liquido), 0) > 0"
-    } else {
-        ""
-    };
-
-    // Query com agregação rápida de CEAP
-    let sql_contagem = format!(
-        "SELECT COUNT(*) FROM (
-            SELECT p.id
-            FROM politicos p
-            LEFT JOIN candidaturas c ON c.politico_id = p.id
-            LEFT JOIN despesas_parlamentares dp ON dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo
-            {}
-            GROUP BY p.id
-            {}
-         )",
-        where_str, having_str
-    );
-
     let params_refs: Vec<&dyn storage::rusqlite::ToSql> =
         sql_params.iter().map(|b| b.as_ref()).collect();
 
-    let total: usize = conn
-        .query_row(&sql_contagem, params_refs.as_slice(), |r| r.get(0))
-        .unwrap_or(0);
+    let total: usize;
+    let mut politicos: Vec<ItemPoliticoListagem>;
 
-    let sql_dados = format!(
-        "SELECT p.id, p.sq_candidato, p.cpf_mascarado, p.nome_completo, p.nome_urna,
-                COALESCE(c.sigla_partido, 'S/P'), COALESCE(c.uf, 'BR'),
-                COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), c.municipio,
-                COALESCE(SUM(dp.valor_liquido), 0.0) as total_ceap,
-                COUNT(dp.id) as qtd_ceap,
-                COALESCE(c.total_bens_declarados, 0.0),
-                p.foto_blob, p.foto_mime
-         FROM politicos p
-         LEFT JOIN candidaturas c ON c.politico_id = p.id
-         LEFT JOIN despesas_parlamentares dp ON dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo
-         {}
-         GROUP BY p.id
-         {}
-         ORDER BY total_ceap DESC, p.nome_completo ASC
-         LIMIT {} OFFSET {}",
-        where_str, having_str, limit, offset
-    );
+    if apenas_gastos {
+        let sql_contagem = format!(
+            "SELECT COUNT(DISTINCT p.id)
+             FROM politicos p
+             LEFT JOIN candidaturas c ON c.politico_id = p.id
+             JOIN despesas_parlamentares dp ON (dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo)
+             {}",
+            where_str
+        );
 
-    let mut stmt_dados = conn
-        .prepare(&sql_dados)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        total = conn
+            .query_row(&sql_contagem, params_refs.as_slice(), |r| r.get(0))
+            .unwrap_or(0);
 
-    let politicos = stmt_dados
-        .query_map(params_refs.as_slice(), |row| {
-            let id: i64 = row.get(0)?;
-            let foto_blob: Option<Vec<u8>> = row.get(12)?;
-            let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
+        let sql_dados = format!(
+            "SELECT p.id, p.sq_candidato, p.cpf_mascarado, p.nome_completo, p.nome_urna,
+                    COALESCE(c.sigla_partido, 'S/P'), COALESCE(c.uf, 'BR'),
+                    COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), c.municipio,
+                    COALESCE(SUM(dp.valor_liquido), 0.0) as total_ceap,
+                    COUNT(dp.id) as qtd_ceap,
+                    COALESCE(c.total_bens_declarados, 0.0),
+                    p.foto_blob, p.foto_mime,
+                    GROUP_CONCAT(DISTINCT c.cargo || ' (' || c.ano_eleicao || ')') as mandatos_str
+             FROM politicos p
+             LEFT JOIN candidaturas c ON c.politico_id = p.id
+             JOIN despesas_parlamentares dp ON (dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo)
+             {}
+             GROUP BY p.id
+             HAVING total_ceap > 0
+             ORDER BY total_ceap DESC, p.nome_completo ASC
+             LIMIT {} OFFSET {}",
+            where_str, limit, offset
+        );
 
-            let total_ceap: f64 = row.get(9)?;
-            let tem_alertas = total_ceap > 350000.0;
+        let mut stmt_dados = conn
+            .prepare(&sql_dados)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-            Ok(ItemPoliticoListagem {
-                id,
-                sq_candidato: row.get(1)?,
-                cpf_mascarado: row.get(2)?,
-                nome_completo: row.get(3)?,
-                nome_urna: row.get(4)?,
-                sigla_partido: row.get(5)?,
-                uf: row.get(6)?,
-                cargo: row.get(7)?,
-                municipio: row.get(8)?,
-                total_despesas_ceap: total_ceap,
-                total_itens_ceap: row.get(10)?,
-                total_bens_declarados: row.get(11)?,
-                tem_alertas,
-                foto_base64,
-                foto_mime: row.get(13)?,
+        politicos = stmt_dados
+            .query_map(params_refs.as_slice(), |row| {
+                let id: i64 = row.get(0)?;
+                let foto_blob: Option<Vec<u8>> = row.get(12)?;
+                let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
+                let total_ceap: f64 = row.get(9)?;
+                let cargo: String = row.get(7)?;
+                let mandatos_str: Option<String> = row.get(14)?;
+                let mandatos = mandatos_str
+                    .map(|s| {
+                        s.split(',')
+                            .map(|m| m.trim().to_string())
+                            .filter(|m| !m.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_else(|| vec![cargo.clone()]);
+
+                Ok(ItemPoliticoListagem {
+                    id,
+                    sq_candidato: row.get(1)?,
+                    cpf_mascarado: row.get(2)?,
+                    nome_completo: row.get(3)?,
+                    nome_urna: row.get(4)?,
+                    sigla_partido: row.get(5)?,
+                    uf: row.get(6)?,
+                    cargo,
+                    municipio: row.get(8)?,
+                    total_despesas_ceap: total_ceap,
+                    total_itens_ceap: row.get(10)?,
+                    total_bens_declarados: row.get(11)?,
+                    tem_alertas: total_ceap > 350000.0,
+                    foto_base64,
+                    foto_mime: row.get(13)?,
+                    mandatos,
+                })
             })
-        })
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .filter_map(|r| r.ok())
-        .collect::<Vec<_>>();
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
+    } else {
+        let sql_contagem = format!(
+            "SELECT COUNT(DISTINCT p.id)
+             FROM politicos p
+             LEFT JOIN candidaturas c ON c.politico_id = p.id
+             {}",
+            where_str
+        );
+
+        total = conn
+            .query_row(&sql_contagem, params_refs.as_slice(), |r| r.get(0))
+            .unwrap_or(0);
+
+        let sql_dados = format!(
+            "SELECT p.id, p.sq_candidato, p.cpf_mascarado, p.nome_completo, p.nome_urna,
+                    COALESCE(c.sigla_partido, 'S/P'), COALESCE(c.uf, 'BR'),
+                    COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), c.municipio,
+                    COALESCE(c.total_bens_declarados, 0.0),
+                    p.foto_blob, p.foto_mime,
+                    GROUP_CONCAT(DISTINCT c.cargo || ' (' || c.ano_eleicao || ')') as mandatos_str
+             FROM politicos p
+             LEFT JOIN candidaturas c ON c.politico_id = p.id
+             {}
+             GROUP BY p.id
+             ORDER BY p.id ASC
+             LIMIT {} OFFSET {}",
+            where_str, limit, offset
+        );
+
+        let mut stmt_dados = conn
+            .prepare(&sql_dados)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        politicos = stmt_dados
+            .query_map(params_refs.as_slice(), |row| {
+                let id: i64 = row.get(0)?;
+                let foto_blob: Option<Vec<u8>> = row.get(10)?;
+                let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
+                let cargo: String = row.get(7)?;
+                let mandatos_str: Option<String> = row.get(12)?;
+                let mandatos = mandatos_str
+                    .map(|s| {
+                        s.split(',')
+                            .map(|m| m.trim().to_string())
+                            .filter(|m| !m.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_else(|| vec![cargo.clone()]);
+
+                Ok(ItemPoliticoListagem {
+                    id,
+                    sq_candidato: row.get(1)?,
+                    cpf_mascarado: row.get(2)?,
+                    nome_completo: row.get(3)?,
+                    nome_urna: row.get(4)?,
+                    sigla_partido: row.get(5)?,
+                    uf: row.get(6)?,
+                    cargo,
+                    municipio: row.get(8)?,
+                    total_despesas_ceap: 0.0,
+                    total_itens_ceap: 0,
+                    total_bens_declarados: row.get(9)?,
+                    tem_alertas: false,
+                    foto_base64,
+                    foto_mime: row.get(11)?,
+                    mandatos,
+                })
+            })
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
+
+        // Preenche despesas CEAP apenas para os registros paginados (máximo 100)
+        for pol in &mut politicos {
+            let ceap_res: Option<(f64, i64)> = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(valor_liquido), 0.0), COUNT(id)
+                     FROM despesas_parlamentares
+                     WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2",
+                    [&pol.nome_urna, &pol.nome_completo],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+
+            if let Some((tot, qtd)) = ceap_res {
+                pol.total_despesas_ceap = tot;
+                pol.total_itens_ceap = qtd;
+                pol.tem_alertas = tot > 350000.0;
+            }
+        }
+    }
 
     let total_paginas = if total == 0 {
         1
@@ -1056,12 +1182,440 @@ pub async fn politico_despesas_geo_handler(
     }))
 }
 
+/// POST /api/politicos/:id/buscar-foto-tse e /api/v1/politicos/:id/buscar-foto-tse
+pub async fn buscar_foto_tse_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<Json<BuscarFotoResponse>, (StatusCode, Json<BuscarFotoResponse>)> {
+    let conn = pool.get().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BuscarFotoResponse {
+                sucesso: false,
+                mensagem: format!("Erro ao obter conexão do banco de dados: {}", e),
+                foto_base64: None,
+                foto_mime: None,
+                origem: None,
+            }),
+        )
+    })?;
+
+    // 1. Verifica se já possui foto salva no banco de dados local
+    let foto_existente: Option<(Vec<u8>, Option<String>)> = conn
+        .query_row(
+            "SELECT foto_blob, foto_mime FROM politicos WHERE id = ?1",
+            [id],
+            |r| {
+                let blob: Option<Vec<u8>> = r.get(0)?;
+                let mime: Option<String> = r.get(1)?;
+                Ok((blob, mime))
+            },
+        )
+        .ok()
+        .and_then(|(b, m)| b.map(|bytes| (bytes, m)));
+
+    if let Some((bytes, mime)) = foto_existente {
+        if !bytes.is_empty() {
+            let mime_str = mime.unwrap_or_else(|| "image/jpeg".to_string());
+            let b64 = BASE64.encode(&bytes);
+            return Ok(Json(BuscarFotoResponse {
+                sucesso: true,
+                mensagem: "Foto oficial já armazenada no banco de dados local.".to_string(),
+                foto_base64: Some(b64),
+                foto_mime: Some(mime_str),
+                origem: Some("BANCO_LOCAL".to_string()),
+            }));
+        }
+    }
+
+    // 2. Consulta dados do político e suas candidaturas
+    let dados_politico: Option<(Option<String>, String, String, Option<String>, String, i32)> = conn
+        .query_row(
+            "SELECT p.sq_candidato, p.nome_completo, p.nome_urna, p.ocupacao,
+                    COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), COALESCE(c.ano_eleicao, 2024)
+             FROM politicos p
+             LEFT JOIN candidaturas c ON c.politico_id = p.id
+             WHERE p.id = ?1
+             ORDER BY c.ano_eleicao DESC LIMIT 1",
+            [id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .ok();
+
+    let (sq_opt, nome_completo, nome_urna, _ocup, cargo, ano_eleicao) = match dados_politico {
+        Some(d) => d,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(BuscarFotoResponse {
+                    sucesso: false,
+                    mensagem: "Político não encontrado no banco de dados.".to_string(),
+                    foto_base64: None,
+                    foto_mime: None,
+                    origem: None,
+                }),
+            ));
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap_or_default();
+
+    let mut foto_baixada: Option<(Vec<u8>, String, String)> = None;
+    let mut erros_detalhados: Vec<String> = Vec::new();
+
+    // 3. Se for Deputado Federal (ou Câmara), consulta API da Câmara dos Deputados
+    if cargo.to_uppercase().contains("DEPUTADO") || cargo.to_uppercase().contains("PARLAMENTAR") || sq_opt.is_none() {
+        let nomes_para_buscar = vec![nome_urna.clone(), nome_completo.clone()];
+        for n in nomes_para_buscar {
+            if foto_baixada.is_some() {
+                break;
+            }
+            let url_camara_api = format!(
+                "https://dadosabertos.camara.leg.br/api/v2/deputados?nome={}&ordem=ASC&ordenarPor=nome",
+                urlencoding::encode(&n)
+            );
+
+            match client.get(&url_camara_api)
+                .header("User-Agent", "RadarCivico/0.1.0")
+                .header("Accept", "application/json")
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(dados) = json.get("dados").and_then(|d| d.as_array()) {
+                            if let Some(primeiro) = dados.first() {
+                                if let Some(url_foto) = primeiro.get("urlFoto").and_then(|u| u.as_str()) {
+                                    if let Ok(resp_img) = client.get(url_foto).send().await {
+                                        if resp_img.status().is_success() {
+                                            if let Ok(bytes) = resp_img.bytes().await {
+                                                if !bytes.is_empty() {
+                                                    foto_baixada = Some((bytes.to_vec(), "image/jpeg".to_string(), "CAMARA_DEPUTADOS".to_string()));
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(resp) => {
+                    erros_detalhados.push(format!("Câmara API retornou status {}", resp.status()));
+                }
+                Err(e) => {
+                    erros_detalhados.push(format!("Falha na conexão com API da Câmara: {}", e));
+                }
+            }
+        }
+    }
+
+    // 4. Se ainda não baixou e tem sq_candidato, tenta TSE DivulgaCandContas
+    if foto_baixada.is_none() {
+        if let Some(sq) = sq_opt.filter(|s| !s.trim().is_empty()) {
+            let urls_tse = vec![
+                format!("https://divulgacandcontas.tse.jus.br/divulga/rest/v1/candidatura/buscar/foto/{}/{}", ano_eleicao, sq),
+                format!("https://divulgacandcontas.tse.jus.br/divulga/rest/v1/candidatura/buscar/foto/{}", sq),
+            ];
+
+            for url in urls_tse {
+                match client.get(&url)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Referer", "https://divulgacandcontas.tse.jus.br/divulga/")
+                    .header("Accept", "image/*,*/*")
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        let content_type = resp.headers().get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("image/jpeg")
+                            .to_string();
+
+                        if let Ok(bytes) = resp.bytes().await {
+                            if bytes.len() > 100 && (bytes.starts_with(&[0xFF, 0xD8]) || bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47])) {
+                                foto_baixada = Some((bytes.to_vec(), content_type, "TSE_DIVULGACAND".to_string()));
+                                break;
+                            }
+                        }
+                    }
+                    Ok(resp) => {
+                        erros_detalhados.push(format!("TSE retornou HTTP {}", resp.status()));
+                    }
+                    Err(e) => {
+                        erros_detalhados.push(format!("Erro ao acessar TSE: {}", e));
+                    }
+                }
+            }
+        } else {
+            erros_detalhados.push("Candidato não possui código SQ_CANDIDATO cadastrado no banco.".to_string());
+        }
+    }
+
+    // 5. Se obteve a foto, persiste no banco SQLite
+    if let Some((bytes, mime, origem)) = foto_baixada {
+        let _ = conn.execute(
+            "UPDATE politicos SET foto_blob = ?1, foto_mime = ?2 WHERE id = ?3",
+            storage::rusqlite::params![bytes, mime, id],
+        );
+
+        let b64 = BASE64.encode(&bytes);
+        return Ok(Json(BuscarFotoResponse {
+            sucesso: true,
+            mensagem: format!("Foto oficial obtida via {} e salva com sucesso no banco de dados!", origem),
+            foto_base64: Some(b64),
+            foto_mime: Some(mime),
+            origem: Some(origem),
+        }));
+    }
+
+    // 6. Caso não tenha encontrado ou tenha falhado, retorna mensagem explicativa de erro
+    let mensagem_erro = if erros_detalhados.is_empty() {
+        "Não foi possível localizar a foto oficial no TSE ou Câmara para este parlamentar.".to_string()
+    } else {
+        format!(
+            "Não foi possível obter a foto oficial: {}. Você pode utilizar a opção de upload manual ou fornecer uma URL direta de imagem.",
+            erros_detalhados.join("; ")
+        )
+    };
+
+    Err((
+        StatusCode::NOT_FOUND,
+        Json(BuscarFotoResponse {
+            sucesso: false,
+            mensagem: mensagem_erro,
+            foto_base64: None,
+            foto_mime: None,
+            origem: None,
+        }),
+    ))
+}
+
+/// POST /api/politicos/:id/foto e /api/v1/politicos/:id/foto
+pub async fn salvar_foto_manual_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<i64>,
+    Json(payload): Json<SalvarFotoManualRequest>,
+) -> Result<Json<BuscarFotoResponse>, (StatusCode, Json<BuscarFotoResponse>)> {
+    let conn = pool.get().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BuscarFotoResponse {
+                sucesso: false,
+                mensagem: format!("Erro ao obter conexão do banco de dados: {}", e),
+                foto_base64: None,
+                foto_mime: None,
+                origem: None,
+            }),
+        )
+    })?;
+
+    let mut bytes_finais = Vec::new();
+    let mut mime_final = payload.foto_mime.unwrap_or_else(|| "image/jpeg".to_string());
+
+    if let Some(b64) = payload.foto_base64 {
+        let clean_b64 = if let Some(pos) = b64.find("base64,") {
+            &b64[pos + 7..]
+        } else {
+            &b64
+        };
+        match BASE64.decode(clean_b64.trim()) {
+            Ok(b) if !b.is_empty() => {
+                bytes_finais = b;
+            }
+            _ => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(BuscarFotoResponse {
+                        sucesso: false,
+                        mensagem: "Formato Base64 inválido fornecido.".to_string(),
+                        foto_base64: None,
+                        foto_mime: None,
+                        origem: None,
+                    }),
+                ));
+            }
+        }
+    } else if let Some(url) = payload.foto_url {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .build()
+            .unwrap_or_default();
+
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Some(ct) = resp.headers().get("content-type").and_then(|c| c.to_str().ok()) {
+                    mime_final = ct.to_string();
+                }
+                if let Ok(b) = resp.bytes().await {
+                    bytes_finais = b.to_vec();
+                }
+            }
+            Ok(resp) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(BuscarFotoResponse {
+                        sucesso: false,
+                        mensagem: format!("URL retornou status HTTP {}.", resp.status()),
+                        foto_base64: None,
+                        foto_mime: None,
+                        origem: None,
+                    }),
+                ));
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(BuscarFotoResponse {
+                        sucesso: false,
+                        mensagem: format!("Erro ao baixar imagem da URL: {}", e),
+                        foto_base64: None,
+                        foto_mime: None,
+                        origem: None,
+                    }),
+                ));
+            }
+        }
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(BuscarFotoResponse {
+                sucesso: false,
+                mensagem: "Informe 'foto_base64' ou 'foto_url' para salvar a imagem.".to_string(),
+                foto_base64: None,
+                foto_mime: None,
+                origem: None,
+            }),
+        ));
+    }
+
+    if bytes_finais.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(BuscarFotoResponse {
+                sucesso: false,
+                mensagem: "Nenhum dado de imagem válido foi recebido.".to_string(),
+                foto_base64: None,
+                foto_mime: None,
+                origem: None,
+            }),
+        ));
+    }
+
+    let res = conn.execute(
+        "UPDATE politicos SET foto_blob = ?1, foto_mime = ?2 WHERE id = ?3",
+        storage::rusqlite::params![bytes_finais, mime_final, id],
+    );
+
+    match res {
+        Ok(rows) if rows > 0 => {
+            let b64_resp = BASE64.encode(&bytes_finais);
+            Ok(Json(BuscarFotoResponse {
+                sucesso: true,
+                mensagem: "Foto oficial salva com sucesso no banco de dados!".to_string(),
+                foto_base64: Some(b64_resp),
+                foto_mime: Some(mime_final),
+                origem: Some("UPLOAD_MANUAL".to_string()),
+            }))
+        }
+        _ => Err((
+            StatusCode::NOT_FOUND,
+            Json(BuscarFotoResponse {
+                sucesso: false,
+                mensagem: "Político não encontrado no banco de dados.".to_string(),
+                foto_base64: None,
+                foto_mime: None,
+                origem: None,
+            }),
+        )),
+    }
+}
+
+/// GET /api/politicos/:id/foto e /api/v1/politicos/:id/foto
+pub async fn obter_foto_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<axum::response::Response, StatusCode> {
+    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let res: Option<(Vec<u8>, Option<String>)> = conn
+        .query_row(
+            "SELECT foto_blob, foto_mime FROM politicos WHERE id = ?1",
+            [id],
+            |r| {
+                let blob: Option<Vec<u8>> = r.get(0)?;
+                let mime: Option<String> = r.get(1)?;
+                Ok((blob, mime))
+            },
+        )
+        .ok()
+        .and_then(|(b, m)| b.map(|bytes| (bytes, m)));
+
+    match res {
+        Some((bytes, mime)) if !bytes.is_empty() => {
+            let mime_str = mime.unwrap_or_else(|| "image/jpeg".to_string());
+            axum::response::Response::builder()
+                .header(axum::http::header::CONTENT_TYPE, mime_str)
+                .header(axum::http::header::CACHE_CONTROL, "public, max-age=86400")
+                .body(axum::body::Body::from(bytes))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }
+        _ => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// DELETE /api/politicos/:id/foto e /api/v1/politicos/:id/foto
+pub async fn remover_foto_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<Json<BuscarFotoResponse>, (StatusCode, Json<BuscarFotoResponse>)> {
+    let conn = pool.get().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BuscarFotoResponse {
+                sucesso: false,
+                mensagem: format!("Erro ao obter conexão: {}", e),
+                foto_base64: None,
+                foto_mime: None,
+                origem: None,
+            }),
+        )
+    })?;
+
+    let _ = conn.execute(
+        "UPDATE politicos SET foto_blob = NULL, foto_mime = NULL WHERE id = ?1",
+        [id],
+    );
+
+    Ok(Json(BuscarFotoResponse {
+        sucesso: true,
+        mensagem: "Foto removida com sucesso do banco de dados.".to_string(),
+        foto_base64: None,
+        foto_mime: None,
+        origem: None,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use axum::routing::get;
+    use axum::routing::{get, post};
     use axum::Router;
     use storage::run_migrations;
     use tower::ServiceExt;
@@ -1193,5 +1747,87 @@ mod tests {
         assert_eq!(geo_resp.total_despesas_geo, 1);
         assert_eq!(geo_resp.pontos[0].uf, "DF");
         assert_eq!(geo_resp.pontos[0].municipio, "Brasília");
+    }
+
+    #[tokio::test]
+    async fn test_salvar_obter_e_buscar_foto_politico() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('VEREADOR TESTE', 'VEREADOR DA SILVA')",
+            [],
+        ).unwrap();
+        let pol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
+             VALUES (?1, 2024, 'VEREADOR', 'PL', 'SP')",
+            [pol_id],
+        ).unwrap();
+
+        let app = Router::new()
+            .route("/api/politicos/:id/foto", post(salvar_foto_manual_handler).get(obter_foto_handler).delete(remover_foto_handler))
+            .route("/api/politicos/:id/buscar-foto-tse", post(buscar_foto_tse_handler))
+            .route("/api/politicos", get(listar_politicos_handler))
+            .with_state(pool.clone());
+
+        // 1. Salva foto manual via base64
+        let b64_fake = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let payload = serde_json::json!({
+            "foto_base64": b64_fake,
+            "foto_mime": "image/png"
+        });
+
+        let req_salvar = Request::builder()
+            .uri(format!("/api/politicos/{}/foto", pol_id))
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        let res_salvar = app.clone().oneshot(req_salvar).await.unwrap();
+        assert_eq!(res_salvar.status(), StatusCode::OK);
+
+        // 2. Obtém a foto binária
+        let req_obter = Request::builder()
+            .uri(format!("/api/politicos/{}/foto", pol_id))
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+
+        let res_obter = app.clone().oneshot(req_obter).await.unwrap();
+        assert_eq!(res_obter.status(), StatusCode::OK);
+        assert_eq!(res_obter.headers().get("content-type").unwrap(), "image/png");
+
+        // 3. Testa buscar_foto_tse retornando foto já existente no banco de dados local
+        let req_buscar = Request::builder()
+            .uri(format!("/api/politicos/{}/buscar-foto-tse", pol_id))
+            .method("POST")
+            .body(Body::empty())
+            .unwrap();
+
+        let res_buscar = app.clone().oneshot(req_buscar).await.unwrap();
+        assert_eq!(res_buscar.status(), StatusCode::OK);
+        let buscar_bytes = axum::body::to_bytes(res_buscar.into_body(), usize::MAX).await.unwrap();
+        let buscar_resp: BuscarFotoResponse = serde_json::from_slice(&buscar_bytes).unwrap();
+        assert!(buscar_resp.sucesso);
+        assert_eq!(buscar_resp.origem, Some("BANCO_LOCAL".to_string()));
+
+        // 4. Testa listagem e verifica se mandatos contém VEREADOR (2024)
+        let req_list = Request::builder()
+            .uri("/api/politicos?cargo=VEREADOR")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+
+        let res_list = app.clone().oneshot(req_list).await.unwrap();
+        assert_eq!(res_list.status(), StatusCode::OK);
+        let list_bytes = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        let list_resp: ListarPoliticosResponse = serde_json::from_slice(&list_bytes).unwrap();
+        assert_eq!(list_resp.total, 1);
+        assert!(list_resp.politicos[0].mandatos.iter().any(|m| m.contains("VEREADOR")));
+        assert!(list_resp.politicos[0].foto_base64.is_some());
     }
 }
