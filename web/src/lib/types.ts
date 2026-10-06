@@ -1,9 +1,11 @@
 export interface ItemBusca {
-	id: number;
+	id: number | null;
 	tipo: string;
-	nome: string;
+	nome?: string;
+	titulo?: string;
 	identificador: string;
-	detalhe: string | null;
+	detalhe?: string | null;
+	subtitulo?: string | null;
 }
 
 export interface BemItem {

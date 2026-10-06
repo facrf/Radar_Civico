@@ -5,12 +5,14 @@
 	let alertas: AlertaItem[] = [];
 	let loading = true;
 	let total = 0;
+	let alertaSelecionado: AlertaItem | null = null;
 
 	// Filtros
 	let filtroAno = '';
 	let filtroMunicipio = '';
 	let filtroSeveridade = '';
 	let filtroTipo = '';
+	let debounceMunicipio: ReturnType<typeof setTimeout>;
 
 	export async function carregarAlertas() {
 		loading = true;
@@ -26,12 +28,23 @@
 				const data = await res.json();
 				alertas = data.alertas || [];
 				total = data.total || 0;
+				// Notifica layout para atualizar badge no menu superior
+				if (typeof window !== 'undefined') {
+					window.dispatchEvent(new CustomEvent('radar-alertas-updated'));
+				}
 			}
 		} catch (err) {
 			console.error('Erro ao buscar alertas:', err);
 		} finally {
 			loading = false;
 		}
+	}
+
+	function handleMunicipioInput() {
+		clearTimeout(debounceMunicipio);
+		debounceMunicipio = setTimeout(() => {
+			carregarAlertas();
+		}, 350);
 	}
 
 	function formatarMoeda(valor: number | null): string {
@@ -53,6 +66,10 @@
 		return { bg: 'bg-slate-700/30', text: 'text-slate-300', border: 'border-slate-700' };
 	}
 
+	function fecharModal() {
+		alertaSelecionado = null;
+	}
+
 	onMount(() => {
 		carregarAlertas();
 	});
@@ -61,12 +78,26 @@
 <div class="space-y-6">
 	<!-- Barra de Filtros -->
 	<div class="bg-slate-800/80 border border-slate-700/80 rounded-xl p-5 shadow-lg">
-		<h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4 flex items-center gap-2">
-			<svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-			</svg>
-			Filtros do Motor de Auditoria
-		</h3>
+		<div class="flex items-center justify-between mb-4">
+			<h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+				<svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+				</svg>
+				Filtros do Motor de Auditoria
+			</h3>
+
+			<button
+				type="button"
+				on:click={carregarAlertas}
+				class="text-xs text-slate-400 hover:text-emerald-400 flex items-center gap-1 transition-colors"
+				title="Recarregar alertas"
+			>
+				<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+				</svg>
+				Atualizar
+			</button>
+		</div>
 
 		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
 			<div>
@@ -91,8 +122,8 @@
 					id="filtro-municipio"
 					type="text"
 					bind:value={filtroMunicipio}
-					on:input={carregarAlertas}
-					placeholder="Ex: São Paulo, Campinas..."
+					on:input={handleMunicipioInput}
+					placeholder="Ex: São Paulo, Brasília..."
 					class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
 				/>
 			</div>
@@ -122,7 +153,7 @@
 					class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
 				>
 					<option value="">Todos os tipos</option>
-					<option value="COMBUSTIVEL">Combustível (&gt;80L Fiat Uno)</option>
+					<option value="COMBUSTIVEL">Combustível (&gt;80L Tanque)</option>
 					<option value="CONFLITO_OAB">Conflito OAB (Art. 28)</option>
 					<option value="TRIANGULACAO">Triangulação (&lt;180 dias)</option>
 					<option value="FORNECEDOR_HUB">Fornecedor Hub (&gt;70%)</option>
@@ -139,10 +170,11 @@
 		<div class="flex items-center justify-between mb-4">
 			<h2 class="text-lg font-bold text-white flex items-center gap-2">
 				<span>Ranking de Irregularidades Detectadas</span>
-				<span class="px-2 py-0.5 text-xs bg-slate-800 text-slate-300 rounded-full font-normal">
+				<span class="px-2.5 py-0.5 text-xs bg-slate-800 text-slate-300 rounded-full font-normal border border-slate-700">
 					{total} ocorrência{total === 1 ? '' : 's'}
 				</span>
 			</h2>
+			<span class="text-xs text-slate-500">Clique em um alerta para ver os detalhes da irregularidade</span>
 		</div>
 
 		{#if loading}
@@ -153,7 +185,13 @@
 			<div class="space-y-4">
 				{#each alertas as alerta}
 					{@const estilo = corSeveridade(alerta.severidade)}
-					<div class={`bg-slate-800/80 border ${estilo.border} rounded-xl p-5 shadow-lg transition-all hover:border-slate-600`}>
+					<div
+						class={`bg-slate-800/80 border ${estilo.border} rounded-xl p-5 shadow-lg transition-all hover:border-slate-500 cursor-pointer group`}
+						on:click={() => (alertaSelecionado = alerta)}
+						on:keydown={(e) => e.key === 'Enter' && (alertaSelecionado = alerta)}
+						role="button"
+						tabindex="0"
+					>
 						<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
 							<div class="flex items-center gap-3">
 								<span class={`px-2.5 py-1 text-xs font-bold rounded-lg border ${estilo.bg} ${estilo.text} ${estilo.border}`}>
@@ -175,7 +213,9 @@
 							{/if}
 						</div>
 
-						<h3 class="text-base font-bold text-slate-100 mt-3">{alerta.titulo}</h3>
+						<h3 class="text-base font-bold text-slate-100 mt-3 group-hover:text-emerald-400 transition-colors">
+							{alerta.titulo}
+						</h3>
 						<p class="text-sm text-slate-300 mt-1 leading-relaxed">{alerta.descricao}</p>
 
 						<div class="mt-4 pt-3 border-t border-slate-700/50 flex flex-wrap items-center justify-between text-xs text-slate-400 gap-2">
@@ -189,17 +229,155 @@
 								{/if}
 							</div>
 
-							{#if alerta.ano}
-								<span class="text-slate-500">Exercício: {alerta.ano}</span>
-							{/if}
+							<div class="flex items-center gap-3">
+								{#if alerta.ano}
+									<span class="text-slate-500">Exercício: {alerta.ano}</span>
+								{/if}
+								<span class="text-emerald-400 font-medium group-hover:underline flex items-center gap-1">
+									Ver Detalhes
+									<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+									</svg>
+								</span>
+							</div>
 						</div>
 					</div>
 				{/each}
 			</div>
 		{:else}
-			<div class="p-12 text-center bg-slate-800/40 rounded-xl border border-slate-800">
-				<p class="text-slate-400 text-sm">Nenhum alerta encontrado com os filtros selecionados.</p>
+			<div class="p-10 text-center bg-slate-800/40 rounded-xl border border-slate-800 space-y-3">
+				<div class="w-12 h-12 mx-auto rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+					<svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+					</svg>
+				</div>
+				<h3 class="text-base font-semibold text-slate-200">Nenhuma irregularidade ativa detectada</h3>
+				<p class="text-slate-400 text-xs sm:text-sm max-w-md mx-auto leading-relaxed">
+					O motor de auditoria analisa notas da CEAP (&gt;80L de combustível), cruzamentos com doadores de campanha, contratos do PNCP, auxílio emergencial e incompatibilidade com a advocacia (Art. 28 OAB).
+				</p>
+				<button
+					type="button"
+					on:click={carregarAlertas}
+					class="mt-2 px-4 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg transition-colors inline-flex items-center gap-1.5"
+				>
+					<svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+					</svg>
+					Sincronizar e Executar Auditoria
+				</button>
 			</div>
 		{/if}
 	</div>
 </div>
+
+<!-- Modal de Detalhes da Irregularidade -->
+{#if alertaSelecionado}
+	{@const modalEstilo = corSeveridade(alertaSelecionado.severidade)}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center p-4"
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="modal-titulo"
+	>
+		<!-- Backdrop overlay -->
+		<div
+			class="fixed inset-0 bg-black/70 backdrop-blur-sm"
+			on:click={fecharModal}
+			on:keydown={(e) => e.key === 'Escape' && fecharModal()}
+			role="presentation"
+		></div>
+
+		<div class="relative bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150 z-10">
+			<!-- Header do Modal -->
+			<div class="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+				<div class="space-y-1">
+					<div class="flex items-center gap-2">
+						<span class={`px-2.5 py-0.5 text-xs font-bold rounded-lg border ${modalEstilo.bg} ${modalEstilo.text} ${modalEstilo.border}`}>
+							Severidade {alertaSelecionado.severidade}
+						</span>
+						<span class="px-2 py-0.5 text-xs font-semibold rounded bg-slate-800 text-slate-300 border border-slate-700">
+							{alertaSelecionado.tipo}
+						</span>
+					</div>
+					<h2 id="modal-titulo" class="text-lg font-bold text-white tracking-tight mt-1">
+						{alertaSelecionado.titulo}
+					</h2>
+				</div>
+
+				<button
+					type="button"
+					on:click={fecharModal}
+					class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+					title="Fechar modal"
+				>
+					<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+					</svg>
+				</button>
+			</div>
+
+			<!-- Descrição e Justificativa -->
+			<div class="space-y-3">
+				<div>
+					<h4 class="text-xs font-bold uppercase text-slate-400 tracking-wider">Descrição da Anomalia</h4>
+					<p class="text-sm text-slate-200 mt-1 leading-relaxed bg-slate-800/50 p-3.5 rounded-xl border border-slate-800">
+						{alertaSelecionado.descricao}
+					</p>
+				</div>
+
+				<!-- Grid de Informações -->
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+					<div class="p-3 bg-slate-800/40 rounded-lg border border-slate-800">
+						<span class="text-slate-400 block">Alvo Auditado:</span>
+						<span class="font-semibold text-slate-100 text-sm">{alertaSelecionado.alvo_nome}</span>
+						{#if alertaSelecionado.alvo_documento}
+							<span class="font-mono text-slate-400 block mt-0.5">{alertaSelecionado.alvo_documento}</span>
+						{/if}
+					</div>
+
+					<div class="p-3 bg-slate-800/40 rounded-lg border border-slate-800">
+						<span class="text-slate-400 block">Valor Envolvido:</span>
+						<span class="font-bold text-emerald-400 text-sm font-mono">
+							{formatarMoeda(alertaSelecionado.valor_envolvido)}
+						</span>
+						{#if alertaSelecionado.ano}
+							<span class="text-slate-400 block mt-0.5">Exercício / Ano: {alertaSelecionado.ano}</span>
+						{/if}
+					</div>
+
+					<div class="p-3 bg-slate-800/40 rounded-lg border border-slate-800">
+						<span class="text-slate-400 block">Fonte Primária de Dados:</span>
+						<span class="font-semibold text-slate-200">{alertaSelecionado.fonte_dado}</span>
+						<span class="text-slate-500 block mt-0.5">Base pública oficial do governo</span>
+					</div>
+
+					<div class="p-3 bg-slate-800/40 rounded-lg border border-slate-800">
+						<span class="text-slate-400 block">Localização / UF:</span>
+						<span class="font-semibold text-slate-200">
+							{alertaSelecionado.municipio || 'Âmbito Nacional'} {alertaSelecionado.uf ? `(${alertaSelecionado.uf})` : ''}
+						</span>
+					</div>
+				</div>
+
+				<!-- Detalhes Técnicos JSON (se disponíveis) -->
+				{#if alertaSelecionado.detalhes}
+					<div>
+						<h4 class="text-xs font-bold uppercase text-slate-400 tracking-wider mb-1">Metadados Analíticos</h4>
+						<pre class="p-3 bg-slate-950 rounded-xl border border-slate-800 text-[11px] font-mono text-slate-300 overflow-x-auto max-h-40">{JSON.stringify(alertaSelecionado.detalhes, null, 2)}</pre>
+					</div>
+				{/if}
+			</div>
+
+			<!-- Footer do Modal -->
+			<div class="pt-3 border-t border-slate-800 flex justify-end">
+				<button
+					type="button"
+					on:click={fecharModal}
+					class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition-colors"
+				>
+					Fechar
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}

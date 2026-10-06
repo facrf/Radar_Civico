@@ -4,16 +4,32 @@
 
 	let brandTimestamp = Date.now();
 	let iconLoadFailed = false;
+	let totalAlertas = 0;
 
 	function atualizarIdentidade() {
 		brandTimestamp = Date.now();
 		iconLoadFailed = false;
 	}
 
+	async function verificarAlertas() {
+		try {
+			const res = await fetch('/api/v1/auditoria/alertas?limit=1');
+			if (res.ok) {
+				const data = await res.json();
+				totalAlertas = data.total || 0;
+			}
+		} catch (err) {
+			console.error('Erro ao verificar alertas:', err);
+		}
+	}
+
 	onMount(() => {
 		window.addEventListener('radar-icon-updated', atualizarIdentidade);
+		window.addEventListener('radar-alertas-updated', verificarAlertas);
+		verificarAlertas();
 		return () => {
 			window.removeEventListener('radar-icon-updated', atualizarIdentidade);
+			window.removeEventListener('radar-alertas-updated', verificarAlertas);
 		};
 	});
 </script>
@@ -51,8 +67,16 @@
 					Painel & Busca
 				</a>
 				<a href="/alertas" class="px-3 py-2 text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-800/60 rounded-md transition-colors flex items-center gap-1.5">
-					<span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
-					Alertas
+					{#if totalAlertas > 0}
+						<span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse" title={`${totalAlertas} anomalias detectadas`}></span>
+						<span>Alertas</span>
+						<span class="px-1.5 py-0.2 text-[10px] font-bold rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 leading-none">
+							{totalAlertas > 999 ? '999+' : totalAlertas}
+						</span>
+					{:else}
+						<span class="w-2 h-2 rounded-full bg-emerald-500/60" title="Nenhuma irregularidade ativa detectada"></span>
+						<span>Alertas</span>
+					{/if}
 				</a>
 				<a href="/configuracoes" class="px-3 py-2 text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-800/60 rounded-md transition-colors flex items-center gap-1.5">
 					<svg class="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
