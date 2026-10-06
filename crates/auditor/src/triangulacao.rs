@@ -55,6 +55,15 @@ pub fn auditar_triangulacao(
     socios: &[SocioEmpresa],
     contratos: &[ContratoPublico],
 ) -> Vec<AlertaTriangulacao> {
+    auditar_triangulacao_com_janela(doadores, socios, contratos, JANELA_DIAS_POSSE)
+}
+
+pub fn auditar_triangulacao_com_janela(
+    doadores: &[DoadorCampanha],
+    socios: &[SocioEmpresa],
+    contratos: &[ContratoPublico],
+    janela_dias: i64,
+) -> Vec<AlertaTriangulacao> {
     let mut alertas = Vec::new();
 
     for doador in doadores {
@@ -83,8 +92,8 @@ pub fn auditar_triangulacao(
 
                 let dias = (contrato.data_assinatura - doador.data_posse).num_days();
 
-                // Regra: Contrato assinado após a posse em janela <= 180 dias
-                if dias >= 0 && dias <= JANELA_DIAS_POSSE {
+                // Regra: Contrato assinado após a posse em janela configurada
+                if dias >= 0 && dias <= janela_dias {
                     let score_risco = if dias <= 60 {
                         95
                     } else if dias <= 120 {

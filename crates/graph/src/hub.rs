@@ -92,6 +92,11 @@ impl GrafoSincronizado {
 
     /// Detecta fornecedores do tipo "Hub" com concentração > 70% em um único grupo/coligação
     pub fn detectar_fornecedores_hub(&self) -> Vec<FornecedorHubAlerta> {
+        self.detectar_fornecedores_hub_com_limite(LIMITE_CONCENTRACAO_COLIGACAO)
+    }
+
+    /// Detecta fornecedores do tipo "Hub" com concentração >= limite configurado em um único grupo/coligação
+    pub fn detectar_fornecedores_hub_com_limite(&self, limite_concentracao: f64) -> Vec<FornecedorHubAlerta> {
         let betweenness = self.calcular_betweenness_centrality();
         let mut alertas = Vec::new();
 
@@ -149,7 +154,7 @@ impl GrafoSincronizado {
                 let percentual = (faturamento_grupo / total_faturamento) * 100.0;
                 let score = *betweenness.get(&node_idx).unwrap_or(&0.0);
 
-                if percentual >= LIMITE_CONCENTRACAO_COLIGACAO {
+                if percentual >= limite_concentracao {
                     alertas.push(FornecedorHubAlerta {
                         fornecedor_id: no.db_id,
                         fornecedor_uuid: no.uuid.clone(),

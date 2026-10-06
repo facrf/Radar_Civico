@@ -46,10 +46,18 @@ pub fn auditar_abastecimento(
     abastecimento: &Abastecimento,
     preco_referencia_anp: Option<f64>,
 ) -> Option<AlertaCombustivel> {
+    auditar_abastecimento_com_limite(abastecimento, preco_referencia_anp, LIMITE_TANQUE_VEICULO_LEVE)
+}
+
+pub fn auditar_abastecimento_com_limite(
+    abastecimento: &Abastecimento,
+    preco_referencia_anp: Option<f64>,
+    limite_litros: f64,
+) -> Option<AlertaCombustivel> {
     let litros = calcular_litros(abastecimento, preco_referencia_anp);
 
-    if litros > LIMITE_TANQUE_VEICULO_LEVE {
-        let gravidade = if litros > 120.0 {
+    if litros > limite_litros {
+        let gravidade = if litros > (limite_litros * 1.5) {
             "CRITICA"
         } else {
             "ALTA"
@@ -61,8 +69,8 @@ pub fn auditar_abastecimento(
             litros_calculados: (litros * 100.0).round() / 100.0,
             valor: abastecimento.valor,
             motivo: format!(
-                "Volume abastecido ({:.2} L) excede a capacidade física máxima de veículos leves ({:.0} L)",
-                litros, LIMITE_TANQUE_VEICULO_LEVE
+                "Volume abastecido ({:.2} L) excede a capacidade física configurada ({:.0} L)",
+                litros, limite_litros
             ),
             gravidade: gravidade.to_string(),
         })
