@@ -3,6 +3,7 @@ pub mod camara;
 pub mod ceap;
 pub mod despesas_tse;
 pub mod error;
+pub mod importers;
 pub mod normalizer;
 pub mod oab;
 pub mod pncp;
@@ -10,6 +11,11 @@ pub mod progress;
 pub mod querido_diario;
 pub mod tse_ckan;
 pub mod tse_streaming;
+
+pub use importers::{
+    BatchSink, ImportContext, ImportProgress as ImporterProgress, ImportStage, ImporterManager,
+    ImporterSummary, SourceImporter,
+};
 
 pub use progress::{
     finish_import_progress, get_import_progress, reset_import_progress, set_import_error,

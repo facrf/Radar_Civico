@@ -965,6 +965,7 @@ dependencies = [
 name = "ingestion"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "async_zip",
  "chrono",
  "csv",
@@ -977,6 +978,7 @@ dependencies = [
  "storage",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
  "zip",
 ]
@@ -1631,12 +1633,14 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "async_zip",
  "auditor",
  "axum",
  "base64 0.22.1",
  "chrono",
  "csv",
+ "encoding_rs",
  "graph",
  "ingestion",
  "reqwest",

@@ -22,6 +22,12 @@ pub enum IngestionError {
 
     #[error("Parse error: {0}")]
     Parse(String),
+
+    #[error("Tokio task join error: {0}")]
+    TokioJoin(String),
+
+    #[error("Ingestion error: {0}")]
+    Custom(String),
 }
 
 pub type Result<T> = std::result::Result<T, IngestionError>;
