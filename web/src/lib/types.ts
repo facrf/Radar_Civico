@@ -332,6 +332,7 @@ export interface ItemPoliticoListagem {
 	tem_alertas: boolean;
 	foto_base64: string | null;
 	foto_mime: string | null;
+	foto_url?: string | null;
 	mandatos?: string[];
 }
 
@@ -403,6 +404,7 @@ export interface PoliticoDetalheResponse {
 	ocupacao: string | null;
 	foto_base64: string | null;
 	foto_mime: string | null;
+	foto_url?: string | null;
 	partido: string;
 	uf: string;
 	cargo: string;

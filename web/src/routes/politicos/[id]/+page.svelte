@@ -4,7 +4,7 @@
 	import MapaDespesas from '$lib/components/MapaDespesas.svelte';
 	import type { PoliticoDetalheResponse, PoliticoDespesasGeoResponse, BuscarFotoResponse } from '$lib/types';
 
-	const id = $page.params.id;
+	$: id = $page.params.id;
 
 	let loading = true;
 	let erro: string | null = null;
@@ -21,6 +21,12 @@
 	let mostrarModalFoto = false;
 	let fotoUrlInput = '';
 	let uploadFileInput: HTMLInputElement;
+
+	let ultimoIdCarregado: string | null = null;
+	$: if (id && id !== ultimoIdCarregado) {
+		ultimoIdCarregado = id;
+		carregarDados();
+	}
 
 	$: mandatosDistintos = politico?.candidaturas
 		? Array.from(new Set(politico.candidaturas.map((c) => `${c.cargo} (${c.ano_eleicao})`)))
@@ -231,10 +237,6 @@
 		if (['NOVO'].includes(p)) return 'from-orange-600 to-amber-600 border-orange-500/40 text-orange-300';
 		return 'from-slate-700 to-slate-800 border-slate-600 text-slate-300';
 	}
-
-	onMount(() => {
-		carregarDados();
-	});
 </script>
 
 <svelte:head>
@@ -299,6 +301,12 @@
 						{:else if politico.foto_base64}
 							<img
 								src={`data:${politico.foto_mime || 'image/jpeg'};base64,${politico.foto_base64}`}
+								alt={politico.nome_urna}
+								class="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl object-cover border-2 border-slate-700 bg-slate-950 shadow-xl"
+							/>
+						{:else if politico.foto_url}
+							<img
+								src={politico.foto_url}
 								alt={politico.nome_urna}
 								class="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl object-cover border-2 border-slate-700 bg-slate-950 shadow-xl"
 							/>

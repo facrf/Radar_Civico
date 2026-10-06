@@ -1,9 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import type { ItemPoliticoListagem, ListarPoliticosResponse } from '$lib/types';
 
 	let loading = true;
 	let erro: string | null = null;
+
+	// Estados de Fotos
+	let buscandoFotosCards: Record<number, boolean> = {};
+	let sincronizandoFotosGeral = false;
+	let msgSincronizacao: string | null = null;
 
 	// Parâmetros de Filtro
 	let termoBusca = '';
@@ -13,6 +19,65 @@
 	let apenasComGastos = false;
 	let paginaAtual = 1;
 	const limitePorPagina = 24;
+
+	async function navegarParaPolitico(id: number | string) {
+		const targetUrl = `/politicos/${id}`;
+		try {
+			await goto(targetUrl);
+		} catch (err) {
+			console.warn('goto falhou, redirecionando via window.location:', err);
+			window.location.href = targetUrl;
+		}
+	}
+
+	async function buscarFotoCard(politico: ItemPoliticoListagem, e: MouseEvent) {
+		e.stopPropagation();
+		e.preventDefault();
+		if (buscandoFotosCards[politico.id]) return;
+		buscandoFotosCards[politico.id] = true;
+		try {
+			const res = await fetch(`/api/politicos/${politico.id}/buscar-foto-tse`, {
+				method: 'POST'
+			});
+			const data = await res.json();
+			if (res.ok && data.sucesso) {
+				if (data.foto_base64) {
+					politico.foto_base64 = data.foto_base64;
+					politico.foto_mime = data.foto_mime || 'image/jpeg';
+				}
+				if (data.foto_url) {
+					politico.foto_url = data.foto_url;
+				}
+				dados.politicos = [...dados.politicos];
+			} else {
+				alert(data.mensagem || 'Não foi possível obter a foto deste político.');
+			}
+		} catch (err: any) {
+			alert(`Erro ao buscar foto: ${err?.message || 'Falha na conexão'}`);
+		} finally {
+			buscandoFotosCards[politico.id] = false;
+		}
+	}
+
+	async function sincronizarFotosGeral() {
+		if (sincronizandoFotosGeral) return;
+		sincronizandoFotosGeral = true;
+		msgSincronizacao = null;
+		try {
+			const res = await fetch('/api/politicos/sincronizar-fotos-camara', { method: 'POST' });
+			const data = await res.json();
+			if (res.ok && data.sucesso) {
+				msgSincronizacao = `Sucesso: ${data.atualizados} fotos de deputados foram vinculadas!`;
+				carregarPoliticos(false);
+			} else {
+				msgSincronizacao = data.mensagem || 'Falha ao sincronizar fotos da Câmara.';
+			}
+		} catch (err: any) {
+			msgSincronizacao = `Erro: ${err?.message || 'Falha na requisição'}`;
+		} finally {
+			sincronizandoFotosGeral = false;
+		}
+	}
 
 	// Dados da API
 	let dados: ListarPoliticosResponse = {
@@ -134,14 +199,37 @@
 			</p>
 		</div>
 
-		{#if dados.total > 0}
-			<div class="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-xl text-xs">
-				<span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-				<span class="text-slate-400">Cadastrados:</span>
-				<strong class="text-white font-mono text-sm">{dados.total}</strong>
-				<span class="text-slate-500">parlamentares</span>
-			</div>
-		{/if}
+		<div class="flex flex-col sm:flex-row items-start sm:items-center gap-2.5">
+			{#if msgSincronizacao}
+				<span class="text-xs px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
+					{msgSincronizacao}
+				</span>
+			{/if}
+
+			{#if dados.total > 0}
+				<div class="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-xl text-xs shadow-sm">
+					<span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+					<span class="text-slate-400">Cadastrados:</span>
+					<strong class="text-white font-mono text-sm">{dados.total}</strong>
+					<span class="text-slate-500">parlamentares</span>
+				</div>
+
+				<button
+					type="button"
+					on:click={sincronizarFotosGeral}
+					disabled={sincronizandoFotosGeral}
+					class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 hover:border-emerald-500/40 text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 shadow-sm"
+					title="Vincula automaticamente as fotos públicas oficiais da Câmara dos Deputados no banco local"
+				>
+					{#if sincronizandoFotosGeral}
+						<div class="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
+						<span>Sincronizando fotos...</span>
+					{:else}
+						<span>📸 Sincronizar Fotos</span>
+					{/if}
+				</button>
+			{/if}
+		</div>
 	</div>
 
 	<!-- Formulário de Busca e Filtros Avançados -->
@@ -349,7 +437,12 @@
 				{#each dados.politicos as politico (politico.id)}
 					<a
 						href="/politicos/{politico.id}"
-						class="group bg-slate-900/90 hover:bg-slate-850 border border-slate-800 hover:border-emerald-500/40 rounded-2xl p-5 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-950/20 flex flex-col justify-between relative overflow-hidden"
+						on:click={(e) => {
+							if (e.ctrlKey || e.metaKey || e.button === 1) return;
+							e.preventDefault();
+							navegarParaPolitico(politico.id);
+						}}
+						class="group bg-slate-900/90 hover:bg-slate-850 border border-slate-800 hover:border-emerald-500/40 rounded-2xl p-5 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-950/20 flex flex-col justify-between relative overflow-hidden cursor-pointer"
 					>
 						<!-- Faixa sutil no topo com cor do partido -->
 						<div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r {getPartidoColor(politico.sigla_partido)}"></div>
@@ -357,17 +450,46 @@
 						<div class="space-y-4">
 							<!-- Header do Card: Avatar / Foto + Badges de Partido e UF -->
 							<div class="flex items-start gap-3.5">
-								{#if politico.foto_base64}
-									<img
-										src={`data:${politico.foto_mime || 'image/jpeg'};base64,${politico.foto_base64}`}
-										alt={politico.nome_urna}
-										class="w-13 h-13 rounded-xl object-cover border border-slate-700 bg-slate-950 shadow-sm flex-shrink-0"
-									/>
-								{:else}
-									<div class="w-13 h-13 rounded-xl bg-gradient-to-br {getPartidoColor(politico.sigla_partido)} flex items-center justify-center font-bold text-base text-white shadow-inner flex-shrink-0 border border-slate-700/60">
-										{getIniciais(politico.nome_urna || politico.nome_completo)}
-									</div>
-								{/if}
+								<div class="relative flex-shrink-0">
+									{#if politico.foto_base64}
+										<img
+											src={`data:${politico.foto_mime || 'image/jpeg'};base64,${politico.foto_base64}`}
+											alt={politico.nome_urna}
+											class="w-13 h-13 rounded-xl object-cover border border-slate-700 bg-slate-950 shadow-sm"
+										/>
+									{:else if politico.foto_url}
+										<img
+											src={politico.foto_url}
+											alt={politico.nome_urna}
+											class="w-13 h-13 rounded-xl object-cover border border-slate-700 bg-slate-950 shadow-sm"
+											loading="lazy"
+											on:error={() => {
+												politico.foto_url = null;
+											}}
+										/>
+									{:else}
+										<div class="w-13 h-13 rounded-xl bg-gradient-to-br {getPartidoColor(politico.sigla_partido)} flex items-center justify-center font-bold text-base text-white shadow-inner border border-slate-700/60">
+											{getIniciais(politico.nome_urna || politico.nome_completo)}
+										</div>
+									{/if}
+
+									<!-- Botão de buscar foto oficial com 1 clique se não tiver foto salva -->
+									{#if !politico.foto_base64 && !politico.foto_url}
+										<button
+											type="button"
+											on:click={(e) => buscarFotoCard(politico, e)}
+											disabled={buscandoFotosCards[politico.id]}
+											class="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-slate-800 hover:bg-emerald-600 border border-slate-600 text-[10px] flex items-center justify-center text-slate-200 hover:text-white transition-colors shadow-sm"
+											title="Buscar foto oficial deste parlamentar nas bases públicas"
+										>
+											{#if buscandoFotosCards[politico.id]}
+												<span class="inline-block w-2.5 h-2.5 border border-white border-t-transparent rounded-full animate-spin"></span>
+											{:else}
+												<span>📸</span>
+											{/if}
+										</button>
+									{/if}
+								</div>
 
 								<div class="flex-1 min-w-0">
 									<div class="flex items-center gap-1.5 mb-1">
@@ -447,9 +569,12 @@
 						<!-- Rodapé do Card com CTA -->
 						<div class="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-xs text-slate-400 group-hover:text-emerald-400 transition-colors">
 							<span class="font-medium text-[11px]">Ver perfil & mapa</span>
-							<svg class="w-4 h-4 transform group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-							</svg>
+							<div class="flex items-center gap-1">
+								<span class="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity font-semibold">Acessar</span>
+								<svg class="w-4 h-4 transform group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+								</svg>
+							</div>
 						</div>
 					</a>
 				{/each}

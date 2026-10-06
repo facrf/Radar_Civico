@@ -181,14 +181,33 @@
 		renderizarMarcadores();
 	}
 
+	import 'leaflet/dist/leaflet.css';
+	import 'leaflet.markercluster/dist/MarkerCluster.css';
+	import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
+
 	onMount(async () => {
 		if (!browser) return;
 
 		try {
 			const leafletModule = await import('leaflet');
-			L = leafletModule.default;
-			// @ts-ignore
-			await import('leaflet.markercluster');
+			L = leafletModule.default || leafletModule;
+
+			// Define L nos escopos globais requeridos por plugins legados UMD do Leaflet
+			if (typeof window !== 'undefined') {
+				(window as any).L = L;
+			}
+			if (typeof globalThis !== 'undefined') {
+				(globalThis as any).L = L;
+			}
+
+			try {
+				// @ts-ignore
+				await import('leaflet.markercluster');
+			} catch (errCluster) {
+				console.warn('leaflet.markercluster não carregou, usando agrupamento nativo:', errCluster);
+			}
+
+			if (!mapContainer) return;
 
 			// Inicializa o mapa com foco no Brasil
 			map = L.map(mapContainer, {
@@ -205,28 +224,33 @@
 				maxZoom: 19
 			}).addTo(map);
 
-			// @ts-ignore
-			markerClusterGroup = L.markerClusterGroup({
-				showCoverageOnHover: false,
-				spiderfyOnMaxZoom: true,
-				maxClusterRadius: 40,
-				iconCreateFunction: (cluster: any) => {
-					const count = cluster.getChildCount();
-					let bg = 'bg-emerald-600/90 text-white border-emerald-400';
-					if (count > 20) {
-						bg = 'bg-amber-600/90 text-white border-amber-400';
-					}
-					if (count > 50) {
-						bg = 'bg-indigo-600/90 text-white border-indigo-400';
-					}
+			if (L && typeof L.markerClusterGroup === 'function') {
+				// @ts-ignore
+				markerClusterGroup = L.markerClusterGroup({
+					showCoverageOnHover: false,
+					spiderfyOnMaxZoom: true,
+					maxClusterRadius: 40,
+					iconCreateFunction: (cluster: any) => {
+						const count = cluster.getChildCount();
+						let bg = 'bg-emerald-600/90 text-white border-emerald-400';
+						if (count > 20) {
+							bg = 'bg-amber-600/90 text-white border-amber-400';
+						}
+						if (count > 50) {
+							bg = 'bg-indigo-600/90 text-white border-indigo-400';
+						}
 
-					return L.divIcon({
-						html: `<div class="w-9 h-9 rounded-full ${bg} border-2 flex items-center justify-center font-bold text-xs shadow-xl ring-2 ring-slate-900 font-mono">${count}</div>`,
-						className: 'marker-cluster-custom',
-						iconSize: [36, 36]
-					});
-				}
-			});
+						return L.divIcon({
+							html: `<div class="w-9 h-9 rounded-full ${bg} border-2 flex items-center justify-center font-bold text-xs shadow-xl ring-2 ring-slate-900 font-mono">${count}</div>`,
+							className: 'marker-cluster-custom',
+							iconSize: [36, 36]
+						});
+					}
+				});
+			} else {
+				// Fallback caso markercluster não esteja disponível
+				markerClusterGroup = L.layerGroup();
+			}
 
 			map.addLayer(markerClusterGroup);
 
@@ -249,12 +273,14 @@
 
 	function resetarZoom() {
 		if (map && markerClusterGroup) {
-			const bounds = markerClusterGroup.getBounds();
-			if (bounds.isValid()) {
-				map.fitBounds(bounds, { padding: [50, 50], maxZoom: 14 });
-			} else {
-				map.setView([-15.793889, -47.882778], 4);
+			if (typeof markerClusterGroup.getBounds === 'function') {
+				const bounds = markerClusterGroup.getBounds();
+				if (bounds && typeof bounds.isValid === 'function' && bounds.isValid()) {
+					map.fitBounds(bounds, { padding: [50, 50], maxZoom: 14 });
+					return;
+				}
 			}
+			map.setView([-15.793889, -47.882778], 4);
 		}
 	}
 </script>
