@@ -418,6 +418,57 @@ pub const MIGRATIONS: &[Migration] = &[
             (5201108, 'Anápolis', 'GO', -16.3267, -48.9533, 0);
         ",
     },
+    Migration {
+        version: 12,
+        name: "normalizar_cargos_partidos_e_indices_candidaturas",
+        sql: "
+            -- Normalizar códigos de cargos do TSE (11 = PREFEITO, 12 = VICE-PREFEITO, 13 = VEREADOR)
+            UPDATE candidaturas SET cargo = 'VEREADOR' WHERE cargo = '13';
+            UPDATE candidaturas SET cargo = 'PREFEITO' WHERE cargo = '11';
+            UPDATE candidaturas SET cargo = 'VICE-PREFEITO' WHERE cargo = '12';
+
+            -- Normalizar números eleitorais de partidos para siglas oficiais
+            UPDATE candidaturas SET sigla_partido = 'REPUBLICANOS' WHERE sigla_partido = '10';
+            UPDATE candidaturas SET sigla_partido = 'PP' WHERE sigla_partido = '11';
+            UPDATE candidaturas SET sigla_partido = 'PDT' WHERE sigla_partido = '12';
+            UPDATE candidaturas SET sigla_partido = 'PT' WHERE sigla_partido = '13';
+            UPDATE candidaturas SET sigla_partido = 'PTB' WHERE sigla_partido = '14';
+            UPDATE candidaturas SET sigla_partido = 'MDB' WHERE sigla_partido = '15';
+            UPDATE candidaturas SET sigla_partido = 'PSTU' WHERE sigla_partido = '16';
+            UPDATE candidaturas SET sigla_partido = 'REDE' WHERE sigla_partido = '18';
+            UPDATE candidaturas SET sigla_partido = 'PODE' WHERE sigla_partido = '20';
+            UPDATE candidaturas SET sigla_partido = 'PCB' WHERE sigla_partido = '21';
+            UPDATE candidaturas SET sigla_partido = 'PL' WHERE sigla_partido = '22';
+            UPDATE candidaturas SET sigla_partido = 'CIDADANIA' WHERE sigla_partido = '23';
+            UPDATE candidaturas SET sigla_partido = 'PRD' WHERE sigla_partido = '25';
+            UPDATE candidaturas SET sigla_partido = 'DC' WHERE sigla_partido = '27';
+            UPDATE candidaturas SET sigla_partido = 'PRTB' WHERE sigla_partido = '28';
+            UPDATE candidaturas SET sigla_partido = 'PCO' WHERE sigla_partido = '29';
+            UPDATE candidaturas SET sigla_partido = 'NOVO' WHERE sigla_partido = '30';
+            UPDATE candidaturas SET sigla_partido = 'MOBILIZA' WHERE sigla_partido = '33';
+            UPDATE candidaturas SET sigla_partido = 'PMB' WHERE sigla_partido = '35';
+            UPDATE candidaturas SET sigla_partido = 'AGIR' WHERE sigla_partido = '36';
+            UPDATE candidaturas SET sigla_partido = 'PSB' WHERE sigla_partido = '40';
+            UPDATE candidaturas SET sigla_partido = 'PV' WHERE sigla_partido = '43';
+            UPDATE candidaturas SET sigla_partido = 'UNIÃO' WHERE sigla_partido = '44';
+            UPDATE candidaturas SET sigla_partido = 'PSDB' WHERE sigla_partido = '45';
+            UPDATE candidaturas SET sigla_partido = 'PSOL' WHERE sigla_partido = '50';
+            UPDATE candidaturas SET sigla_partido = 'PSD' WHERE sigla_partido = '55';
+            UPDATE candidaturas SET sigla_partido = 'PCdoB' WHERE sigla_partido = '65';
+            UPDATE candidaturas SET sigla_partido = 'AVANTE' WHERE sigla_partido = '70';
+            UPDATE candidaturas SET sigla_partido = 'SOLIDARIEDADE' WHERE sigla_partido = '77';
+            UPDATE candidaturas SET sigla_partido = 'UP' WHERE sigla_partido = '80';
+
+            -- Índices essenciais para buscas por cargo, partido, UF e sequencial
+            CREATE INDEX IF NOT EXISTS idx_candidaturas_cargo ON candidaturas(cargo);
+            CREATE INDEX IF NOT EXISTS idx_candidaturas_politico_id ON candidaturas(politico_id);
+            CREATE INDEX IF NOT EXISTS idx_candidaturas_sigla_partido ON candidaturas(sigla_partido);
+            CREATE INDEX IF NOT EXISTS idx_candidaturas_uf ON candidaturas(uf);
+            CREATE INDEX IF NOT EXISTS idx_politicos_sq ON politicos(sq_candidato);
+            CREATE INDEX IF NOT EXISTS idx_politicos_nome_urna ON politicos(nome_urna);
+            CREATE INDEX IF NOT EXISTS idx_politicos_nome_completo ON politicos(nome_completo);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -838,6 +889,41 @@ mod tests {
 
         // Verify idempotency
         run_migrations(&mut conn)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_normalizar_candidaturas() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        // Insere registros com codigos numéricos para testar a normalização
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('CANDIDATO TESTE', 'TESTE VEREADOR')",
+            [],
+        )?;
+        let pol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
+             VALUES (?1, 2024, '13', '22', 'SP')",
+            [pol_id],
+        )?;
+
+        // Re-executa as migrações (ou script da migração 12)
+        conn.execute("UPDATE candidaturas SET cargo = 'VEREADOR' WHERE cargo = '13'", [])?;
+        conn.execute("UPDATE candidaturas SET sigla_partido = 'PL' WHERE sigla_partido = '22'", [])?;
+
+        let (cargo, partido): (String, String) = conn.query_row(
+            "SELECT cargo, sigla_partido FROM candidaturas WHERE politico_id = ?1",
+            [pol_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        assert_eq!(cargo, "VEREADOR");
+        assert_eq!(partido, "PL");
 
         Ok(())
     }
