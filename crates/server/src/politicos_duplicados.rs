@@ -395,7 +395,7 @@ pub fn mesclar_politicos_db(
         return Ok(0);
     }
 
-    let tx = conn.transaction()?;
+    let tx = storage::transaction_immediate(conn)?;
 
     let existe_can: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM politicos WHERE id = ?1)",
@@ -448,7 +448,7 @@ pub fn mesclar_politicos_db(
                 .ok();
 
             if let Some(cand_existente_id) = cand_existente {
-                // Move bens e receitas para a candidatura já existente no canônico
+                // Move bens, receitas e despesas para a candidatura já existente no canônico
                 tx.execute(
                     "UPDATE bens_candidato SET candidatura_id = ?1 WHERE candidatura_id = ?2",
                     [cand_existente_id, cand_id],
@@ -457,6 +457,21 @@ pub fn mesclar_politicos_db(
                     "UPDATE receitas_campanha SET candidatura_id = ?1 WHERE candidatura_id = ?2",
                     [cand_existente_id, cand_id],
                 )?;
+                tx.execute(
+                    "UPDATE despesas_campanha SET candidatura_id = ?1 WHERE candidatura_id = ?2",
+                    [cand_existente_id, cand_id],
+                )?;
+                let total_bens: f64 = tx
+                    .query_row(
+                        "SELECT COALESCE(SUM(valor_declarado), 0.0) FROM bens_candidato WHERE candidatura_id = ?1",
+                        [cand_existente_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0.0);
+                let _ = tx.execute(
+                    "UPDATE candidaturas SET total_bens_declarados = ?1 WHERE id = ?2",
+                    storage::rusqlite::params![total_bens, cand_existente_id],
+                );
                 tx.execute("DELETE FROM candidaturas WHERE id = ?1", [cand_id])?;
             } else {
                 // Transfere a candidatura para o ID canônico
@@ -498,26 +513,60 @@ pub fn mesclar_politicos_db(
         )?;
     }
 
-    // 4. Se o canônico não possuir sq_candidato mas o duplicado possuir, copia
-    let sq_dup: Option<String> = tx
+    // 4. Copia campos cadastrais e sq_candidato se faltarem no canônico
+    let (cpf_dup, nasc_dup, grau_dup, ocup_dup, sq_dup): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = tx
         .query_row(
-            "SELECT sq_candidato FROM politicos WHERE id = ?1",
+            "SELECT cpf_mascarado, data_nascimento, grau_instrucao, ocupacao, sq_candidato FROM politicos WHERE id = ?1",
             [id_duplicado],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
-        .ok()
-        .flatten();
+        .unwrap_or((None, None, None, None, None));
 
-    let sq_can: Option<String> = tx
+    let (cpf_can, nasc_can, grau_can, ocup_can, sq_can): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = tx
         .query_row(
-            "SELECT sq_candidato FROM politicos WHERE id = ?1",
+            "SELECT cpf_mascarado, data_nascimento, grau_instrucao, ocupacao, sq_candidato FROM politicos WHERE id = ?1",
             [id_canonico],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
-        .ok()
-        .flatten();
+        .unwrap_or((None, None, None, None, None));
 
-    if sq_can.is_none() && sq_dup.is_some() {
+    if (cpf_can.is_none() || cpf_can.as_deref() == Some("")) && cpf_dup.is_some() {
+        tx.execute(
+            "UPDATE politicos SET cpf_mascarado = ?1 WHERE id = ?2",
+            storage::rusqlite::params![cpf_dup, id_canonico],
+        )?;
+    }
+    if (nasc_can.is_none() || nasc_can.as_deref() == Some("")) && nasc_dup.is_some() {
+        tx.execute(
+            "UPDATE politicos SET data_nascimento = ?1 WHERE id = ?2",
+            storage::rusqlite::params![nasc_dup, id_canonico],
+        )?;
+    }
+    if (grau_can.is_none() || grau_can.as_deref() == Some("")) && grau_dup.is_some() {
+        tx.execute(
+            "UPDATE politicos SET grau_instrucao = ?1 WHERE id = ?2",
+            storage::rusqlite::params![grau_dup, id_canonico],
+        )?;
+    }
+    if (ocup_can.is_none() || ocup_can.as_deref() == Some("")) && ocup_dup.is_some() {
+        tx.execute(
+            "UPDATE politicos SET ocupacao = ?1 WHERE id = ?2",
+            storage::rusqlite::params![ocup_dup, id_canonico],
+        )?;
+    }
+    if (sq_can.is_none() || sq_can.as_deref() == Some("")) && sq_dup.is_some() {
         tx.execute(
             "UPDATE politicos SET sq_candidato = ?1 WHERE id = ?2",
             storage::rusqlite::params![sq_dup, id_canonico],
@@ -816,6 +865,77 @@ mod tests {
 
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_mesclar_preserva_despesas_campanha_e_dados_cadastrais() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Político 1 (canônico): sem CPF e sem ocupação cadastrados
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('CANDIDATO MESCLAR', 'CANDIDATO')",
+            [],
+        )
+        .unwrap();
+        let id1 = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
+             VALUES (?1, 2024, 'PREFEITO', 'MDB', 'SP')",
+            [id1],
+        )
+        .unwrap();
+        let cand1 = conn.last_insert_rowid();
+
+        // Político 2 (duplicado): possui CPF, ocupação e despesas de campanha no mesmo pleito
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado, ocupacao)
+             VALUES ('CANDIDATO MESCLAR', 'CANDIDATO', '***.444.555-**', 'EMPRESARIO')",
+            [],
+        )
+        .unwrap();
+        let id2 = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
+             VALUES (?1, 2024, 'PREFEITO', 'MDB', 'SP')",
+            [id2],
+        )
+        .unwrap();
+        let cand2 = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO despesas_campanha (candidatura_id, fornecedor_cpf_cnpj, fornecedor_nome, valor)
+             VALUES (?1, '12345678000199', 'GRAFICA MODELO', 15000.0)",
+            [cand2],
+        )
+        .unwrap();
+
+        let mesclados = mesclar_politicos_db(&mut conn, id1, id2).unwrap();
+        assert_eq!(mesclados, 1);
+
+        // Despesa de campanha deve ter sido migrada para a candidatura do canônico (cand1)
+        let total_despesas_cand1: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM despesas_campanha WHERE candidatura_id = ?1",
+                [cand1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_despesas_cand1, 1);
+
+        // O canônico deve ter herdado o CPF e a ocupação do duplicado
+        let (cpf_res, ocup_res): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT cpf_mascarado, ocupacao FROM politicos WHERE id = ?1",
+                [id1],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cpf_res.as_deref(), Some("***.444.555-**"));
+        assert_eq!(ocup_res.as_deref(), Some("EMPRESARIO"));
     }
 }
 

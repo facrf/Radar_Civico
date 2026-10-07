@@ -1285,7 +1285,7 @@ fn processar_csv_records<R: std::io::Read>(
                 ],
             );
 
-            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR REPLACE INTO empresas_qsa (
@@ -1343,7 +1343,7 @@ fn processar_csv_records<R: std::io::Read>(
             let col_sit = find_col(&headers, &["SITUACAO_REGISTRO", "SITUACAO_REGULAR", "SITUACAO", "STATUS"]);
             let col_tipo = find_col(&headers, &["TIPO_INSCRICAO", "TIPO"]);
 
-            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR REPLACE INTO registros_profissionais (
@@ -1378,7 +1378,7 @@ fn processar_csv_records<R: std::io::Read>(
             let col_dt_ass = find_col(&headers, &["DATA_ASSINATURA", "DATAASSINATURA", "DT_ASSINATURA"]);
             let col_dt_fim = find_col(&headers, &["DATA_TERMINO", "DATAVIGENCIAFIM", "DT_TERMINO"]);
 
-            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO contratos_publicos (
@@ -1411,7 +1411,7 @@ fn processar_csv_records<R: std::io::Read>(
             let col_forn_nome = find_col(&headers, &["FORNECEDOR", "FORNECEDOR_NOME", "NOME_FORNECEDOR"]);
             let col_forn_doc = find_col(&headers, &["CNPJCPF", "FORNECEDOR_CNPJ_CPF", "CNPJ_FORNECEDOR"]);
 
-            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO despesas_parlamentares (
@@ -1444,7 +1444,7 @@ fn processar_csv_records<R: std::io::Read>(
             let col_data = find_col(&headers, &["DT_RECEITA", "DATA_RECEITA", "DATA"]);
             let col_desc = find_col(&headers, &["DS_RECEITA", "DESCRICAO"]);
 
-            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO receitas_campanha (
@@ -1474,7 +1474,7 @@ fn processar_csv_records<R: std::io::Read>(
             let col_data = find_col(&headers, &["DT_DESPESA", "DATA_DESPESA", "DATA"]);
             let col_desc = find_col(&headers, &["DS_DESPESA", "DESCRICAO"]);
 
-            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO despesas_campanha (
@@ -1503,7 +1503,7 @@ fn processar_csv_records<R: std::io::Read>(
             let col_urna = find_col(&headers, &["NM_URNA_CANDIDATO", "NOME_URNA"]);
             let col_cpf = find_col(&headers, &["NR_CPF_CANDIDATO", "CPF_MASCARADO"]);
 
-            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR IGNORE INTO politicos (
@@ -1530,7 +1530,7 @@ fn processar_csv_records<R: std::io::Read>(
             let col_termo = find_col(&headers, &["TERMO_PESQUISADO", "TERMO", "NOME"]);
             let col_mun = find_col(&headers, &["MUNICIPIO_UF", "MUNICIPIO", "UF"]);
 
-            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO cache_consultas_diario (
@@ -1561,7 +1561,7 @@ fn processar_csv_records<R: std::io::Read>(
             let col_valor = find_col(&headers, &["VALOR_BENEFICIO", "VALOR", "VR_BENEFICIO", "VR_PAGTO"]);
             let col_enq = find_col(&headers, &["ENQUADRAMENTO", "TIPO_BENEFICIARIO", "TIPO"]);
 
-            let tx = conn.transaction().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO beneficios_emergenciais (
