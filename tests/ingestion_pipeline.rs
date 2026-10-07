@@ -121,7 +121,7 @@ CNPJ_BASICO;CNPJ_ORDEM;CNPJ_DV;RAZAO_SOCIAL;SOCIO_CPF_CNPJ_MASCARADO;SOCIO_NOME;
 
     // 8. Aguarda processamento das tarefas assíncronas com polling resiliente
     let mut lista_final: Vec<ImporterSummary> = Vec::new();
-    for _ in 0..30 {
+    for _ in 0..60 {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let req_list = Request::builder()
             .uri("/api/importers")

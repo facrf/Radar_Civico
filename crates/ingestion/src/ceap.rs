@@ -100,7 +100,7 @@ impl CeapClient {
             return Ok(0);
         }
 
-        let tx = conn.transaction()?;
+        let tx = storage::transaction_immediate(conn)?;
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO despesas_parlamentares (

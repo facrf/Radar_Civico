@@ -64,7 +64,7 @@ impl SourceImporter for ReceitaFederalImporter {
             let mut conn = pool.get().map_err(IngestionError::Storage)?;
             storage::aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
 
-            let tx = conn.transaction().map_err(IngestionError::Sqlite)?;
+            let tx = storage::transaction_immediate(&mut conn).map_err(IngestionError::Storage)?;
             let mut count = 0;
             {
                 let mut stmt = tx.prepare_cached(
@@ -85,7 +85,7 @@ impl SourceImporter for ReceitaFederalImporter {
                         Err(_) => continue,
                     };
                     if record.len() >= 7 {
-                        let _ = stmt.execute(storage::rusqlite::params![
+                        stmt.execute(storage::rusqlite::params![
                             record.get(0).unwrap_or(""),
                             record.get(1).unwrap_or(""),
                             record.get(2).unwrap_or(""),
@@ -93,7 +93,8 @@ impl SourceImporter for ReceitaFederalImporter {
                             record.get(4).unwrap_or(""),
                             record.get(5).unwrap_or(""),
                             record.get(6).unwrap_or(""),
-                        ]);
+                        ])
+                        .map_err(IngestionError::Sqlite)?;
                         count += 1;
                     }
                 }
@@ -250,7 +251,7 @@ impl SourceImporter for PncpImporter {
             let mut conn = pool.get().map_err(IngestionError::Storage)?;
             storage::aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
 
-            let tx = conn.transaction().map_err(IngestionError::Sqlite)?;
+            let tx = storage::transaction_immediate(&mut conn).map_err(IngestionError::Storage)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO contratos_publicos (
@@ -258,14 +259,14 @@ impl SourceImporter for PncpImporter {
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
                 ).map_err(IngestionError::Sqlite)?;
 
-                let _ = stmt.execute(storage::rusqlite::params![
+                stmt.execute(storage::rusqlite::params![
                     "PREFEITURA MUNICIPAL EXEMPLO",
                     cnpj,
                     250_000.0,
                     "Prestação de serviços continuados de consultoria e TI",
                     format!("{ano}-01-15"),
                     format!("{ano}-12-31"),
-                ]);
+                ]).map_err(IngestionError::Sqlite)?;
             }
             tx.commit().map_err(IngestionError::Sqlite)?;
             Ok(1)
@@ -331,7 +332,7 @@ impl SourceImporter for QueridoDiarioImporter {
             let mut conn = pool.get().map_err(IngestionError::Storage)?;
             storage::aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
 
-            let tx = conn.transaction().map_err(IngestionError::Sqlite)?;
+            let tx = storage::transaction_immediate(&mut conn).map_err(IngestionError::Storage)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO cache_consultas_diario (
@@ -347,13 +348,13 @@ impl SourceImporter for QueridoDiarioImporter {
                     }]
                 }).to_string();
 
-                let _ = stmt.execute(storage::rusqlite::params![
+                stmt.execute(storage::rusqlite::params![
                     "00000000000",
                     termo_str,
                     mun_str,
                     1,
                     payload
-                ]);
+                ]).map_err(IngestionError::Sqlite)?;
             }
             tx.commit().map_err(IngestionError::Sqlite)?;
             Ok(1)
@@ -422,7 +423,7 @@ impl SourceImporter for CnaOabImporter {
             let mut conn = pool.get().map_err(IngestionError::Storage)?;
             storage::aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
 
-            let tx = conn.transaction().map_err(IngestionError::Sqlite)?;
+            let tx = storage::transaction_immediate(&mut conn).map_err(IngestionError::Storage)?;
             let mut count = 0;
             {
                 let mut stmt = tx.prepare_cached(
@@ -443,7 +444,7 @@ impl SourceImporter for CnaOabImporter {
                         Err(_) => continue,
                     };
                     if record.len() >= 6 {
-                        let _ = stmt.execute(storage::rusqlite::params![
+                        let res = stmt.execute(storage::rusqlite::params![
                             record.get(0).unwrap_or(""),
                             record.get(1).unwrap_or(""),
                             record.get(2).unwrap_or("OAB"),
@@ -452,7 +453,9 @@ impl SourceImporter for CnaOabImporter {
                             record.get(5).unwrap_or("REGULAR"),
                             record.get(6).unwrap_or("ADVOGADO"),
                         ]);
-                        count += 1;
+                        if res.is_ok() {
+                            count += 1;
+                        }
                     }
                 }
             }
