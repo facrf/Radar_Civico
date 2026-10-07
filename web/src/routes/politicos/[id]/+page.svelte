@@ -10,7 +10,11 @@
 	let erro: string | null = null;
 	let politico: PoliticoDetalheResponse | null = null;
 	let geoData: PoliticoDespesasGeoResponse | null = null;
-	let abaAtiva: 'mapa' | 'categorias' | 'despesas' | 'eleitoral' = 'mapa';
+	let abaAtiva: 'mapa' | 'categorias' | 'despesas' | 'eleitoral' | 'evolucao' = 'mapa';
+
+	$: maxPatrimonio = politico?.evolucao_patrimonial && politico.evolucao_patrimonial.length > 0
+		? Math.max(...politico.evolucao_patrimonial.map((p) => p.valor_total), 1)
+		: 1;
 
 	// Gerenciamento de Foto Oficial (TSE/Câmara)
 	let buscandoFoto = false;
@@ -256,17 +260,31 @@
 			<span>Voltar ao Catálogo de Políticos</span>
 		</a>
 
-		{#if politico?.cpf_mascarado}
-			<a
-				href="/dossie/cpf/{politico.cpf_mascarado.replace(/\D/g, '')}"
-				class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600/20 border border-indigo-500/40 text-indigo-300 hover:bg-indigo-600/30 transition-colors flex items-center gap-1.5"
+		<div class="flex items-center gap-2">
+			<button
+				type="button"
+				on:click={() => window.print()}
+				class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 hover:text-white transition-colors flex items-center gap-1.5 shadow-sm"
+				title="Imprimir ou exportar dossiê oficial em PDF"
 			>
-				<span>Ver Dossiê Completo de Vínculos (CPF)</span>
-				<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+				<svg class="w-3.5 h-3.5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
 				</svg>
-			</a>
-		{/if}
+				<span>Imprimir / Exportar Dossiê</span>
+			</button>
+
+			{#if politico?.cpf_mascarado}
+				<a
+					href="/dossie/cpf/{politico.cpf_mascarado.replace(/\D/g, '')}"
+					class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600/20 border border-indigo-500/40 text-indigo-300 hover:bg-indigo-600/30 transition-colors flex items-center gap-1.5"
+				>
+					<span>Ver Dossiê de Vínculos (CPF)</span>
+					<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+					</svg>
+				</a>
+			{/if}
+		</div>
 	</div>
 
 	{#if loading}
@@ -582,6 +600,17 @@
 				</svg>
 				<span>Histórico Eleitoral & Bens</span>
 			</button>
+
+			<button
+				type="button"
+				on:click={() => (abaAtiva = 'evolucao')}
+				class="pb-3 px-3 transition-colors flex items-center gap-2 border-b-2 font-bold whitespace-nowrap {abaAtiva === 'evolucao' ? 'border-amber-400 text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}"
+			>
+				<svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+				</svg>
+				<span>Evolução Patrimonial ({politico.evolucao_patrimonial?.length || 0})</span>
+			</button>
 		</div>
 
 		<!-- Conteúdo das Abas -->
@@ -788,6 +817,153 @@
 					{/if}
 				</section>
 			</div>
+		{:else if abaAtiva === 'evolucao'}
+			<div class="space-y-6">
+				<!-- Alertas da Auditoria sobre Salto Patrimonial -->
+				{#if politico.alertas_evolucao_patrimonial && politico.alertas_evolucao_patrimonial.length > 0}
+					<div class="space-y-3">
+						{#each politico.alertas_evolucao_patrimonial as alerta}
+							<div class="p-5 rounded-2xl bg-amber-500/10 border-2 border-amber-500/40 text-amber-200 space-y-3 shadow-lg">
+								<div class="flex items-center justify-between gap-3">
+									<div class="flex items-center gap-2.5">
+										<span class="text-2xl">⚠️</span>
+										<div>
+											<h4 class="font-bold text-white text-sm">
+												Salto Patrimonial Desproporcional (+{alerta.variacao_percentual.toFixed(0)}%)
+											</h4>
+											<p class="text-xs text-amber-300/80">
+												Variação detectada entre as eleições de {alerta.ano_anterior} e {alerta.ano_recente}
+											</p>
+										</div>
+									</div>
+									<span class="px-2.5 py-1 text-xs font-mono font-bold rounded-lg {alerta.gravidade === 'CRITICA' ? 'bg-rose-500/30 text-rose-300 border border-rose-500/50' : 'bg-amber-500/30 text-amber-300 border border-amber-500/50'}">
+										{alerta.gravidade}
+									</span>
+								</div>
+
+								<p class="text-xs text-slate-200 leading-relaxed bg-slate-900/60 p-3.5 rounded-xl border border-amber-500/20 font-mono">
+									{alerta.motivo}
+								</p>
+
+								<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-1">
+									<div class="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
+										<span class="text-[10px] text-slate-400 block">Patrimônio ({alerta.ano_anterior}):</span>
+										<strong class="text-white font-mono">{formatarMoeda(alerta.valor_anterior)}</strong>
+									</div>
+									<div class="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
+										<span class="text-[10px] text-slate-400 block">Patrimônio ({alerta.ano_recente}):</span>
+										<strong class="text-emerald-300 font-mono">{formatarMoeda(alerta.valor_recente)}</strong>
+									</div>
+									<div class="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
+										<span class="text-[10px] text-slate-400 block">Acréscimo Líquido:</span>
+										<strong class="text-amber-300 font-mono">+{formatarMoeda(alerta.incremento_absoluto)}</strong>
+									</div>
+									<div class="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
+										<span class="text-[10px] text-slate-400 block">Salto Percentual:</span>
+										<strong class="text-rose-400 font-mono">+{alerta.variacao_percentual.toFixed(1)}%</strong>
+									</div>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
+
+				<!-- Linha do Tempo e Gráfico Visual de Evolução -->
+				<section class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg space-y-6">
+					<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-4">
+						<div>
+							<h3 class="text-base font-bold text-white flex items-center gap-2">
+								<span class="text-amber-400">📊</span>
+								<span>Evolução Histórica do Patrimônio Declarado ao TSE</span>
+							</h3>
+							<p class="text-xs text-slate-400 mt-0.5">
+								Comparação cronológica do patrimônio total a cada registro de candidatura
+							</p>
+						</div>
+						<div class="text-xs text-slate-400 font-mono">
+							Fonte Oficial: <span class="text-emerald-400">DivulgaCandContas / TSE</span>
+						</div>
+					</div>
+
+					{#if politico.evolucao_patrimonial && politico.evolucao_patrimonial.length > 0}
+						<!-- Barras Proporcionais por Eleição -->
+						<div class="space-y-4">
+							{#each politico.evolucao_patrimonial as ponto}
+								<div class="p-4 bg-slate-950/70 border border-slate-800/80 rounded-xl space-y-2 hover:border-slate-700 transition-colors">
+									<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+										<div class="flex items-center gap-2.5">
+											<span class="px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-300 font-mono font-bold text-xs">
+												{ponto.ano}
+											</span>
+											<span class="font-semibold text-white">{ponto.cargo}</span>
+										</div>
+
+										<div class="flex items-center gap-3">
+											{#if ponto.variacao_percentual_anterior !== null}
+												{#if ponto.variacao_percentual_anterior > 300}
+													<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">
+														+{ponto.variacao_percentual_anterior.toFixed(0)}% ({formatarMoeda(ponto.variacao_absoluta_anterior || 0)})
+													</span>
+												{:else if ponto.variacao_percentual_anterior > 0}
+													<span class="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+														+{ponto.variacao_percentual_anterior.toFixed(0)}% (+{formatarMoeda(ponto.variacao_absoluta_anterior || 0)})
+													</span>
+												{:else if ponto.variacao_percentual_anterior < 0}
+													<span class="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-800 text-slate-400">
+														{ponto.variacao_percentual_anterior.toFixed(0)}% ({formatarMoeda(ponto.variacao_absoluta_anterior || 0)})
+													</span>
+												{:else}
+													<span class="px-2 py-0.5 rounded text-[10px] font-mono text-slate-500">
+														Estável
+													</span>
+												{/if}
+											{:else}
+												<span class="px-2 py-0.5 rounded text-[10px] text-slate-500 font-mono">
+													Primeiro Registro
+												</span>
+											{/if}
+
+											<strong class="font-mono text-sm text-emerald-400 font-bold min-w-[120px] text-right">
+												{formatarMoeda(ponto.valor_total)}
+											</strong>
+										</div>
+									</div>
+
+									<!-- Barra visual -->
+									<div class="w-full bg-slate-900 rounded-full h-3 overflow-hidden border border-slate-800">
+										<div
+											class="h-full rounded-full transition-all duration-500 bg-gradient-to-r from-amber-500 to-emerald-400"
+											style="width: {Math.max((ponto.valor_total / maxPatrimonio) * 100, 2)}%"
+										></div>
+									</div>
+								</div>
+							{/each}
+						</div>
+
+						<!-- Resumo Consolidado do Período -->
+						<div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-slate-800 text-xs">
+							<div class="p-3.5 bg-slate-950/60 rounded-xl border border-slate-800">
+								<span class="text-[10px] text-slate-400 block">Primeira Declaração ({politico.evolucao_patrimonial[0]?.ano}):</span>
+								<strong class="text-white font-mono text-sm">{formatarMoeda(politico.evolucao_patrimonial[0]?.valor_total || 0)}</strong>
+							</div>
+							<div class="p-3.5 bg-slate-950/60 rounded-xl border border-slate-800">
+								<span class="text-[10px] text-slate-400 block">Declaração Mais Recente ({politico.evolucao_patrimonial[politico.evolucao_patrimonial.length - 1]?.ano}):</span>
+								<strong class="text-emerald-400 font-mono text-sm">{formatarMoeda(politico.evolucao_patrimonial[politico.evolucao_patrimonial.length - 1]?.valor_total || 0)}</strong>
+							</div>
+							<div class="p-3.5 bg-slate-950/60 rounded-xl border border-slate-800">
+								<span class="text-[10px] text-slate-400 block">Pico Patrimonial Atingido:</span>
+								<strong class="text-amber-300 font-mono text-sm">{formatarMoeda(maxPatrimonio)}</strong>
+							</div>
+						</div>
+					{:else}
+						<div class="p-10 text-center text-slate-400 space-y-2">
+							<span class="text-2xl block">📁</span>
+							<p>Nenhuma declaração histórica de bens encontrada para este candidato.</p>
+							<p class="text-xs text-slate-500">Dossiê aguardando ingestão de dados patrimoniais do TSE.</p>
+						</div>
+					{/if}
+				</section>
+			</div>
 		{/if}
 	{/if}
 </div>
@@ -873,4 +1049,40 @@
 		</div>
 	</div>
 {/if}
+
+<style>
+	@media print {
+		:global(body) {
+			background: #ffffff !important;
+			color: #000000 !important;
+		}
+		:global(nav),
+		:global(header),
+		:global(footer),
+		button,
+		input,
+		a[href^="/politicos"] {
+			display: none !important;
+		}
+		:global(.bg-slate-900),
+		:global(.bg-slate-950),
+		:global(.bg-slate-800) {
+			background: #ffffff !important;
+			border-color: #d1d5db !important;
+			color: #111827 !important;
+		}
+		:global(.text-white) {
+			color: #111827 !important;
+		}
+		:global(.text-slate-400),
+		:global(.text-slate-500) {
+			color: #4b5563 !important;
+		}
+		:global(.shadow-xl),
+		:global(.shadow-lg),
+		:global(.shadow-2xl) {
+			box-shadow: none !important;
+		}
+	}
+</style>
 

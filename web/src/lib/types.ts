@@ -55,6 +55,27 @@ export interface AlertaAuxilioItem {
 	data_alerta: string | null;
 }
 
+export interface PontoEvolucaoPatrimonial {
+	ano: number;
+	cargo: string;
+	valor_total: number;
+	variacao_percentual_anterior: number | null;
+	variacao_absoluta_anterior: number | null;
+}
+
+export interface AlertaEvolucaoPatrimonial {
+	politico_id: number;
+	politico_nome: string;
+	ano_anterior: number;
+	valor_anterior: number;
+	ano_recente: number;
+	valor_recente: number;
+	variacao_percentual: number;
+	incremento_absoluto: number;
+	gravidade: string;
+	motivo: string;
+}
+
 export interface DossiePolitico {
 	id: number;
 	sq_candidato: string | null;
@@ -70,6 +91,8 @@ export interface DossiePolitico {
 	historico_bens: BemItem[];
 	doadores: DoadorItem[];
 	alertas_auxilio?: AlertaAuxilioItem[];
+	evolucao_patrimonial?: PontoEvolucaoPatrimonial[];
+	alertas_evolucao_patrimonial?: AlertaEvolucaoPatrimonial[];
 }
 
 export interface AlertaItem {
@@ -418,6 +441,16 @@ export interface PoliticoDetalheResponse {
 	historico_bens: BemItem[];
 	doadores: DoadorItem[];
 	alertas_auxilio?: AlertaAuxilioItem[];
+	evolucao_patrimonial?: PontoEvolucaoPatrimonial[];
+	alertas_evolucao_patrimonial?: AlertaEvolucaoPatrimonial[];
+}
+
+export interface BackupItemInfo {
+	nome_arquivo: string;
+	tamanho_bytes: number;
+	tamanho_formatado: string;
+	criado_em: string;
+	download_url: string;
 }
 
 export interface PontoDespesaGeo {
