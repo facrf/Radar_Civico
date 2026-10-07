@@ -60,6 +60,15 @@ pub struct AlertaAuxilioItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PontoEvolucaoPatrimonial {
+    pub ano: i32,
+    pub cargo: String,
+    pub valor_total: f64,
+    pub variacao_percentual_anterior: Option<f64>,
+    pub variacao_absoluta_anterior: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DossiePolitico {
     pub id: i64,
     pub sq_candidato: Option<String>,
@@ -77,6 +86,10 @@ pub struct DossiePolitico {
     pub doadores: Vec<DoadorItem>,
     #[serde(default)]
     pub alertas_auxilio: Vec<AlertaAuxilioItem>,
+    #[serde(default)]
+    pub evolucao_patrimonial: Vec<PontoEvolucaoPatrimonial>,
+    #[serde(default)]
+    pub alertas_evolucao_patrimonial: Vec<auditor::AlertaEvolucaoPatrimonial>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -138,6 +151,10 @@ pub struct PoliticoDetalheResponse {
     pub historico_bens: Vec<BemItem>,
     pub doadores: Vec<DoadorItem>,
     pub alertas_auxilio: Vec<AlertaAuxilioItem>,
+    #[serde(default)]
+    pub evolucao_patrimonial: Vec<PontoEvolucaoPatrimonial>,
+    #[serde(default)]
+    pub alertas_evolucao_patrimonial: Vec<auditor::AlertaEvolucaoPatrimonial>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -436,6 +453,8 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
                 historico_bens: Vec::new(),
                 doadores: Vec::new(),
                 alertas_auxilio: Vec::new(),
+                evolucao_patrimonial: Vec::new(),
+                alertas_evolucao_patrimonial: Vec::new(),
             })
         })
         .ok();
@@ -562,6 +581,65 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
         }
     }
 
+    // Evolução Patrimonial e Heurística de Crescimento Desproporcional
+    {
+        let mut cands_cronologicas = dossie.candidaturas.clone();
+        cands_cronologicas.sort_by_key(|c| c.ano_eleicao);
+
+        let mut declaracoes_ano: Vec<auditor::DeclaracaoPatrimonioAno> = Vec::new();
+        for c in &cands_cronologicas {
+            if let Some(ultimo) = declaracoes_ano.last_mut() {
+                if ultimo.ano == c.ano_eleicao {
+                    if c.total_bens_declarados > ultimo.valor_total {
+                        ultimo.valor_total = c.total_bens_declarados;
+                        ultimo.cargo = c.cargo.clone();
+                    }
+                    continue;
+                }
+            }
+            declaracoes_ano.push(auditor::DeclaracaoPatrimonioAno {
+                ano: c.ano_eleicao,
+                cargo: c.cargo.clone(),
+                valor_total: c.total_bens_declarados,
+            });
+        }
+
+        for (i, decl) in declaracoes_ano.iter().enumerate() {
+            let (var_pct, var_abs) = if i == 0 {
+                (None, None)
+            } else {
+                let ant = &declaracoes_ano[i - 1];
+                let diff = decl.valor_total - ant.valor_total;
+                let pct = if ant.valor_total <= 0.0 {
+                    if diff > 0.0 {
+                        Some(1000.0)
+                    } else {
+                        Some(0.0)
+                    }
+                } else {
+                    Some(((diff / ant.valor_total) * 10000.0).round() / 100.0)
+                };
+                (pct, Some((diff * 100.0).round() / 100.0))
+            };
+
+            dossie.evolucao_patrimonial.push(PontoEvolucaoPatrimonial {
+                ano: decl.ano,
+                cargo: decl.cargo.clone(),
+                valor_total: decl.valor_total,
+                variacao_percentual_anterior: var_pct,
+                variacao_absoluta_anterior: var_abs,
+            });
+        }
+
+        dossie.alertas_evolucao_patrimonial = auditor::auditar_evolucao_patrimonial(
+            politico_id,
+            &dossie.nome_completo,
+            &declaracoes_ano,
+            300.0,
+            200_000.0,
+        );
+    }
+
     Ok(Some(dossie))
 }
 
@@ -575,6 +653,17 @@ pub async fn politico_dossie_handler(
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+/// GET /api/politicos/:id/evolucao-patrimonial e /api/v1/politicos/:id/evolucao-patrimonial
+pub async fn politico_evolucao_patrimonial_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<PontoEvolucaoPatrimonial>>, StatusCode> {
+    let dossie = carregar_dossie(&pool, id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(dossie.evolucao_patrimonial))
 }
 
 /// GET /api/politicos e /api/v1/politicos
@@ -1044,6 +1133,8 @@ pub async fn politico_detalhe_handler(
             historico_bens: Vec::new(),
             doadores: Vec::new(),
             alertas_auxilio: Vec::new(),
+            evolucao_patrimonial: Vec::new(),
+            alertas_evolucao_patrimonial: Vec::new(),
         });
 
     Ok(Json(PoliticoDetalheResponse {
@@ -1069,6 +1160,8 @@ pub async fn politico_detalhe_handler(
         historico_bens: dossie_base.historico_bens,
         doadores: dossie_base.doadores,
         alertas_auxilio: dossie_base.alertas_auxilio,
+        evolucao_patrimonial: dossie_base.evolucao_patrimonial,
+        alertas_evolucao_patrimonial: dossie_base.alertas_evolucao_patrimonial,
     }))
 }
 
@@ -1984,5 +2077,57 @@ mod tests {
         let resp_2020: ListarPoliticosResponse = serde_json::from_slice(&bytes_2020).unwrap();
         assert_eq!(resp_2020.total, 1);
         assert_eq!(resp_2020.politicos[0].nome_urna, "MULTIANO");
+    }
+
+    #[tokio::test]
+    async fn test_politico_evolucao_patrimonial_endpoint() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado)
+             VALUES ('FULANO EVOLUCAO', 'FULANO', '***.111.222-**')",
+            [],
+        ).unwrap();
+        let pol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, total_bens_declarados)
+             VALUES (?1, 2020, 'VEREADOR', 'PL', 'SP', 100000.0)",
+            [pol_id],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, total_bens_declarados)
+             VALUES (?1, 2024, 'PREFEITO', 'PL', 'SP', 1200000.0)",
+            [pol_id],
+        ).unwrap();
+
+        let app = Router::new()
+            .route("/api/politicos/:id/evolucao-patrimonial", get(politico_evolucao_patrimonial_handler))
+            .with_state(pool.clone());
+
+        let req = Request::builder()
+            .uri(format!("/api/politicos/{pol_id}/evolucao-patrimonial"))
+            .body(Body::empty())
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let pontos: Vec<PontoEvolucaoPatrimonial> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(pontos.len(), 2);
+        assert_eq!(pontos[0].ano, 2020);
+        assert_eq!(pontos[0].valor_total, 100000.0);
+        assert_eq!(pontos[1].ano, 2024);
+        assert_eq!(pontos[1].valor_total, 1200000.0);
+        assert_eq!(pontos[1].variacao_absoluta_anterior, Some(1100000.0));
+        assert_eq!(pontos[1].variacao_percentual_anterior, Some(1100.0));
+
+        let dossie = carregar_dossie(&pool, pol_id).unwrap().unwrap();
+        assert_eq!(dossie.alertas_evolucao_patrimonial.len(), 1);
+        assert_eq!(dossie.alertas_evolucao_patrimonial[0].ano_anterior, 2020);
+        assert_eq!(dossie.alertas_evolucao_patrimonial[0].ano_recente, 2024);
     }
 }

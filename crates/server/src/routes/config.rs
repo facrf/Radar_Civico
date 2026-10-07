@@ -2025,6 +2025,201 @@ pub async fn exportar_banco_handler(
     Ok((headers, body))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupItemInfo {
+    pub nome_arquivo: String,
+    pub tamanho_bytes: u64,
+    pub tamanho_formatado: String,
+    pub criado_em: String,
+    pub download_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TestarWebhookRequest {
+    pub url: String,
+    pub evento: Option<String>,
+}
+
+pub async fn criar_backup_handler(
+    State(pool): State<DbPool>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let backup_dir = std::path::Path::new("data/backups");
+    if let Err(e) = tokio::fs::create_dir_all(backup_dir).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "erro", "mensagem": format!("Falha ao criar diretório de backups: {e}")})),
+        ));
+    }
+
+    let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let nome_arquivo = format!("radar_backup_{timestamp}.sqlite");
+    let destino = backup_dir.join(&nome_arquivo);
+
+    pool.backup_to_file(&destino).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "erro", "mensagem": format!("Falha no snapshot SQLite: {e}")})),
+        )
+    })?;
+
+    let meta = tokio::fs::metadata(&destino).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "erro", "mensagem": format!("Falha ao ler metadados do backup: {e}")})),
+        )
+    })?;
+
+    let tamanho_bytes = meta.len();
+    let tamanho_formatado = format!("{:.2} MB", (tamanho_bytes as f64) / 1_048_576.0);
+
+    Ok(Json(json!({
+        "status": "sucesso",
+        "nome_arquivo": nome_arquivo,
+        "tamanho_bytes": tamanho_bytes,
+        "tamanho_formatado": tamanho_formatado,
+        "criado_em": Utc::now().to_rfc3339(),
+        "mensagem": "Backup quente do SQLite concluído com sucesso."
+    })))
+}
+
+pub async fn listar_backups_handler() -> Result<Json<Vec<BackupItemInfo>>, (StatusCode, Json<serde_json::Value>)> {
+    let backup_dir = std::path::Path::new("data/backups");
+    if !backup_dir.exists() {
+        return Ok(Json(Vec::new()));
+    }
+
+    let mut lista = Vec::new();
+    let mut entries = tokio::fs::read_dir(backup_dir).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "erro", "mensagem": format!("Falha ao ler diretório de backups: {e}")})),
+        )
+    })?;
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("sqlite") {
+            if let Ok(meta) = entry.metadata().await {
+                let nome_arquivo = entry.file_name().to_string_lossy().to_string();
+                let tamanho_bytes = meta.len();
+                let tamanho_formatado = format!("{:.2} MB", (tamanho_bytes as f64) / 1_048_576.0);
+                let criado_em = meta
+                    .modified()
+                    .ok()
+                    .map(|sys_time| {
+                        let dt: chrono::DateTime<Utc> = sys_time.into();
+                        dt.to_rfc3339()
+                    })
+                    .unwrap_or_else(|| Utc::now().to_rfc3339());
+
+                lista.push(BackupItemInfo {
+                    download_url: format!("/api/v1/config/backups/{nome_arquivo}"),
+                    nome_arquivo,
+                    tamanho_bytes,
+                    tamanho_formatado,
+                    criado_em,
+                });
+            }
+        }
+    }
+
+    lista.sort_by(|a, b| b.criado_em.cmp(&a.criado_em));
+    Ok(Json(lista))
+}
+
+pub async fn download_backup_arquivo_handler(
+    AxumPath(nome_arquivo): AxumPath<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let nome_limpo = std::path::Path::new(&nome_arquivo)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"status": "erro", "mensagem": "Nome de arquivo inválido"})),
+            )
+        })?;
+
+    let arquivo_path = std::path::Path::new("data/backups").join(nome_limpo);
+    if !arquivo_path.exists() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": "erro", "mensagem": "Arquivo de backup não encontrado"})),
+        ));
+    }
+
+    let file = tokio::fs::File::open(&arquivo_path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "erro", "mensagem": format!("Falha ao abrir backup: {e}")})),
+        )
+    })?;
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/vnd.sqlite3"));
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{nome_limpo}\"")) {
+        headers.insert(header::CONTENT_DISPOSITION, v);
+    }
+
+    Ok((headers, body))
+}
+
+pub async fn testar_webhook_handler(
+    Json(payload): Json<TestarWebhookRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let url = payload.url.trim();
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": "erro", "mensagem": "A URL do webhook deve começar com http:// ou https://"})),
+        ));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "erro", "mensagem": format!("Falha ao instanciar cliente HTTP: {e}")})),
+            )
+        })?;
+
+    let corpo_teste = serde_json::json!({
+        "evento": payload.evento.unwrap_or_else(|| "teste_conectividade".to_string()),
+        "origem": "Radar Cívico",
+        "timestamp": Utc::now().to_rfc3339(),
+        "mensagem": "Notificação de teste emitida pelo Radar Cívico.",
+        "status": "online"
+    });
+
+    match client.post(url).json(&corpo_teste).send().await {
+        Ok(resp) => {
+            let status_code = resp.status().as_u16();
+            let sucesso = resp.status().is_success();
+            Ok(Json(json!({
+                "sucesso": sucesso,
+                "status_code": status_code,
+                "mensagem": if sucesso {
+                    format!("Webhook entregue com sucesso! Código HTTP {status_code}.")
+                } else {
+                    format!("Webhook contatado, porém respondeu com código HTTP {status_code}.")
+                }
+            })))
+        }
+        Err(err) => {
+            Ok(Json(json!({
+                "sucesso": false,
+                "status_code": serde_json::Value::Null,
+                "mensagem": format!("Falha de conexão ao disparar webhook: {err}")
+            })))
+        }
+    }
+}
+
 pub async fn exportar_tabela_handler(
     State(pool): State<DbPool>,
     AxumPath(nome_tabela): AxumPath<String>,
@@ -2915,6 +3110,58 @@ mod tests {
             .unwrap();
         let res_invalido = app4.oneshot(req_invalido).await.unwrap();
         assert_eq!(res_invalido.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_backup_e_webhook_endpoints() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        storage::run_migrations(&mut conn).unwrap();
+
+        let app = crate::criar_router(pool.clone());
+
+        let req_backup = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/backup")
+            .body(Body::empty())
+            .unwrap();
+        let res_backup = app.clone().oneshot(req_backup).await.unwrap();
+        assert_eq!(res_backup.status(), StatusCode::OK);
+        let bytes_b = axum::body::to_bytes(res_backup.into_body(), usize::MAX).await.unwrap();
+        let resp_b: serde_json::Value = serde_json::from_slice(&bytes_b).unwrap();
+        assert_eq!(resp_b["status"], "sucesso");
+        assert!(resp_b["nome_arquivo"].as_str().is_some());
+
+        let req_list = Request::builder()
+            .uri("/api/v1/config/backups")
+            .body(Body::empty())
+            .unwrap();
+        let res_list = app.clone().oneshot(req_list).await.unwrap();
+        assert_eq!(res_list.status(), StatusCode::OK);
+        let bytes_l = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        let lista: Vec<BackupItemInfo> = serde_json::from_slice(&bytes_l).unwrap();
+        assert!(!lista.is_empty());
+
+        let req_wh_invalid = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/webhook/test")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"url": "invalid-url"}).to_string()))
+            .unwrap();
+        let res_wh_invalid = app.clone().oneshot(req_wh_invalid).await.unwrap();
+        assert_eq!(res_wh_invalid.status(), StatusCode::BAD_REQUEST);
+
+        let req_wh = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/webhook/test")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"url": "http://127.0.0.1:9999/webhook"}).to_string()))
+            .unwrap();
+        let res_wh = app.oneshot(req_wh).await.unwrap();
+        assert_eq!(res_wh.status(), StatusCode::OK);
+        let bytes_wh = axum::body::to_bytes(res_wh.into_body(), usize::MAX).await.unwrap();
+        let resp_wh: serde_json::Value = serde_json::from_slice(&bytes_wh).unwrap();
+        assert_eq!(resp_wh["sucesso"], false);
     }
 }
 

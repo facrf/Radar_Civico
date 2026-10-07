@@ -22,20 +22,23 @@ pub use dossie::{
 
 pub use alertas::{
     alertas_handler, auxilio_indevido_handler, carregar_alertas, registrar_alerta,
-    sincronizar_alertas_sistema, AlertaAuxilioResponseItem, AlertaItem, AlertasQueryParams,
-    AlertasResponse, AuxilioIndevidoQueryParams, AuxilioIndevidoResponse, NovoAlerta,
+    sincronizar_alertas_handler, sincronizar_alertas_sistema, AlertaAuxilioResponseItem, AlertaItem,
+    AlertasQueryParams, AlertasResponse, AuxilioIndevidoQueryParams, AuxilioIndevidoResponse,
+    NovoAlerta,
 };
 pub use busca::{busca_handler, BuscaParams, ItemBuscaUnificada, RespostaBusca};
 pub use config::{
-    carregar_parametros_auditoria, executar_ingestao_handler, exportar_banco_handler,
-    exportar_tabela_handler, import_status_handler, job_status_handler, obter_audit_rules_handler,
-    obter_favicon_handler, obter_icone_handler, obter_identidade_handler, remover_icone_handler,
-    salvar_audit_rules_handler, salvar_icone_handler, salvar_parametros_auditoria,
-    sincronizar_camara_handler, sincronizar_tse_handler, status_handler, upload_arquivo_handler,
-    verificar_tse_ano_handler, versao_handler, ConfigStatusResponse, ExecutarIngestaoRequest,
-    ExecutarIngestaoResponse, IdentidadeVisualResponse, ImportProgress, JobInfo,
-    ParametrosAuditoria, SalvarAuditRulesResponse, SalvarIconeResponse, SincronizarCamaraRequest,
-    SincronizarTseRequest, TotalRegistros, UploadResponse, VersaoResponse,
+    carregar_parametros_auditoria, criar_backup_handler, download_backup_arquivo_handler,
+    executar_ingestao_handler, exportar_banco_handler, exportar_tabela_handler, import_status_handler,
+    job_status_handler, listar_backups_handler, obter_audit_rules_handler, obter_favicon_handler,
+    obter_icone_handler, obter_identidade_handler, remover_icone_handler, salvar_audit_rules_handler,
+    salvar_icone_handler, salvar_parametros_auditoria, sincronizar_camara_handler,
+    sincronizar_tse_handler, status_handler, testar_webhook_handler, upload_arquivo_handler,
+    verificar_tse_ano_handler, versao_handler, BackupItemInfo, ConfigStatusResponse,
+    ExecutarIngestaoRequest, ExecutarIngestaoResponse, IdentidadeVisualResponse, ImportProgress,
+    JobInfo, ParametrosAuditoria, SalvarAuditRulesResponse, SalvarIconeResponse,
+    SincronizarCamaraRequest, SincronizarTseRequest, TestarWebhookRequest, TotalRegistros,
+    UploadResponse, VersaoResponse,
 };
 pub use grafo::{
     formatar_subgrafo, grafo_subgrafo_handler, CytoscapeEdge, CytoscapeEdgeData,
@@ -49,12 +52,12 @@ pub use investigar::{
 pub use politico::{
     buscar_foto_tse_handler, carregar_dossie, listar_politicos_handler, obter_foto_handler,
     politico_despesas_geo_handler, politico_detalhe_handler, politico_dossie_handler,
-    remover_foto_handler, salvar_foto_manual_handler, sincronizar_fotos_camara_handler,
-    AlertaAuxilioItem, BemItem, BuscarFotoResponse,
+    politico_evolucao_patrimonial_handler, remover_foto_handler, salvar_foto_manual_handler,
+    sincronizar_fotos_camara_handler, AlertaAuxilioItem, BemItem, BuscarFotoResponse,
     CandidaturaItem, DespesaCeapResumoItem, DoadorItem, DossiePolitico, GastoCategoriaItem,
     ItemPoliticoListagem, ListarPoliticosQueryParams, ListarPoliticosResponse,
-    PoliticoDespesasGeoResponse, PoliticoDetalheResponse, PontoDespesaGeo, ResumoFinanceiroPolitico,
-    SalvarFotoManualRequest,
+    PoliticoDespesasGeoResponse, PoliticoDetalheResponse, PontoDespesaGeo,
+    PontoEvolucaoPatrimonial, ResumoFinanceiroPolitico, SalvarFotoManualRequest,
 };
 
 use std::path::Path;
@@ -102,6 +105,8 @@ pub fn criar_router(pool: DbPool) -> Router {
         )
         .route("/api/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
         .route("/api/v1/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
+        .route("/api/politicos/:id/evolucao-patrimonial", get(politico_evolucao_patrimonial_handler))
+        .route("/api/v1/politicos/:id/evolucao-patrimonial", get(politico_evolucao_patrimonial_handler))
         .route("/api/politico/:id", get(politico_detalhe_handler))
         .route("/api/v1/politico/:id", get(politico_detalhe_handler))
         .route("/api/dossie/cnpj/:cnpj", get(dossie::dossie_cnpj_handler))
@@ -112,6 +117,8 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/grafo/:id", get(grafo_subgrafo_handler))
         .route("/api/auditoria/alertas", get(alertas_handler))
         .route("/api/v1/auditoria/alertas", get(alertas_handler))
+        .route("/api/auditoria/sincronizar", post(sincronizar_alertas_handler))
+        .route("/api/v1/auditoria/sincronizar", post(sincronizar_alertas_handler))
         .route("/api/auditoria/auxilio-indevido", get(auxilio_indevido_handler))
         .route("/api/v1/auditoria/auxilio-indevido", get(auxilio_indevido_handler))
         .route(
@@ -149,6 +156,15 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/config/camara/sincronizar", post(config::sincronizar_camara_handler))
         .route("/api/v1/config/ingestao/upload", post(upload_arquivo_handler))
         .route("/api/v1/config/exportar/banco", get(exportar_banco_handler))
+        .route("/api/config/backup", post(criar_backup_handler))
+        .route("/api/v1/config/backup", post(criar_backup_handler))
+        .route("/api/config/backups", get(listar_backups_handler))
+        .route("/api/v1/config/backups", get(listar_backups_handler))
+        .route("/api/v1/config/backups/:nome_arquivo", get(download_backup_arquivo_handler))
+        .route("/api/config/webhook/test", post(testar_webhook_handler))
+        .route("/api/v1/config/webhook/test", post(testar_webhook_handler))
+        .route("/api/settings/webhook/test", post(testar_webhook_handler))
+        .route("/api/v1/settings/webhook/test", post(testar_webhook_handler))
         .route("/api/v1/config/exportar/tabela/:nome_tabela", get(exportar_tabela_handler))
         .route(
             "/api/v1/config/icone",
