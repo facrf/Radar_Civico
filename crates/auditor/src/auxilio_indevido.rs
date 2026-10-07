@@ -67,8 +67,52 @@ pub fn auditar_recebimento_auxilio(
     let cpf_pol_clean: String = politico.cpf_mascarado.chars().filter(|c| c.is_ascii_digit()).collect();
     let cpf_ben_clean: String = beneficio.cpf_mascarado.chars().filter(|c| c.is_ascii_digit()).collect();
 
-    if !cpf_pol_clean.is_empty() && !cpf_ben_clean.is_empty() && cpf_pol_clean != cpf_ben_clean {
+    // Se ambos tiverem dígitos de CPF, valida a compatibilidade
+    if !cpf_pol_clean.is_empty() && !cpf_ben_clean.is_empty() {
+        if cpf_pol_clean.len() == 6 && cpf_ben_clean.len() == 11 {
+            if &cpf_ben_clean[3..9] != cpf_pol_clean {
+                return None;
+            }
+        } else if cpf_ben_clean.len() == 6 && cpf_pol_clean.len() == 11 {
+            if &cpf_pol_clean[3..9] != cpf_ben_clean {
+                return None;
+            }
+        } else if cpf_pol_clean != cpf_ben_clean {
+            return None;
+        }
+    } else {
         return None;
+    }
+
+    // Validação de compatibilidade de nome para evitar falso positivo entre homônimos de dígitos
+    if !politico.nome.trim().is_empty() && !beneficio.nome_beneficiario.trim().is_empty() {
+        let p_upper = politico.nome.trim().to_uppercase();
+        let b_upper = beneficio.nome_beneficiario.trim().to_uppercase();
+
+        let titulos_e_stopwords = [
+            "VEREADOR", "VEREADORA", "DEPUTADO", "DEPUTADA", "PREFEITO", "PREFEITA",
+            "GOVERNADOR", "SENADOR", "MINISTRO", "DR", "DRA", "DOUTOR", "DOUTORA",
+            "PROFESSOR", "PROFESSORA", "PROF", "PASTOR", "PASTORA", "DELEGADO", "DELEGADA",
+            "CORONEL", "CAPITAO", "SARGENTO", "PADRE", "BISPO", "IRMÃO", "IRMAO", "IRMA",
+            "DE", "DA", "DO", "DOS", "DAS", "E",
+        ];
+
+        let p_tokens: Vec<&str> = p_upper
+            .split_whitespace()
+            .filter(|w| w.len() > 1 && !titulos_e_stopwords.contains(w))
+            .collect();
+
+        let b_tokens: Vec<&str> = b_upper
+            .split_whitespace()
+            .filter(|w| w.len() > 1 && !titulos_e_stopwords.contains(w))
+            .collect();
+
+        if !p_tokens.is_empty() && !b_tokens.is_empty() {
+            let tem_termo_comum = p_tokens.iter().any(|pt| b_tokens.contains(pt));
+            if !tem_termo_comum {
+                return None;
+            }
+        }
     }
 
     let tem_mandato = politico.tem_mandato_vigente;
