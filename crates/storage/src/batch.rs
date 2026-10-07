@@ -1,6 +1,7 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::connection::transaction_immediate;
 use crate::error::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,7 +31,7 @@ pub fn batch_insert_receitas(conn: &mut Connection, receitas: &[NovaReceita]) ->
         return Ok(0);
     }
 
-    let tx = conn.transaction()?;
+    let tx = transaction_immediate(conn)?;
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO receitas_campanha (
@@ -60,7 +61,7 @@ pub fn batch_insert_despesas(conn: &mut Connection, despesas: &[NovaDespesa]) ->
         return Ok(0);
     }
 
-    let tx = conn.transaction()?;
+    let tx = transaction_immediate(conn)?;
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO despesas_campanha (
@@ -115,7 +116,7 @@ pub fn batch_insert_beneficios(conn: &mut Connection, beneficios: &[NovoBenefici
         return Ok(0);
     }
 
-    let tx = conn.transaction()?;
+    let tx = transaction_immediate(conn)?;
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO beneficios_emergenciais (
@@ -149,7 +150,7 @@ pub fn batch_insert_alertas_beneficio(
         return Ok(0);
     }
 
-    let tx = conn.transaction()?;
+    let tx = transaction_immediate(conn)?;
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO alertas_beneficio_indevido (
@@ -199,7 +200,7 @@ pub fn batch_insert_despesas_parlamentares(
         return Ok(0);
     }
 
-    let tx = conn.transaction()?;
+    let tx = transaction_immediate(conn)?;
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO despesas_parlamentares (
@@ -246,7 +247,7 @@ pub fn batch_insert_bens_candidato(
         return Ok(0);
     }
 
-    let tx = conn.transaction()?;
+    let tx = transaction_immediate(conn)?;
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO bens_candidato (
@@ -294,7 +295,7 @@ pub fn batch_insert_candidatos_tse(
         return Ok(0);
     }
 
-    let tx = conn.transaction()?;
+    let tx = transaction_immediate(conn)?;
     {
         let mut stmt_politico = tx.prepare_cached(
             "INSERT INTO politicos (

@@ -15,7 +15,8 @@ pub fn apply_pragmas(conn: &Connection) -> Result<()> {
          PRAGMA cache_size = -64000;
          PRAGMA temp_store = MEMORY;
          PRAGMA mmap_size = 30000000000;
-         PRAGMA foreign_keys = ON;"
+         PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 15000;"
     )?;
     Ok(())
 }
@@ -26,7 +27,9 @@ pub fn aplicar_pragmas_ingestao(conn: &Connection) -> Result<()> {
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -64000;
-         PRAGMA temp_store = MEMORY;"
+         PRAGMA temp_store = MEMORY;
+         PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 15000;"
     )?;
     Ok(())
 }
@@ -203,6 +206,33 @@ impl DbPool {
         };
         apply_pragmas(&conn)?;
         Ok(conn)
+    }
+}
+
+/// Inicia uma transação com comportamento IMMEDIATE e retentativas em caso de contenção de bloqueio (SQLITE_LOCKED/BUSY).
+pub fn transaction_immediate(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(10);
+    loop {
+        let ptr = conn as *mut Connection;
+        match unsafe { (*ptr).transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) } {
+            Ok(tx) => return Ok(tx),
+            Err(e) => {
+                let is_locked = match &e {
+                    rusqlite::Error::SqliteFailure(err, _) => {
+                        err.code == rusqlite::ErrorCode::DatabaseLocked
+                            || err.code == rusqlite::ErrorCode::DatabaseBusy
+                            || err.extended_code == 262
+                    }
+                    _ => false,
+                };
+                if is_locked && start.elapsed() < timeout {
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                    continue;
+                }
+                return Err(StorageError::Sqlite(e));
+            }
+        }
     }
 }
 

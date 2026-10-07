@@ -500,7 +500,7 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
             .unwrap_or(false);
 
         if !applied {
-            let tx = conn.transaction()?;
+            let tx = crate::connection::transaction_immediate(conn)?;
             tx.execute_batch(migration.sql)?;
             tx.execute(
                 "INSERT INTO _migrations (version, name) VALUES (?1, ?2)",
