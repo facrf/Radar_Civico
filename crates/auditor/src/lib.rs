@@ -1,7 +1,10 @@
 pub mod auxilio_indevido;
+pub mod cartel_licitacao;
 pub mod combustivel;
 pub mod conflito_oab;
+pub mod doador_incompativel;
 pub mod error;
+pub mod evolucao_patrimonial;
 pub mod fornecedores_fantasmas;
 pub mod triangulacao;
 pub mod ubiquidade;
@@ -11,16 +14,28 @@ pub use auxilio_indevido::{
     AlertaAuxilioIndevido, MotivoAuxilioIndevido, PoliticoPerfilAuxilio, RegistroAuxilio,
     LIMITE_BENS_AUXILIO,
 };
+pub use cartel_licitacao::{
+    auditar_socios_comuns_contratos, AlertaConluioLicitacao, ContratoEmpresaSocio,
+};
 pub use combustivel::{
     auditar_abastecimento, auditar_abastecimento_com_limite, auditar_lote_abastecimentos,
-    calcular_litros, Abastecimento, AlertaCombustivel, LIMITE_TANQUE_VEICULO_LEVE,
+    auditar_sobrepreco_combustivel, calcular_litros, Abastecimento, AlertaCombustivel,
+    AlertaSobreprecoCombustivel, LIMITE_SOBREPRECO_PERCENTUAL, LIMITE_TANQUE_VEICULO_LEVE,
     PRECO_PADRAO_GASOLINA_ANP,
 };
 pub use conflito_oab::{
     auditar_conflito_oab, auditar_lote_conflitos_oab, is_cargo_incompativel, AlertaConflitoOab,
     OcupanteCargo, RegistroOab,
 };
+pub use doador_incompativel::{
+    auditar_doador_incompativel, AlertaDoadorIncompativel, BeneficiarioSocialAnalise,
+    DoadorCampanhaAnalise, LIMITE_DOACAO_SUSPEITA_BENEFICIARIO,
+};
 pub use error::{AuditorError, Result};
+pub use evolucao_patrimonial::{
+    auditar_evolucao_patrimonial, AlertaEvolucaoPatrimonial, DeclaracaoPatrimonioAno,
+    LIMITE_INCREMENTO_ABSOLUTO_PADRAO, LIMITE_VARIACAO_PERCENTUAL_PADRAO,
+};
 pub use fornecedores_fantasmas::{
     auditar_fornecedores_fantasmas, AlertaFornecedorFantasma, FornecedorReceita, PagamentoFornecedor,
     TipoIrregularidadeFornecedor, DIAS_LIMITE_RECEM_CRIADA,

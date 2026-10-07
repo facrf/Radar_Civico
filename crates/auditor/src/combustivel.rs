@@ -89,6 +89,64 @@ pub fn auditar_lote_abastecimentos(
         .collect()
 }
 
+pub const LIMITE_SOBREPRECO_PERCENTUAL: f64 = 1.50; // 150% da referência ANP
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AlertaSobreprecoCombustivel {
+    pub abastecimento_id: i64,
+    pub parlamentar_nome: String,
+    pub preco_unitario_pago: f64,
+    pub preco_referencia_anp: f64,
+    pub sobrepreco_percentual: f64,
+    pub valor_total: f64,
+    pub litros_declarados: f64,
+    pub gravidade: String,
+    pub motivo: String,
+}
+
+pub fn auditar_sobrepreco_combustivel(
+    abastecimento: &Abastecimento,
+    preco_referencia_anp: Option<f64>,
+) -> Option<AlertaSobreprecoCombustivel> {
+    let litros = abastecimento.litros_declarados?;
+    if litros <= 0.0 || abastecimento.valor <= 0.0 {
+        return None;
+    }
+
+    let preco_ref = abastecimento
+        .preco_combustivel_anp
+        .or(preco_referencia_anp)
+        .unwrap_or(PRECO_PADRAO_GASOLINA_ANP);
+
+    if preco_ref <= 0.0 {
+        return None;
+    }
+
+    let preco_pago = abastecimento.valor / litros;
+    if preco_pago > preco_ref * LIMITE_SOBREPRECO_PERCENTUAL {
+        let sobrepreco_pct = ((preco_pago - preco_ref) / preco_ref) * 100.0;
+        let gravidade = if sobrepreco_pct > 100.0 { "CRITICA" } else { "ALTA" };
+        let motivo = format!(
+            "Preço unitário pago (R$ {:.2}/L) excede em {:.1}% o valor médio de referência da ANP (R$ {:.2}/L).",
+            preco_pago, sobrepreco_pct, preco_ref
+        );
+
+        Some(AlertaSobreprecoCombustivel {
+            abastecimento_id: abastecimento.id,
+            parlamentar_nome: abastecimento.parlamentar_nome.clone(),
+            preco_unitario_pago: (preco_pago * 100.0).round() / 100.0,
+            preco_referencia_anp: preco_ref,
+            sobrepreco_percentual: (sobrepreco_pct * 100.0).round() / 100.0,
+            valor_total: abastecimento.valor,
+            litros_declarados: litros,
+            gravidade: gravidade.to_string(),
+            motivo,
+        })
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +254,23 @@ mod tests {
         let alertas = auditar_lote_abastecimentos(&lista, None);
         assert_eq!(alertas.len(), 1);
         assert_eq!(alertas[0].abastecimento_id, 11);
+    }
+
+    #[test]
+    fn test_combustivel_sobrepreco_detectado() {
+        let abastecimento = Abastecimento {
+            id: 20,
+            parlamentar_nome: "DEP CARO".to_string(),
+            data_emissao: "2024-03-01".to_string(),
+            valor: 500.0,
+            litros_declarados: Some(40.0), // R$ 12,50 por litro! (vs R$ 5,80 ANP)
+            preco_combustivel_anp: Some(5.80),
+        };
+
+        let alerta = auditar_sobrepreco_combustivel(&abastecimento, None);
+        assert!(alerta.is_some());
+        let a = alerta.unwrap();
+        assert_eq!(a.preco_unitario_pago, 12.50);
+        assert_eq!(a.gravidade, "CRITICA");
     }
 }
