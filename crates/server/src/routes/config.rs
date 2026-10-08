@@ -796,7 +796,7 @@ pub async fn sincronizar_tse_handler(
                     let producer_handle = tokio::spawn(async move {
                         for (idx, url) in urls_producer.iter().enumerate() {
                             let progresso_atual = 40 + ((idx * 50) / total_urls) as u8;
-                            let nome_url = url.split('/').last().unwrap_or("pacote.zip").to_string();
+                            let nome_url = url.split('/').next_back().unwrap_or("pacote.zip").to_string();
                             atualizar_job(
                                 &job_id_producer,
                                 progresso_atual,
@@ -1332,13 +1332,13 @@ fn processar_csv_records<R: std::io::Read>(
                 ],
             );
 
-            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR REPLACE INTO empresas_qsa (
                         cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let cnpj_raw = col_cnpj_basico.and_then(|i| record.get(i)).unwrap_or("00000000").trim();
@@ -1379,7 +1379,7 @@ fn processar_csv_records<R: std::io::Read>(
                     }
                 }
             }
-            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            tx.commit().map_err(std::io::Error::other)?;
         }
         "CONSELHOS_OAB" | "REGISTROS_PROFISSIONAIS" | "OAB" => {
             let col_nome = find_col(&headers, &["PESSOA_NOME", "NOME_ADVOGADO", "NOME", "ADVOGADO"]);
@@ -1390,13 +1390,13 @@ fn processar_csv_records<R: std::io::Read>(
             let col_sit = find_col(&headers, &["SITUACAO_REGISTRO", "SITUACAO_REGULAR", "SITUACAO", "STATUS"]);
             let col_tipo = find_col(&headers, &["TIPO_INSCRICAO", "TIPO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR REPLACE INTO registros_profissionais (
                         pessoa_nome, cpf_mascarado, orgao_emissor, numero_registro, seccional_uf, situacao_registro, tipo_inscricao
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("").trim();
@@ -1415,7 +1415,7 @@ fn processar_csv_records<R: std::io::Read>(
                     }
                 }
             }
-            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            tx.commit().map_err(std::io::Error::other)?;
         }
         "PNCP_CONTRATOS" | "PNCP" => {
             let col_orgao = find_col(&headers, &["ORGAO_CONTRATANTE", "ORGAO_NOME", "ORGAO", "CONTRATANTE"]);
@@ -1425,13 +1425,13 @@ fn processar_csv_records<R: std::io::Read>(
             let col_dt_ass = find_col(&headers, &["DATA_ASSINATURA", "DATAASSINATURA", "DT_ASSINATURA"]);
             let col_dt_fim = find_col(&headers, &["DATA_TERMINO", "DATAVIGENCIAFIM", "DT_TERMINO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO contratos_publicos (
                         orgao_contratante, fornecedor_cnpj, valor_contratado, objeto, data_assinatura, data_termino
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let orgao = col_orgao.and_then(|i| record.get(i)).unwrap_or("ORGAO PUBLICO").trim();
@@ -1447,7 +1447,7 @@ fn processar_csv_records<R: std::io::Read>(
                     }
                 }
             }
-            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            tx.commit().map_err(std::io::Error::other)?;
         }
         "CEAP_NOTAS" | "CEAP" => {
             let col_parlamentar = find_col(&headers, &["TXNOMEPARLAMENTAR", "PARLAMENTAR_NOME", "NOME_PARLAMENTAR", "NOME"]);
@@ -1458,14 +1458,14 @@ fn processar_csv_records<R: std::io::Read>(
             let col_forn_nome = find_col(&headers, &["FORNECEDOR", "FORNECEDOR_NOME", "NOME_FORNECEDOR"]);
             let col_forn_doc = find_col(&headers, &["CNPJCPF", "FORNECEDOR_CNPJ_CPF", "CNPJ_FORNECEDOR"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO despesas_parlamentares (
                         casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado, data_emissao,
                         categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, numero_documento
                      ) VALUES ('CAMARA', ?1, ?2, ?3, 'GERAL', ?4, ?5, ?6, ?7)"
-                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let parl = col_parlamentar.and_then(|i| record.get(i)).unwrap_or("PARLAMENTAR").trim();
@@ -1482,7 +1482,7 @@ fn processar_csv_records<R: std::io::Read>(
                     }
                 }
             }
-            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            tx.commit().map_err(std::io::Error::other)?;
         }
         "TSE_RECEITAS" => {
             let col_doc = find_col(&headers, &["NR_CPF_CNPJ_DOADOR", "DOADOR_CPF_CNPJ", "CPF_CNPJ_DOADOR", "CPF_DOADOR", "CNPJ_DOADOR"]);
@@ -1491,13 +1491,13 @@ fn processar_csv_records<R: std::io::Read>(
             let col_data = find_col(&headers, &["DT_RECEITA", "DATA_RECEITA", "DATA"]);
             let col_desc = find_col(&headers, &["DS_RECEITA", "DESCRICAO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO receitas_campanha (
                         candidatura_id, doador_cpf_cnpj, doador_nome, valor, data_receita, descricao
                      ) VALUES (NULL, ?1, ?2, ?3, ?4, ?5)"
-                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("00000000000").trim();
@@ -1512,7 +1512,7 @@ fn processar_csv_records<R: std::io::Read>(
                     }
                 }
             }
-            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            tx.commit().map_err(std::io::Error::other)?;
         }
         "TSE_DESPESAS" => {
             let col_doc = find_col(&headers, &["NR_CPF_CNPJ_FORNECEDOR", "FORNECEDOR_CPF_CNPJ", "CPF_CNPJ_FORNECEDOR", "FORNECEDOR_CNPJ"]);
@@ -1521,13 +1521,13 @@ fn processar_csv_records<R: std::io::Read>(
             let col_data = find_col(&headers, &["DT_DESPESA", "DATA_DESPESA", "DATA"]);
             let col_desc = find_col(&headers, &["DS_DESPESA", "DESCRICAO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO despesas_campanha (
                         candidatura_id, fornecedor_cpf_cnpj, fornecedor_nome, valor, data_despesa, descricao
                      ) VALUES (NULL, ?1, ?2, ?3, ?4, ?5)"
-                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("00000000000100").trim();
@@ -1542,7 +1542,7 @@ fn processar_csv_records<R: std::io::Read>(
                     }
                 }
             }
-            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            tx.commit().map_err(std::io::Error::other)?;
         }
         "TSE_CANDIDATOS" => {
             let col_sq = find_col(&headers, &["SQ_CANDIDATO"]);
@@ -1550,13 +1550,13 @@ fn processar_csv_records<R: std::io::Read>(
             let col_urna = find_col(&headers, &["NM_URNA_CANDIDATO", "NOME_URNA"]);
             let col_cpf = find_col(&headers, &["NR_CPF_CANDIDATO", "CPF_MASCARADO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR IGNORE INTO politicos (
                         sq_candidato, cpf_mascarado, nome_completo, nome_urna
                      ) VALUES (?1, ?2, ?3, ?4)"
-                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
@@ -1570,20 +1570,20 @@ fn processar_csv_records<R: std::io::Read>(
                     }
                 }
             }
-            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            tx.commit().map_err(std::io::Error::other)?;
         }
         "DIARIOS_OFICIAIS" => {
             let col_doc = find_col(&headers, &["DOADOR_CPF_CNPJ", "CPF_CNPJ", "DOCUMENTO"]);
             let col_termo = find_col(&headers, &["TERMO_PESQUISADO", "TERMO", "NOME"]);
             let col_mun = find_col(&headers, &["MUNICIPIO_UF", "MUNICIPIO", "UF"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO cache_consultas_diario (
                         doador_cpf_cnpj, termo_pesquisado, municipio_uf, ocorrencias_encontradas, payload_json
                      ) VALUES (?1, ?2, ?3, 1, '{\"fonte\":\"upload_manual\"}')"
-                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("").trim();
@@ -1596,7 +1596,7 @@ fn processar_csv_records<R: std::io::Read>(
                     }
                 }
             }
-            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            tx.commit().map_err(std::io::Error::other)?;
         }
         "AUXILIO_EMERGENCIAL" | "BENEFICIOS_SOCIAIS" | "AUXILIO" | "CGU_AUXILIO" => {
             let col_cpf = find_col(&headers, &["CPF_BENEFICIARIO", "CPF", "NR_CPF", "CPF_RESPONSAVEL"]);
@@ -1608,13 +1608,13 @@ fn processar_csv_records<R: std::io::Read>(
             let col_valor = find_col(&headers, &["VALOR_BENEFICIO", "VALOR", "VR_BENEFICIO", "VR_PAGTO"]);
             let col_enq = find_col(&headers, &["ENQUADRAMENTO", "TIPO_BENEFICIARIO", "TIPO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO beneficios_emergenciais (
                         cpf_mascarado, nome_beneficiario, municipio, uf, mes_disponibilizacao, parcela, valor, enquadramento
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
-                ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let raw_cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
@@ -1637,7 +1637,7 @@ fn processar_csv_records<R: std::io::Read>(
                     count += 1;
                 }
             }
-            tx.commit().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            tx.commit().map_err(std::io::Error::other)?;
 
             // Roda auditoria automática para criar alertas de auxilio indevido
             let _ = auditor::executar_auditoria_auxilio_sqlite(conn);
@@ -1725,7 +1725,7 @@ pub async fn upload_arquivo_handler(
         let tipo_clone = tipo_escolhido.clone();
 
         tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
-            let mut conn = pool_clone.get().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            let mut conn = pool_clone.get().map_err(|e| std::io::Error::other(e.to_string()))?;
             let file = std::fs::File::open(&zip_path)?;
             let mut archive = zip::ZipArchive::new(file)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -1773,7 +1773,7 @@ pub async fn upload_arquivo_handler(
         let tipo_clone = tipo_escolhido.clone();
 
         tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
-            let mut conn = pool_clone.get().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            let mut conn = pool_clone.get().map_err(|e| std::io::Error::other(e.to_string()))?;
             let mut file = std::fs::File::open(&csv_path)?;
             let mut sample = [0u8; 2048];
             use std::io::Read;
@@ -3058,7 +3058,7 @@ mod tests {
 
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let progress: ImportProgress = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(progress.percentage >= 0.0, true);
+        assert!(progress.percentage >= 0.0);
 
         // Testa também rota sob /api/v1
         let app_v1 = crate::criar_router(pool.clone());

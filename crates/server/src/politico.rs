@@ -728,7 +728,7 @@ pub async fn listar_politicos_handler(
 
     // 1. Busca textual inteligente (nome completo, nome de urna ou CPF real diferente de -4)
     if !q_term.is_empty() {
-        let q_clean = q_term.replace('.', "").replace('-', "");
+        let q_clean = q_term.replace(['.', '-'], "");
         if q_clean.len() >= 3 && q_clean.chars().all(|c| c.is_ascii_digit()) {
             where_clauses.push(
                 "(UPPER(p.nome_completo) LIKE ? OR UPPER(p.nome_urna) LIKE ? OR (p.cpf_mascarado IS NOT NULL AND p.cpf_mascarado != '-4' AND p.cpf_mascarado LIKE ?))"
@@ -919,7 +919,7 @@ pub async fn listar_politicos_handler(
     let total_paginas = if total == 0 {
         1
     } else {
-        (total + limit - 1) / limit
+        total.div_ceil(limit)
     };
 
     Ok(Json(ListarPoliticosResponse {

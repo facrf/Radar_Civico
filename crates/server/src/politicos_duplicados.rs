@@ -219,11 +219,7 @@ pub async fn resumo_politicos_duplicados_handler(
         )
         .unwrap_or(0);
 
-    let registros_redundantes = if registros_nascimento_total > grupos_nascimento {
-        registros_nascimento_total - grupos_nascimento
-    } else {
-        0
-    };
+    let registros_redundantes = registros_nascimento_total.saturating_sub(grupos_nascimento);
 
     // 3. Deputados CEAP que possuem correspondente com sq_candidato no TSE
     let grupos_ceap: usize = conn
@@ -364,7 +360,7 @@ pub async fn listar_politicos_duplicados_handler(
     let total_paginas = if total_grupos == 0 {
         1
     } else {
-        (total_grupos + limit - 1) / limit
+        total_grupos.div_ceil(limit)
     };
 
     let resumo = ResumoDuplicadosResponse {

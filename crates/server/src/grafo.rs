@@ -317,7 +317,7 @@ mod tests {
 
         // Teste de busca por ID numérico do banco
         let req_num = Request::builder()
-            .uri(&format!("/api/v1/grafo/{}", n1))
+            .uri(format!("/api/v1/grafo/{}", n1))
             .body(Body::empty())
             .unwrap();
 

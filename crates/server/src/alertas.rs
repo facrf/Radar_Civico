@@ -918,10 +918,8 @@ pub async fn auxilio_indevido_handler(
     }).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut alertas = Vec::new();
-    for r in rows {
-        if let Ok(item) = r {
-            alertas.push(item);
-        }
+    for item in rows.flatten() {
+        alertas.push(item);
     }
 
     let total = alertas.len();

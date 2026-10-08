@@ -158,10 +158,10 @@ pub async fn descobrir_urls_tse_com_base(
                                 }
                                 let fmt = res.format.trim().to_uppercase();
                                 let u = res.url.trim();
-                                if fmt == "ZIP" || u.to_lowercase().ends_with(".zip") {
-                                    if !urls.contains(&res.url) {
-                                        urls.push(res.url);
-                                    }
+                                if (fmt == "ZIP" || u.to_lowercase().ends_with(".zip"))
+                                    && !urls.contains(&res.url)
+                                {
+                                    urls.push(res.url);
                                 }
                             }
                         }
@@ -178,10 +178,10 @@ pub async fn descobrir_urls_tse_com_base(
                 }
                 let fmt = res.format.trim().to_uppercase();
                 let u = res.url.trim();
-                if fmt == "ZIP" || u.to_lowercase().ends_with(".zip") {
-                    if !urls.contains(&res.url) {
-                        urls.push(res.url);
-                    }
+                if (fmt == "ZIP" || u.to_lowercase().ends_with(".zip"))
+                    && !urls.contains(&res.url)
+                {
+                    urls.push(res.url);
                 }
             }
         }
