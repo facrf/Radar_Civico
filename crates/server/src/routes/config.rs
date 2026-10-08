@@ -775,68 +775,115 @@ pub async fn sincronizar_tse_handler(
                     })
                     .await;
 
-                    let mut total_inseridos = 0;
                     let client = reqwest::Client::builder()
                         .timeout(std::time::Duration::from_secs(60))
                         .user_agent("RadarCivico/1.0 (Auditoria TSE CKAN)")
                         .build()
                         .unwrap_or_default();
 
-                    for (idx, url) in urls.iter().enumerate() {
-                        let progresso_atual = 40 + ((idx * 50) / total_urls) as u8;
-                        let nome_url = url.split('/').last().unwrap_or("pacote.zip");
-                        atualizar_job(
-                            &job_id_spawn,
-                            progresso_atual,
-                            &format!("Baixando pacote ({}/{}) {}...", idx + 1, total_urls, nome_url),
-                        )
-                        .await;
+                    // Pipeline Produtor-Consumidor: download assíncrono em paralelo à ingestão no SQLite
+                    struct PacoteDownload {
+                        idx: usize,
+                        nome_url: String,
+                        bytes: Vec<u8>,
+                    }
 
-                        if let Ok(resp) = client.get(url).send().await {
-                            if resp.status().is_success() {
-                                if let Ok(bytes) = resp.bytes().await {
-                                    atualizar_job(
-                                        &job_id_spawn,
-                                        progresso_atual + 5,
-                                        &format!("Processando ZIP {} em background thread (batching 25.000)...", nome_url),
-                                    )
-                                    .await;
+                    let (tx, mut rx) = tokio::sync::mpsc::channel::<PacoteDownload>(2);
+                    let urls_producer = urls.clone();
+                    let client_producer = client.clone();
+                    let job_id_producer = job_id_spawn.clone();
 
-                                    let pool_batch = pool_spawn.clone();
-                                    let nome_url_str = nome_url.to_string();
-                                    let bytes_vec = bytes.to_vec();
+                    let producer_handle = tokio::spawn(async move {
+                        for (idx, url) in urls_producer.iter().enumerate() {
+                            let progresso_atual = 40 + ((idx * 50) / total_urls) as u8;
+                            let nome_url = url.split('/').last().unwrap_or("pacote.zip").to_string();
+                            atualizar_job(
+                                &job_id_producer,
+                                progresso_atual,
+                                &format!("Baixando pacote ({}/{}) {}...", idx + 1, total_urls, nome_url),
+                            )
+                            .await;
 
-                                    // ISOLAMENTO DE CPU/IO: Delega parse, unzipping e transações do SQLite para o pool de blocking
-                                    let batch_res = tokio::task::spawn_blocking(move || -> Result<usize, String> {
-                                        let mut conn = pool_batch.get().map_err(|e| e.to_string())?;
-                                        // Aplica PRAGMAs de alta performance na conexão da thread de ingestão
-                                        storage::aplicar_pragmas_ingestao(&conn).map_err(|e| e.to_string())?;
-
-                                        ingestion::tse_ckan::processar_zip_tse_bytes_com_progresso(
-                                            &mut conn,
-                                            &bytes_vec,
-                                            &nome_url_str,
-                                            idx,
-                                            total_urls,
-                                            start_instant,
-                                        )
-                                        .map_err(|e| e.to_string())
-                                    })
-                                    .await;
-
-                                    if let Ok(Ok(inseridos)) = batch_res {
-                                        total_inseridos += inseridos;
+                            match client_producer.get(url).send().await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    match resp.bytes().await {
+                                        Ok(bytes) => {
+                                            let item = PacoteDownload {
+                                                idx,
+                                                nome_url,
+                                                bytes: bytes.to_vec(),
+                                            };
+                                            if tx.send(item).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Erro ao ler bytes do pacote TSE {url}: {e}");
+                                        }
                                     }
+                                }
+                                Ok(resp) => {
+                                    tracing::warn!("Download TSE {url} retornou status {}", resp.status());
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Falha de requisição no download TSE {url}: {e}");
                                 }
                             }
                         }
+                    });
+
+                    let mut total_inseridos = 0;
+                    while let Some(pacote) = rx.recv().await {
+                        let progresso_atual = 40 + ((pacote.idx * 50) / total_urls) as u8;
+                        atualizar_job(
+                            &job_id_spawn,
+                            progresso_atual + 5,
+                            &format!(
+                                "Processando ZIP ({}/{}) {} em background thread (batching 25.000)...",
+                                pacote.idx + 1,
+                                total_urls,
+                                pacote.nome_url
+                            ),
+                        )
+                        .await;
+
+                        let pool_batch = pool_spawn.clone();
+                        let nome_url_str = pacote.nome_url;
+                        let bytes_vec = pacote.bytes;
+                        let idx = pacote.idx;
+
+                        let batch_res = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+                            let mut conn = pool_batch.get().map_err(|e| e.to_string())?;
+                            storage::aplicar_pragmas_ingestao(&conn).map_err(|e| e.to_string())?;
+
+                            let res = ingestion::tse_ckan::processar_zip_tse_bytes_com_progresso(
+                                &mut conn,
+                                &bytes_vec,
+                                &nome_url_str,
+                                idx,
+                                total_urls,
+                                start_instant,
+                            )
+                            .map_err(|e| e.to_string());
+
+                            let _ = storage::restaurar_pragmas_padrao(&conn);
+                            res
+                        })
+                        .await;
+
+                        if let Ok(Ok(inseridos)) = batch_res {
+                            total_inseridos += inseridos;
+                        }
                     }
 
-                    // Recria os índices secundários após o término da carga massiva
+                    let _ = producer_handle.await;
+
+                    // Recria os índices secundários e restaura PRAGMAs após o término da carga massiva
                     let pool_idx_post = pool_spawn.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = pool_idx_post.get() {
                             let _ = storage::recriar_indices_tse(&conn);
+                            let _ = storage::restaurar_pragmas_padrao(&conn);
                         }
                     })
                     .await;
