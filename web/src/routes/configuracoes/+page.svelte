@@ -181,6 +181,14 @@
 	let verificandoTse = false;
 	let msgTseVerificacao: string | null = null;
 
+	// Sincronização Unificada (Sincronizar Tudo)
+	let sincronizandoTudo = false;
+	let modalSincronizarTudo = false;
+	let incluirTseTudo = true;
+	let incluirCamaraTudo = true;
+	let incluirReceitaTudo = true;
+	let incluirAuditoriaTudo = true;
+
 	// Monitor de Job & Ingestão
 	let activeJob: JobInfo | null = null;
 	let pollingInterval: any = null;
@@ -455,6 +463,37 @@
 			alert(`Erro na sincronização da Câmara: ${e.message}`);
 		} finally {
 			sincronizandoCamara = false;
+		}
+	}
+
+	async function dispararSincronizarTudo() {
+		sincronizandoTudo = true;
+		modalSincronizarTudo = false;
+		try {
+			const res = await fetch('/api/v1/config/sincronizar-tudo', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					ano_eleitoral: anoTse,
+					ano_fiscal: anoCeap,
+					incluir_tse: incluirTseTudo,
+					incluir_camara: incluirCamaraTudo,
+					incluir_receita: incluirReceitaTudo,
+					incluir_auditoria: incluirAuditoriaTudo
+				})
+			});
+
+			if (!res.ok) {
+				const err = await res.json();
+				throw new Error(err.erro || 'Falha ao despachar sincronização unificada');
+			}
+
+			const data = await res.json();
+			iniciarPollingJob(data.job_id);
+		} catch (e: any) {
+			alert(`Erro na sincronização unificada: ${e.message}`);
+		} finally {
+			sincronizandoTudo = false;
 		}
 	}
 
@@ -748,6 +787,27 @@
 					<span>Último sync: <strong class="text-white">{status.ultimo_evento_sincronizacao}</strong></span>
 				</div>
 			{/if}
+
+			<button
+				type="button"
+				on:click={() => (modalSincronizarTudo = true)}
+				disabled={sincronizandoTudo || (activeJob?.fonte === 'SINCRONIZAR_TUDO' && activeJob?.status === 'PROCESSANDO')}
+				class="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-sm font-semibold rounded-lg shadow-sm shadow-emerald-950/40 transition-all disabled:opacity-50 cursor-pointer"
+				title="Sincronizar todas as fontes oficiais (TSE, CEAP, QSA, OAB) com proteção anti-duplicação e auditoria"
+			>
+				{#if sincronizandoTudo || (activeJob?.fonte === 'SINCRONIZAR_TUDO' && activeJob?.status === 'PROCESSANDO')}
+					<svg class="w-4 h-4 animate-spin text-white" fill="none" viewBox="0 0 24 24">
+						<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+						<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+					</svg>
+					<span>Sincronizando Tudo...</span>
+				{:else}
+					<svg class="w-4 h-4 text-emerald-100" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+					</svg>
+					<span>Sincronizar Tudo</span>
+				{/if}
+			</button>
 
 			<button
 				on:click={carregarStatus}
@@ -1439,6 +1499,42 @@
 			<span class="w-2 h-2 rounded-full bg-emerald-400"></span>
 			Disparo de Ingestão Online (Background Tasks)
 		</h2>
+
+		<!-- Card de Destaque: Sincronização Unificada (Sincronizar Tudo) -->
+		<div class="mb-6 p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-850 to-emerald-950/40 border border-emerald-500/30 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+			<div class="space-y-1">
+				<div class="flex items-center gap-2">
+					<span class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+						Pipeline Orquestrado
+					</span>
+					<span class="text-xs text-slate-400">TSE + CEAP + Sócios QSA + OAB + Auditoria</span>
+				</div>
+				<h3 class="text-lg font-bold text-white flex items-center gap-2">
+					<span>Sincronização Unificada &bull; Sincronizar Tudo</span>
+				</h3>
+				<p class="text-xs text-slate-300 max-w-2xl leading-relaxed">
+					Executa a varredura completa das bases oficiais de forma sequencial e idempotente. Políticos e candidaturas são consolidados via UPSERT e as notas da CEAP usam chave única anti-duplicidade, recalculando as anomalias do Motor de Auditoria ao final.
+				</p>
+			</div>
+
+			<button
+				type="button"
+				on:click={() => (modalSincronizarTudo = true)}
+				disabled={sincronizandoTudo || (activeJob?.fonte === 'SINCRONIZAR_TUDO' && activeJob?.status === 'PROCESSANDO')}
+				class="flex-shrink-0 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold rounded-xl shadow-md shadow-emerald-950/50 transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+			>
+				{#if sincronizandoTudo || (activeJob?.fonte === 'SINCRONIZAR_TUDO' && activeJob?.status === 'PROCESSANDO')}
+					<svg class="w-4 h-4 animate-spin text-white" fill="none" viewBox="0 0 24 24">
+						<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+						<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+					</svg>
+					<span>Processando Pipeline...</span>
+				{:else}
+					<span class="text-base">🔄</span>
+					<span>Sincronizar Tudo</span>
+				{/if}
+			</button>
+		</div>
 
 		<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
 			<!-- Fonte 1: TSE -->
@@ -2289,4 +2385,103 @@
 			</span>
 		</div>
 	</footer>
+
+	<!-- Modal de Configuração & Confirmação: Sincronizar Tudo -->
+	{#if modalSincronizarTudo}
+		<div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+			<div class="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-lg w-full p-6 space-y-6 shadow-2xl text-slate-200">
+				<!-- Cabeçalho do Modal -->
+				<div class="flex items-center justify-between border-b border-slate-800 pb-4">
+					<div class="flex items-center gap-3">
+						<div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-lg">
+							🔄
+						</div>
+						<div>
+							<h3 class="text-lg font-bold text-white">Sincronizar Tudo</h3>
+							<p class="text-xs text-slate-400">Atualização Completa &bull; Radar Cívico</p>
+						</div>
+					</div>
+					<button
+						type="button"
+						on:click={() => (modalSincronizarTudo = false)}
+						class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+					>
+						<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+						</svg>
+					</button>
+				</div>
+
+				<!-- Explicação de Idempotência e Tempo -->
+				<div class="space-y-3 text-xs leading-relaxed text-slate-300">
+					<div class="p-3.5 bg-emerald-950/30 border border-emerald-500/30 rounded-xl space-y-1.5">
+						<div class="flex items-center gap-2 font-semibold text-emerald-300 text-xs">
+							<span>🛡️ Idempotência e Proteção Anti-Duplicidade</span>
+						</div>
+						<p class="text-slate-300 text-[11px] leading-relaxed">
+							O sistema não joga cópias repetidas no banco: políticos e candidaturas são atualizados via <strong>UPSERT</strong>, notas fiscais da CEAP usam <strong>índice único</strong> anti-duplicação, e o Motor de Auditoria recalcula apenas anomalias válidas.
+						</p>
+					</div>
+
+					<div class="p-3 bg-slate-800/60 border border-slate-700/60 rounded-xl flex items-center justify-between text-xs">
+						<span class="text-slate-400">⏱️ Tempo Médio Estimado:</span>
+						<span class="font-semibold text-amber-300 font-mono">~8 a 15 minutos (em background)</span>
+					</div>
+				</div>
+
+				<!-- Opções de Escopo e Anos -->
+				<div class="space-y-3 pt-1">
+					<p class="text-xs font-semibold text-white uppercase tracking-wider">Fontes a Sincronizar:</p>
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+						<label class="flex items-center gap-2 p-2.5 bg-slate-800/40 border border-slate-700/60 rounded-lg cursor-pointer hover:bg-slate-800/70">
+							<input type="checkbox" bind:checked={incluirCamaraTudo} class="rounded bg-slate-950 border-slate-600 text-emerald-500 focus:ring-emerald-500" />
+							<span>Câmara CEAP ({anoCeap})</span>
+						</label>
+
+						<label class="flex items-center gap-2 p-2.5 bg-slate-800/40 border border-slate-700/60 rounded-lg cursor-pointer hover:bg-slate-800/70">
+							<input type="checkbox" bind:checked={incluirTseTudo} class="rounded bg-slate-950 border-slate-600 text-emerald-500 focus:ring-emerald-500" />
+							<span>TSE Eleitoral ({anoTse})</span>
+						</label>
+
+						<label class="flex items-center gap-2 p-2.5 bg-slate-800/40 border border-slate-700/60 rounded-lg cursor-pointer hover:bg-slate-800/70">
+							<input type="checkbox" bind:checked={incluirReceitaTudo} class="rounded bg-slate-950 border-slate-600 text-emerald-500 focus:ring-emerald-500" />
+							<span>Sócios QSA & OAB</span>
+						</label>
+
+						<label class="flex items-center gap-2 p-2.5 bg-slate-800/40 border border-slate-700/60 rounded-lg cursor-pointer hover:bg-slate-800/70">
+							<input type="checkbox" bind:checked={incluirAuditoriaTudo} class="rounded bg-slate-950 border-slate-600 text-emerald-500 focus:ring-emerald-500" />
+							<span>Motor de Auditoria</span>
+						</label>
+					</div>
+				</div>
+
+				<!-- Ações -->
+				<div class="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+					<button
+						type="button"
+						on:click={() => (modalSincronizarTudo = false)}
+						class="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+					>
+						Cancelar
+					</button>
+					<button
+						type="button"
+						on:click={dispararSincronizarTudo}
+						disabled={sincronizandoTudo || (!incluirCamaraTudo && !incluirTseTudo && !incluirReceitaTudo && !incluirAuditoriaTudo)}
+						class="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-md transition-colors disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+					>
+						{#if sincronizandoTudo}
+							<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+							</svg>
+							<span>Iniciando...</span>
+						{:else}
+							<span>Iniciar Sincronização Agora</span>
+						{/if}
+					</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 </div>

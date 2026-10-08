@@ -357,6 +357,119 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
                 }
             }
         }
+
+        // 5c. Busca por nome de sócio e razão social / empresário em empresas_qsa (utiliza índices B-Tree de alta performance)
+        if termo_trim.len() >= 2 && resultados.len() < limite {
+            let termo_upper = termo_trim.to_uppercase();
+            let prefix_fim = format!("{}~", termo_upper);
+
+            // Busca por nome do sócio (socio_nome)
+            if resultados.len() < limite {
+                let rem_limite = limite - resultados.len();
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio
+                     FROM empresas_qsa
+                     WHERE socio_nome >= ?1 AND socio_nome < ?2
+                     LIMIT ?3",
+                ) {
+                    let rows = stmt.query_map(
+                        storage::rusqlite::params![termo_upper, prefix_fim, rem_limite],
+                        |row| {
+                            let cnpj_b: String = row.get(0)?;
+                            let cnpj_o: String = row.get(1)?;
+                            let cnpj_d: String = row.get(2)?;
+                            let razao: String = row.get(3)?;
+                            let socio_doc: String = row.get(4)?;
+                            let socio_nome: String = row.get(5)?;
+                            let qualif: Option<String> = row.get(6)?;
+
+                            let cnpj_fmt = format!(
+                                "{}.{}.{}/{}-{}",
+                                if cnpj_b.len() >= 2 { &cnpj_b[0..2] } else { &cnpj_b },
+                                if cnpj_b.len() >= 5 { &cnpj_b[2..5] } else { "" },
+                                if cnpj_b.len() >= 8 { &cnpj_b[5..8] } else { "" },
+                                cnpj_o,
+                                cnpj_d
+                            );
+
+                            let subtitulo = Some(format!(
+                                "Sócio em {} (CNPJ: {}){}",
+                                razao,
+                                cnpj_fmt,
+                                qualif.map(|q| format!(" - {}", q)).unwrap_or_default()
+                            ));
+
+                            Ok(ItemBuscaUnificada::novo(
+                                "SOCIO",
+                                None,
+                                &cnpj_fmt,
+                                &socio_nome,
+                                subtitulo,
+                            ).com_documento(&socio_doc))
+                        },
+                    )?;
+
+                    for r in rows.flatten() {
+                        if !resultados.iter().any(|existing| existing.identificador == r.identificador && existing.titulo == r.titulo) {
+                            resultados.push(r);
+                        }
+                    }
+                }
+            }
+
+            // Busca por razão social / nome empresarial (razao_social)
+            if resultados.len() < limite {
+                let rem_limite = limite - resultados.len();
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio
+                     FROM empresas_qsa
+                     WHERE razao_social >= ?1 AND razao_social < ?2
+                     LIMIT ?3",
+                ) {
+                    let rows = stmt.query_map(
+                        storage::rusqlite::params![termo_upper, prefix_fim, rem_limite],
+                        |row| {
+                            let b: String = row.get(0)?;
+                            let o: String = row.get(1)?;
+                            let d: String = row.get(2)?;
+                            let razao: String = row.get(3)?;
+                            let _s_doc: String = row.get(4)?;
+                            let s_nome: String = row.get(5)?;
+                            let qualif: Option<String> = row.get(6)?;
+
+                            let cnpj_fmt = format!(
+                                "{}.{}.{}/{}-{}",
+                                if b.len() >= 2 { &b[0..2] } else { &b },
+                                if b.len() >= 5 { &b[2..5] } else { "" },
+                                if b.len() >= 8 { &b[5..8] } else { "" },
+                                o,
+                                d
+                            );
+
+                            let subtitulo = if !s_nome.is_empty() && s_nome != "HOLDING / SOCIO" && !s_nome.contains("***") {
+                                Some(format!("Empresa / QSA ({}) - Sócio: {}{}", cnpj_fmt, s_nome, qualif.map(|q| format!(" ({})", q)).unwrap_or_default()))
+                            } else {
+                                Some(format!("Empresa / QSA ({})", cnpj_fmt))
+                            };
+
+                            Ok(ItemBuscaUnificada::novo(
+                                "EMPRESA_QSA",
+                                None,
+                                &cnpj_fmt,
+                                &razao,
+                                subtitulo,
+                            ).com_documento(&cnpj_fmt))
+                        },
+                    )?;
+
+                    for r in rows.flatten() {
+                        if !resultados.iter().any(|existing| existing.identificador == r.identificador && existing.titulo == r.titulo) {
+                            resultados.push(r);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Ok(resultados)
@@ -492,5 +605,57 @@ mod tests {
         let resposta2: RespostaBusca = serde_json::from_slice(&bytes2).unwrap();
         assert_eq!(resposta2.total, 1);
         assert_eq!(resposta2.resultados[0].tipo, "SOCIO");
+    }
+
+    #[tokio::test]
+    async fn test_busca_qsa_empresario_e_empresa_por_nome() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO empresas_qsa (cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio)
+             VALUES ('98765432', '0001', '10', 'BETA INOVACOES TECNOLOGICAS LTDA', '***111222**', 'ROBERTO CARLOS EMPRESARIO', '49-Sócio-Administrador')",
+            [],
+        ).unwrap();
+
+        let app = Router::new()
+            .route("/api/v1/busca", get(busca_handler))
+            .with_state(pool);
+
+        // 1. Busca pelo nome do sócio/empresário ("ROBERTO CARLOS")
+        let req1 = Request::builder()
+            .uri("/api/v1/busca?q=ROBERTO+CARLOS")
+            .body(Body::empty())
+            .unwrap();
+
+        let res1 = app.clone().oneshot(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
+
+        let bytes1 = axum::body::to_bytes(res1.into_body(), usize::MAX).await.unwrap();
+        let resp1: RespostaBusca = serde_json::from_slice(&bytes1).unwrap();
+        assert_eq!(resp1.total, 1);
+        let item1 = &resp1.resultados[0];
+        assert_eq!(item1.tipo, "SOCIO");
+        assert_eq!(item1.titulo, "ROBERTO CARLOS EMPRESARIO");
+        assert_eq!(item1.documento.as_deref(), Some("***111222**"));
+        assert!(item1.subtitulo.as_ref().unwrap().contains("BETA INOVACOES"));
+
+        // 2. Busca pelo nome da empresa / razão social ("BETA INOVACOES")
+        let req2 = Request::builder()
+            .uri("/api/v1/busca?q=BETA+INOVACOES")
+            .body(Body::empty())
+            .unwrap();
+
+        let res2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+
+        let bytes2 = axum::body::to_bytes(res2.into_body(), usize::MAX).await.unwrap();
+        let resp2: RespostaBusca = serde_json::from_slice(&bytes2).unwrap();
+        assert_eq!(resp2.total, 1);
+        let item2 = &resp2.resultados[0];
+        assert_eq!(item2.tipo, "EMPRESA_QSA");
+        assert_eq!(item2.titulo, "BETA INOVACOES TECNOLOGICAS LTDA");
+        assert!(item2.subtitulo.as_ref().unwrap().contains("ROBERTO CARLOS EMPRESARIO"));
     }
 }

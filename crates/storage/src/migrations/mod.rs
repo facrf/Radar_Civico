@@ -477,6 +477,32 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_politicos_foto_url ON politicos(foto_url);
         ",
     },
+    Migration {
+        version: 14,
+        name: "deduplicar_e_criar_indice_unico_despesas_parlamentares",
+        sql: "
+            -- Remove duplicatas históricas preservando o registro de menor id
+            DELETE FROM despesas_parlamentares
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM despesas_parlamentares
+                GROUP BY casa_legislativa, parlamentar_nome, data_emissao, fornecedor_cnpj_cpf, valor_liquido, COALESCE(numero_documento, '')
+            );
+
+            -- Cria índice único idempotente para impedir novas duplicatas
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_desp_parl_dedup ON despesas_parlamentares(
+                casa_legislativa, parlamentar_nome, data_emissao, fornecedor_cnpj_cpf, valor_liquido, COALESCE(numero_documento, '')
+            );
+        ",
+    },
+    Migration {
+        version: 15,
+        name: "criar_indices_busca_empresas_qsa",
+        sql: "
+            CREATE INDEX IF NOT EXISTS idx_qsa_razao ON empresas_qsa(razao_social);
+            CREATE INDEX IF NOT EXISTS idx_qsa_socio_nome ON empresas_qsa(socio_nome);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -932,6 +958,70 @@ mod tests {
 
         assert_eq!(cargo, "VEREADOR");
         assert_eq!(partido, "PL");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_dedup_despesas_parlamentares() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        // Insere despesa parlamentar
+        conn.execute(
+            "INSERT INTO despesas_parlamentares (
+                casa_legislativa, parlamentar_nome, data_emissao, categoria_despesa,
+                fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, numero_documento
+             ) VALUES ('CAMARA', 'DEPUTADO A', '2024-05-01', 'COMBUSTIVEL', 'POSTO 1', '11111111000100', 200.0, 'NF10')",
+            [],
+        )?;
+
+        // Tentativa de duplicata deve falhar ou ser ignorada pelo índice único
+        let res = conn.execute(
+            "INSERT INTO despesas_parlamentares (
+                casa_legislativa, parlamentar_nome, data_emissao, categoria_despesa,
+                fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, numero_documento
+             ) VALUES ('CAMARA', 'DEPUTADO A', '2024-05-01', 'COMBUSTIVEL', 'POSTO 1', '11111111000100', 200.0, 'NF10')",
+            [],
+        );
+        assert!(res.is_err(), "Deveria falhar devido ao índice único idx_desp_parl_dedup");
+
+        // INSERT OR IGNORE não falha e mantém contagem em 1
+        let rows = conn.execute(
+            "INSERT OR IGNORE INTO despesas_parlamentares (
+                casa_legislativa, parlamentar_nome, data_emissao, categoria_despesa,
+                fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, numero_documento
+             ) VALUES ('CAMARA', 'DEPUTADO A', '2024-05-01', 'COMBUSTIVEL', 'POSTO 1', '11111111000100', 200.0, 'NF10')",
+            [],
+        )?;
+        assert_eq!(rows, 0);
+
+        let count: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
+        assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_indices_empresas_qsa() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        let count_razao: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_qsa_razao'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count_razao, 1);
+
+        let count_socio: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_qsa_socio_nome'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count_socio, 1);
 
         Ok(())
     }

@@ -987,6 +987,7 @@ pub async fn dossie_cpf_handler(
             }
         }
 
+        let mut qsa_records = Vec::new();
         if !qsa_cpf_candidates.is_empty() {
             let placeholders = vec!["?"; qsa_cpf_candidates.len()].join(", ");
             let sql_qsa = format!(
@@ -1009,10 +1010,66 @@ pub async fn dossie_cpf_handler(
                     ))
                 }) {
                     for r in rows.flatten() {
-                        let c_full = format!("{}{}{}", r.0, r.1, r.2);
-                        if nome_identificado.is_empty() && !r.4.is_empty() {
-                            nome_identificado = r.4.clone();
+                        qsa_records.push(r);
+                    }
+                }
+            }
+        } else if !termo_nome.is_empty() {
+            let termo_fim = format!("{}~", termo_nome);
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio
+                 FROM empresas_qsa
+                 WHERE socio_nome >= ?1 AND socio_nome < ?2
+                 LIMIT 30",
+            ) {
+                if let Ok(rows) = stmt.query_map([&termo_nome, &termo_fim], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                    ))
+                }) {
+                    for r in rows.flatten() {
+                        qsa_records.push(r);
+                    }
+                }
+            }
+
+            if qsa_records.is_empty() {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio
+                     FROM empresas_qsa
+                     WHERE razao_social >= ?1 AND razao_social < ?2
+                     LIMIT 30",
+                ) {
+                    if let Ok(rows) = stmt.query_map([&termo_nome, &termo_fim], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, Option<String>>(5)?,
+                        ))
+                    }) {
+                        for r in rows.flatten() {
+                            qsa_records.push(r);
                         }
+                    }
+                }
+            }
+        }
+
+        for r in qsa_records {
+            let c_full = format!("{}{}{}", r.0, r.1, r.2);
+            if nome_identificado.is_empty() && !r.4.is_empty() && r.4 != "HOLDING / SOCIO" && !r.4.contains("***") {
+                nome_identificado = r.4.clone();
+            } else if nome_identificado.is_empty() && !r.3.is_empty() {
+                nome_identificado = r.3.clone();
+            }
 
                         // Consulta CEAP da empresa
                         let mut total_ceap_emp = 0.0;
@@ -1089,9 +1146,6 @@ pub async fn dossie_cpf_handler(
                             total_ceap: total_ceap_emp,
                             total_pncp: total_pncp_emp,
                         });
-                    }
-                }
-            }
         }
     }
 

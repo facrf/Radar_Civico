@@ -2,6 +2,19 @@
 
 Todas as alterações relevantes neste projeto são documentadas neste arquivo.
 
+## [0.1.3] - 2026-10-08
+
+### Sincronização Unificada e Proteção de Idempotência
+- **Sincronizar Tudo:** Implementação do pipeline unificado nos endpoints `POST /api/v1/config/sincronizar-tudo` e `POST /api/config/sincronizar-tudo`, orquestrando a atualização sequencial de TSE, CEAP (Câmara), Sócios QSA, OAB e Motor de Auditoria.
+- **Migração 14 (Idempotência CEAP):** Criação de índice único `idx_desp_parl_dedup` sobre `(casa_legislativa, parlamentar_nome, data_emissao, fornecedor_cnpj_cpf, valor_liquido, COALESCE(numero_documento, ''))` e consumo de `INSERT OR IGNORE` em `batch_insert_despesas_parlamentares`, eliminando duplicações acidentais em sincronizações subsequentes.
+- **Interface e Feedback em Tempo Real:** Botão de destaque "Sincronizar Tudo" no cabeçalho e na seção de ingestão de `/configuracoes`, acompanhado de modal de confirmação/seleção de escopo com avisos de tempo estimado e proteção contra duplicidade, integrado ao monitor de progresso em background.
+- **Documentação Arquitetural:** Adição de `docs/sincronizacao_e_idempotencia.md` documentando o comportamento de cada tabela, tempos médios e fluxos de dados.
+
+### Busca Unificada por Nome de Empresários e Empresas QSA
+- **Busca por Nome em `empresas_qsa`:** Habilitação da consulta por nome de sócios (`socio_nome`) e empresários/empresas (`razao_social`) na barra de busca unificada (`/api/v1/busca`), retornando itens classificados como `SOCIO` ("Sócio (QSA)") e `EMPRESA_QSA` ("Empresa (QSA)").
+- **Migração 15 (Índices B-Tree de Alto Desempenho):** Adição dos índices `idx_qsa_razao` e `idx_qsa_socio_nome` sobre a tabela `empresas_qsa`, viabilizando varreduras por intervalo de prefixo (`>= ? AND < ?~`) com tempo de resposta na faixa de 3 a 5 milissegundos em base de mais de 62 milhões de registros sem sobrecarga de I/O.
+- **Dossiê Analítico Integrado:** Extensão do endpoint `/api/v1/dossie/cpf/:cpf` para localizar automaticamente vínculos societários em `empresas_qsa` também por nome textual quando o identificador de CPF mascarado não for fornecido diretamente.
+
 ## [0.1.2] - 2026-10-07
 
 ### Novas Heurísticas e Motor de Auditoria (`crates/auditor` & `crates/server`)

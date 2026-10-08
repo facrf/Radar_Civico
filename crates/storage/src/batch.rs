@@ -201,9 +201,10 @@ pub fn batch_insert_despesas_parlamentares(
     }
 
     let tx = transaction_immediate(conn)?;
+    let mut inseridos = 0;
     {
         let mut stmt = tx.prepare_cached(
-            "INSERT INTO despesas_parlamentares (
+            "INSERT OR IGNORE INTO despesas_parlamentares (
                 casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado,
                 data_emissao, categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf,
                 valor_liquido, numero_documento, url_nota_fiscal, detalhes_litros
@@ -211,7 +212,7 @@ pub fn batch_insert_despesas_parlamentares(
         )?;
 
         for d in despesas {
-            stmt.execute(rusqlite::params![
+            let changes = stmt.execute(rusqlite::params![
                 d.casa_legislativa,
                 d.parlamentar_nome,
                 d.parlamentar_cpf_mascarado,
@@ -224,11 +225,14 @@ pub fn batch_insert_despesas_parlamentares(
                 d.url_nota_fiscal,
                 d.detalhes_litros,
             ])?;
+            if changes > 0 {
+                inseridos += 1;
+            }
         }
     }
     tx.commit()?;
 
-    Ok(despesas.len())
+    Ok(inseridos)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -538,6 +542,13 @@ mod tests {
 
         let total: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
         assert_eq!(total, 2);
+
+        // Testa idempotência: re-inserir o mesmo lote não duplica e retorna 0 novos inseridos
+        let re_inseridos = batch_insert_despesas_parlamentares(&mut conn, &despesas)?;
+        assert_eq!(re_inseridos, 0);
+
+        let total_pos: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
+        assert_eq!(total_pos, 2);
 
         Ok(())
     }
