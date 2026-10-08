@@ -64,6 +64,9 @@ pub fn selecionar_arquivos_zip(nomes: &[String]) -> Vec<String> {
     for nome in nomes {
         let lower = nome.to_lowercase();
         if lower.ends_with(".csv") && !lower.contains("__macosx") {
+            if lower.contains("rede_social") {
+                continue;
+            }
             if lower.contains("_brasil.csv") {
                 brasil_files.push(nome.clone());
             } else {
@@ -77,6 +80,18 @@ pub fn selecionar_arquivos_zip(nomes: &[String]) -> Vec<String> {
     } else {
         outros_csvs
     }
+}
+
+pub fn deve_ignorar_recurso_ckan(nome: &str, url: &str) -> bool {
+    let lower_name = nome.to_lowercase();
+    let lower_url = url.to_lowercase();
+    let padroes = ["foto_cand", "fotos", "proposta_governo", "extrato_bancario", "fefc_"];
+    for p in padroes {
+        if lower_name.contains(p) || lower_url.contains(p) {
+            return true;
+        }
+    }
+    false
 }
 
 pub async fn descobrir_urls_tse(ano: u32, datasets: &[&str]) -> Result<Vec<String>> {
@@ -138,6 +153,9 @@ pub async fn descobrir_urls_tse_com_base(
                             alias_resp.json::<CkanResponse<CkanPackage>>().await
                         {
                             for res in ckan_data.result.resources {
+                                if deve_ignorar_recurso_ckan(&res.name, &res.url) {
+                                    continue;
+                                }
                                 let fmt = res.format.trim().to_uppercase();
                                 let u = res.url.trim();
                                 if fmt == "ZIP" || u.to_lowercase().ends_with(".zip") {
@@ -155,6 +173,9 @@ pub async fn descobrir_urls_tse_com_base(
 
         if let Ok(ckan_data) = resp.json::<CkanResponse<CkanPackage>>().await {
             for res in ckan_data.result.resources {
+                if deve_ignorar_recurso_ckan(&res.name, &res.url) {
+                    continue;
+                }
                 let fmt = res.format.trim().to_uppercase();
                 let u = res.url.trim();
                 if fmt == "ZIP" || u.to_lowercase().ends_with(".zip") {
@@ -386,7 +407,9 @@ where
             total_inseridos += n;
             on_batch(n);
         }
-    } else {
+    } else if (header_line.contains("NM_CANDIDATO") || header_line.contains("NOME_COMPLETO"))
+        && (header_line.contains("NR_CPF_CANDIDATO") || header_line.contains("SQ_CANDIDATO"))
+    {
         // 4. Candidatos (consulta_cand)
         let col_ano = find_col_idx(&headers, &["ANO_ELEICAO"]);
         let col_uf = find_col_idx(&headers, &["SG_UF", "UF"]);
@@ -459,6 +482,8 @@ where
             total_inseridos += n;
             on_batch(n);
         }
+    } else {
+        tracing::info!("CSV ignorado por não corresponder aos schemas suportados (candidatos, receitas, despesas, bens)");
     }
 
     Ok(total_inseridos)
@@ -804,5 +829,41 @@ SQ_CANDIDATO;DS_TIPO_BEM_CANDIDATO;DS_BEM_CANDIDATO;VR_BEM_CANDIDATO\n\
             .query_row("SELECT sum(valor_declarado) FROM bens_candidato", [], |r| r.get(0))
             .unwrap();
         assert_eq!(valor_total, 570000.0);
+    }
+
+    #[test]
+    fn test_tse_ckan_filtro_recursos_ckan_e_redes_sociais() {
+        assert!(deve_ignorar_recurso_ckan("Fotos dos Candidatos SP", "https://cdn.tse.jus.br/foto_cand2024_SP.zip"));
+        assert!(deve_ignorar_recurso_ckan("Proposta de Governo", "https://cdn.tse.jus.br/proposta_governo_2024.zip"));
+        assert!(deve_ignorar_recurso_ckan("Extrato Bancario", "https://cdn.tse.jus.br/extrato_bancario_2024.zip"));
+        assert!(deve_ignorar_recurso_ckan("FEFC", "https://cdn.tse.jus.br/fefc_2024.zip"));
+        assert!(!deve_ignorar_recurso_ckan("Consulta Cand Brasil", "https://cdn.tse.jus.br/consulta_cand_2024.zip"));
+
+        let arquivos = vec![
+            "rede_social_candidato_2024_BRASIL.csv".to_string(),
+            "consulta_cand_2024_BRASIL.csv".to_string(),
+        ];
+        let selecionados = selecionar_arquivos_zip(&arquivos);
+        assert_eq!(selecionados, vec!["consulta_cand_2024_BRASIL.csv".to_string()]);
+    }
+
+    #[test]
+    fn test_tse_ckan_ignora_csv_schema_nao_mapeado() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // CSV de redes sociais não possui colunas obrigatórias de candidatos
+        let csv_redes = "\
+ANO_ELEICAO;CD_TIPO_ELEICAO;NM_TIPO_ELEICAO;CD_ELEICAO;DS_ELEICAO;DT_ELEICAO;SG_UF;SG_UE;NM_UE;SQ_CANDIDATO;NR_ORDEM_REDE_SOCIAL;DS_URL\n\
+2024;2;ELEICAO ORDINARIA;619;ELEICOES MUNICIPAIS 2024;06/10/2024;SP;71072;SAO PAULO;250001;1;https://instagram.com/teste\n";
+
+        let inseridos = processar_csv_tse_str(&mut conn, csv_redes, 1000).unwrap();
+        assert_eq!(inseridos, 0);
+
+        let total_politicos: i64 = conn
+            .query_row("SELECT count(*) FROM politicos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_politicos, 0);
     }
 }
