@@ -26,8 +26,10 @@ import sqlite3
 import argparse
 from typing import Optional, Set
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 DEFAULT_CSV = "/home/facrf/Downloads/basedados/auxilio_emergencial.csv"
-DEFAULT_DB = "./data/radar_civico.db"
+DEFAULT_DB = os.path.join(PROJECT_ROOT, "data", "radar_civico.db")
 BATCH_SIZE = 50_000
 
 
@@ -41,6 +43,7 @@ def configurar_pragmas(conn: sqlite3.Connection, rapido: bool = True):
     cursor.execute("PRAGMA cache_size = -128000;")  # ~128 MB cache
     cursor.execute("PRAGMA temp_store = MEMORY;")
     cursor.execute("PRAGMA foreign_keys = OFF;")
+    cursor.execute("PRAGMA busy_timeout = 60000;")
     cursor.close()
 
 
@@ -205,8 +208,9 @@ def main():
                 enq = parts[col_enq].strip() if col_enq < len(parts) else "EXTRA CADUN"
                 
                 try:
-                    valor = float(parts[col_valor].strip())
-                except ValueError:
+                    val_str = parts[col_valor].strip().replace(",", ".")
+                    valor = float(val_str)
+                except (ValueError, IndexError):
                     valor = 600.0
 
                 lote.append((
@@ -260,8 +264,9 @@ def main():
         recriar_indices(conn)
 
     # Executa checkpoint do WAL para sincronizar
-    print("🧹 Executando PRAGMA wal_checkpoint(PASSIVE)...")
-    cursor.execute("PRAGMA wal_checkpoint(PASSIVE);")
+    print("🧹 Executando PRAGMA wal_checkpoint(TRUNCATE)...")
+    cursor.execute("PRAGMA synchronous = NORMAL;")
+    cursor.execute("PRAGMA wal_checkpoint(TRUNCATE);")
     conn.commit()
 
     cursor.execute("SELECT count(*) FROM beneficios_emergenciais;")
