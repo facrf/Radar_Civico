@@ -25,11 +25,22 @@ pub fn apply_pragmas(conn: &Connection) -> Result<()> {
 pub fn aplicar_pragmas_ingestao(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
-         PRAGMA cache_size = -64000;
+         PRAGMA synchronous = OFF;
+         PRAGMA cache_size = -500000;
          PRAGMA temp_store = MEMORY;
+         PRAGMA wal_autocheckpoint = 100000;
          PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 15000;"
+         PRAGMA busy_timeout = 15000;",
+    )?;
+    Ok(())
+}
+
+/// Restaura os PRAGMAs para a operação balanceada normal após a finalização da ingestão massiva.
+pub fn restaurar_pragmas_padrao(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -64000;
+         PRAGMA wal_autocheckpoint = 1000;",
     )?;
     Ok(())
 }

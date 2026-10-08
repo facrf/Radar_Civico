@@ -297,35 +297,36 @@ pub fn batch_insert_candidatos_tse(
 
     let tx = transaction_immediate(conn)?;
     {
-        let mut stmt_politico = tx.prepare_cached(
-            "INSERT INTO politicos (
+        // 1. Tabela temporária de staging
+        tx.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS staging_candidatos (
+                sq_candidato TEXT,
+                cpf_mascarado TEXT,
+                nome_completo TEXT,
+                nome_urna TEXT,
+                data_nascimento TEXT,
+                grau_instrucao TEXT,
+                ocupacao TEXT,
+                ano_eleicao INTEGER,
+                cargo TEXT,
+                numero_urna INTEGER,
+                sigla_partido TEXT,
+                uf TEXT,
+                municipio TEXT,
+                situacao_totalizacao TEXT
+            );",
+        )?;
+
+        let mut stmt_staging = tx.prepare_cached(
+            "INSERT INTO staging_candidatos (
                 sq_candidato, cpf_mascarado, nome_completo, nome_urna,
-                data_nascimento, grau_instrucao, ocupacao
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(sq_candidato) DO UPDATE SET
-                cpf_mascarado = excluded.cpf_mascarado,
-                nome_completo = excluded.nome_completo,
-                nome_urna = excluded.nome_urna",
-        )?;
-
-        let mut stmt_cand = tx.prepare_cached(
-            "INSERT INTO candidaturas (
-                politico_id, ano_eleicao, cargo, numero_urna, sigla_partido, uf, municipio, situacao_totalizacao
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(politico_id, ano_eleicao, cargo) DO UPDATE SET
-                numero_urna = excluded.numero_urna,
-                sigla_partido = excluded.sigla_partido,
-                uf = excluded.uf,
-                municipio = excluded.municipio,
-                situacao_totalizacao = excluded.situacao_totalizacao",
-        )?;
-
-        let mut stmt_lookup_id = tx.prepare_cached(
-            "SELECT id FROM politicos WHERE sq_candidato = ?1",
+                data_nascimento, grau_instrucao, ocupacao, ano_eleicao,
+                cargo, numero_urna, sigla_partido, uf, municipio, situacao_totalizacao
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
 
         for c in candidatos {
-            stmt_politico.execute(rusqlite::params![
+            stmt_staging.execute(rusqlite::params![
                 c.sq_candidato,
                 c.cpf_mascarado,
                 c.nome_completo,
@@ -333,12 +334,6 @@ pub fn batch_insert_candidatos_tse(
                 c.data_nascimento,
                 c.grau_instrucao,
                 c.ocupacao,
-            ])?;
-
-            let politico_id: i64 = stmt_lookup_id.query_row([&c.sq_candidato], |r| r.get(0))?;
-
-            stmt_cand.execute(rusqlite::params![
-                politico_id,
                 c.ano_eleicao,
                 c.cargo,
                 c.numero_urna,
@@ -348,6 +343,47 @@ pub fn batch_insert_candidatos_tse(
                 c.situacao_totalizacao,
             ])?;
         }
+
+        // 2. Carga em massa relacional com ON CONFLICT (deduplicando dentro do lote via ROW_NUMBER)
+        tx.execute_batch(
+            "INSERT INTO politicos (
+                sq_candidato, cpf_mascarado, nome_completo, nome_urna,
+                data_nascimento, grau_instrucao, ocupacao
+             )
+             SELECT sq_candidato, cpf_mascarado, nome_completo, nome_urna,
+                    data_nascimento, grau_instrucao, ocupacao
+             FROM (
+                 SELECT sq_candidato, cpf_mascarado, nome_completo, nome_urna,
+                        data_nascimento, grau_instrucao, ocupacao,
+                        ROW_NUMBER() OVER(PARTITION BY sq_candidato ORDER BY rowid DESC) AS rn
+                 FROM staging_candidatos
+             )
+             WHERE rn = 1
+             ON CONFLICT(sq_candidato) DO UPDATE SET
+                cpf_mascarado = excluded.cpf_mascarado,
+                nome_completo = excluded.nome_completo,
+                nome_urna = excluded.nome_urna;
+
+             INSERT INTO candidaturas (
+                politico_id, ano_eleicao, cargo, numero_urna, sigla_partido, uf, municipio, situacao_totalizacao
+             )
+             SELECT p.id, s.ano_eleicao, s.cargo, s.numero_urna, s.sigla_partido, s.uf, s.municipio, s.situacao_totalizacao
+             FROM (
+                 SELECT sq_candidato, ano_eleicao, cargo, numero_urna, sigla_partido, uf, municipio, situacao_totalizacao,
+                        ROW_NUMBER() OVER(PARTITION BY sq_candidato, ano_eleicao, cargo ORDER BY rowid DESC) AS rn
+                 FROM staging_candidatos
+             ) s
+             JOIN politicos p ON p.sq_candidato = s.sq_candidato
+             WHERE s.rn = 1
+             ON CONFLICT(politico_id, ano_eleicao, cargo) DO UPDATE SET
+                numero_urna = excluded.numero_urna,
+                sigla_partido = excluded.sigla_partido,
+                uf = excluded.uf,
+                municipio = excluded.municipio,
+                situacao_totalizacao = excluded.situacao_totalizacao;
+
+             DELETE FROM staging_candidatos;",
+        )?;
     }
     tx.commit()?;
 
@@ -502,6 +538,79 @@ mod tests {
 
         let total: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
         assert_eq!(total, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_batch_insert_candidatos_tse_staging() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        let candidatos = vec![
+            NovoCandidatoTse {
+                sq_candidato: "1001".to_string(),
+                cpf_mascarado: "***.111.222-**".to_string(),
+                nome_completo: "CANDIDATO UM".to_string(),
+                nome_urna: "UM".to_string(),
+                data_nascimento: Some("1980-01-01".to_string()),
+                grau_instrucao: Some("SUPERIOR".to_string()),
+                ocupacao: Some("ADVOGADO".to_string()),
+                ano_eleicao: 2024,
+                cargo: "PREFEITO".to_string(),
+                numero_urna: Some(10),
+                sigla_partido: "PART1".to_string(),
+                uf: "SP".to_string(),
+                municipio: Some("SAO PAULO".to_string()),
+                situacao_totalizacao: Some("ELEITO".to_string()),
+            },
+            NovoCandidatoTse {
+                sq_candidato: "1002".to_string(),
+                cpf_mascarado: "***.333.444-**".to_string(),
+                nome_completo: "CANDIDATO DOIS".to_string(),
+                nome_urna: "DOIS".to_string(),
+                data_nascimento: Some("1985-05-05".to_string()),
+                grau_instrucao: Some("MEDIO".to_string()),
+                ocupacao: Some("EMPRESARIO".to_string()),
+                ano_eleicao: 2024,
+                cargo: "VEREADOR".to_string(),
+                numero_urna: Some(10001),
+                sigla_partido: "PART2".to_string(),
+                uf: "SP".to_string(),
+                municipio: Some("SAO PAULO".to_string()),
+                situacao_totalizacao: Some("SUPLENTE".to_string()),
+            },
+            // Registro duplicado no mesmo lote para testar deduplicação/conflito
+            NovoCandidatoTse {
+                sq_candidato: "1001".to_string(),
+                cpf_mascarado: "***.111.222-**".to_string(),
+                nome_completo: "CANDIDATO UM ATUALIZADO".to_string(),
+                nome_urna: "UM NOVO".to_string(),
+                data_nascimento: Some("1980-01-01".to_string()),
+                grau_instrucao: Some("SUPERIOR".to_string()),
+                ocupacao: Some("ADVOGADO".to_string()),
+                ano_eleicao: 2024,
+                cargo: "PREFEITO".to_string(),
+                numero_urna: Some(10),
+                sigla_partido: "PART1".to_string(),
+                uf: "SP".to_string(),
+                municipio: Some("SAO PAULO".to_string()),
+                situacao_totalizacao: Some("ELEITO".to_string()),
+            },
+        ];
+
+        let n = batch_insert_candidatos_tse(&mut conn, &candidatos)?;
+        assert_eq!(n, 3);
+
+        let total_politicos: i64 = conn.query_row("SELECT count(*) FROM politicos", [], |r| r.get(0))?;
+        assert_eq!(total_politicos, 2);
+
+        let total_candidaturas: i64 = conn.query_row("SELECT count(*) FROM candidaturas", [], |r| r.get(0))?;
+        assert_eq!(total_candidaturas, 2);
+
+        let nome: String = conn.query_row("SELECT nome_completo FROM politicos WHERE sq_candidato = '1001'", [], |r| r.get(0))?;
+        assert_eq!(nome, "CANDIDATO UM ATUALIZADO");
 
         Ok(())
     }
