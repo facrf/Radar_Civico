@@ -1,4 +1,5 @@
 pub mod auxilio_indevido;
+pub mod capital_social_desproporcional;
 pub mod cartel_licitacao;
 pub mod combustivel;
 pub mod conflito_oab;
@@ -13,6 +14,10 @@ pub use auxilio_indevido::{
     auditar_lote_auxilio_indevido, auditar_recebimento_auxilio, executar_auditoria_auxilio_sqlite,
     AlertaAuxilioIndevido, MotivoAuxilioIndevido, PoliticoPerfilAuxilio, RegistroAuxilio,
     LIMITE_BENS_AUXILIO,
+};
+pub use capital_social_desproporcional::{
+    auditar_capital_desproporcional, AlertaCapitalDesproporcional, FornecedorCapitalFaturamento,
+    LIMITE_CAPITAL_INVEROSIMIL_MAX, LIMITE_FATURAMENTO_PUBLICO_MIN,
 };
 pub use cartel_licitacao::{
     auditar_socios_comuns_contratos, AlertaConluioLicitacao, ContratoEmpresaSocio,
