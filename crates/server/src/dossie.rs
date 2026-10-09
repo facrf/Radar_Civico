@@ -1418,7 +1418,7 @@ pub async fn dossie_cpf_handler(
 
     // Benefício indevido
     let total_beneficios: f64 = beneficios.iter().map(|b| b.valor).sum();
-    let total_bens_declarados: f64 = candidaturas.iter().map(|c| c.total_bens).sum();
+    let total_bens_declarados: f64 = candidaturas.iter().map(|c| c.total_bens).fold(0.0, f64::max);
     if total_beneficios > 0.0 && (total_bens_declarados > 300_000.0 || !empresas_socio.is_empty()) {
         alertas.push(AlertaDossie {
             tipo: "AUXILIO_INDEVIDO".to_string(),

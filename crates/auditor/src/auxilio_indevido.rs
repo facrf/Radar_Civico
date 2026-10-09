@@ -217,7 +217,18 @@ pub fn executar_auditoria_auxilio_sqlite(conn: &mut Connection) -> Result<Vec<Al
                     ELSE NULL 
                 END
             ) as cargo,
-            MAX(c.ano_eleicao) as ano_eleicao
+            COALESCE(
+                MAX(
+                    CASE 
+                        WHEN UPPER(c.situacao_totalizacao) LIKE '%ELEITO%' 
+                             AND UPPER(c.situacao_totalizacao) NOT LIKE '%NÃO ELEITO%' 
+                             AND UPPER(c.situacao_totalizacao) NOT LIKE '%NAO ELEITO%' 
+                        THEN c.ano_eleicao 
+                        ELSE NULL 
+                    END
+                ),
+                MAX(c.ano_eleicao)
+            ) as ano_eleicao
         FROM politicos p
         LEFT JOIN candidaturas c ON c.politico_id = p.id
         WHERE p.cpf_mascarado IS NOT NULL AND p.cpf_mascarado != ''
@@ -451,6 +462,13 @@ mod tests {
             [pol1_id],
         ).unwrap();
 
+        // Concorreu em 2024 mas não foi eleito (deve manter mandato de 2020 na auditoria)
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, situacao_totalizacao, total_bens_declarados)
+             VALUES (?1, 2024, 'PREFEITO', 'PARTIDO A', 'SP', 'NÃO ELEITO', 130000.0)",
+            [pol1_id],
+        ).unwrap();
+
         // 2. Inserir candidato com bens > 300k (não eleito)
         conn.execute(
             "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado)
@@ -501,6 +519,9 @@ mod tests {
         // 5. Executar auditoria
         let alertas = executar_auditoria_auxilio_sqlite(&mut conn).unwrap();
         assert_eq!(alertas.len(), 2, "Devem ser gerados exatamente 2 alertas (mandato e bens > 300k)");
+
+        let alerta_mandato = alertas.iter().find(|a| a.politico_id == pol1_id).unwrap();
+        assert_eq!(alerta_mandato.ano_exercicio, Some(2020), "Ano do mandato eleito deve ser preservado como 2020 mesmo se disputou 2024");
 
         // 6. Verificar persistência em alertas_beneficio_indevido
         let count_salvo: i64 = conn.query_row(
