@@ -1,3 +1,4 @@
+pub mod autoridades;
 pub mod auxilio_emergencial;
 pub mod camara;
 pub mod ceap;
@@ -11,6 +12,8 @@ pub mod progress;
 pub mod querido_diario;
 pub mod tse_ckan;
 pub mod tse_streaming;
+
+pub use autoridades::{obter_autoridades_cupula, sincronizar_autoridades_cupula};
 
 pub use importers::{
     BatchSink, ImportContext, ImportProgress as ImporterProgress, ImportStage, ImporterManager,
