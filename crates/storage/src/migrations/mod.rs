@@ -503,6 +503,22 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_qsa_socio_nome ON empresas_qsa(socio_nome);
         ",
     },
+    Migration {
+        version: 16,
+        name: "criar_indice_cargo_e_normalizar_candidaturas",
+        sql: "
+            CREATE INDEX IF NOT EXISTS idx_candidaturas_cargo ON candidaturas(cargo);
+
+            UPDATE candidaturas SET cargo = 'PRESIDENTE' WHERE cargo = '1';
+            UPDATE candidaturas SET cargo = 'VICE-PRESIDENTE' WHERE cargo = '2';
+            UPDATE candidaturas SET cargo = 'GOVERNADOR' WHERE cargo = '3';
+            UPDATE candidaturas SET cargo = 'VICE-GOVERNADOR' WHERE cargo = '4';
+            UPDATE candidaturas SET cargo = 'SENADOR' WHERE cargo = '5';
+            UPDATE candidaturas SET cargo = 'DEPUTADO FEDERAL' WHERE cargo = '6';
+            UPDATE candidaturas SET cargo = 'DEPUTADO ESTADUAL' WHERE cargo = '7';
+            UPDATE candidaturas SET cargo = 'DEPUTADO DISTRITAL' WHERE cargo = '8';
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
