@@ -73,6 +73,15 @@ pub fn recriar_indices_tse(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Executa rotina de manutenção periódica do banco SQLite (otimização de consultas e checkpoint do WAL)
+pub fn executar_manutencao_db(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "PRAGMA optimize;
+         PRAGMA wal_checkpoint(PASSIVE);"
+    )?;
+    Ok(())
+}
+
 #[derive(Clone)]
 enum DbTarget {
     File(PathBuf),

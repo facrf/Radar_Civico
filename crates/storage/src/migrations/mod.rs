@@ -519,6 +519,26 @@ pub const MIGRATIONS: &[Migration] = &[
             UPDATE candidaturas SET cargo = 'DEPUTADO DISTRITAL' WHERE cargo = '8';
         ",
     },
+    Migration {
+        version: 17,
+        name: "criar_indices_parciais_e_enriquecimento_qsa",
+        sql: "
+            -- Índice parcial para busca rápida de CPF real (ignora NULL e '-4' da LGPD)
+            CREATE INDEX IF NOT EXISTS idx_politicos_cpf_valido ON politicos(cpf_mascarado)
+            WHERE cpf_mascarado IS NOT NULL AND cpf_mascarado != '-4' AND cpf_mascarado != '';
+
+            -- Índices essenciais para consultas analíticas de CEAP e fornecedores
+            CREATE INDEX IF NOT EXISTS idx_despesas_parlamentar_nome ON despesas_parlamentares(parlamentar_nome);
+            CREATE INDEX IF NOT EXISTS idx_despesas_parlamentar_cnpj ON despesas_parlamentares(fornecedor_cnpj_cpf);
+            CREATE INDEX IF NOT EXISTS idx_despesas_campanha_fornecedor ON despesas_campanha(fornecedor_cpf_cnpj);
+            CREATE INDEX IF NOT EXISTS idx_receitas_campanha_doador ON receitas_campanha(doador_cpf_cnpj);
+            CREATE INDEX IF NOT EXISTS idx_contratos_valor ON contratos_publicos(valor_contratado);
+
+            -- Enriquecimento opcional de empresas QSA para data de abertura e capital social
+            ALTER TABLE empresas_qsa ADD COLUMN data_inicio_atividade TEXT;
+            ALTER TABLE empresas_qsa ADD COLUMN capital_social REAL DEFAULT 0.0;
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1038,6 +1058,45 @@ mod tests {
             |r| r.get(0),
         )?;
         assert_eq!(count_socio, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_indices_parciais_e_enriquecimento_qsa() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        let count_idx_cpf: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_politicos_cpf_valido'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count_idx_cpf, 1, "Índice parcial idx_politicos_cpf_valido deve existir");
+
+        let count_idx_parl: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_despesas_parlamentar_nome'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count_idx_parl, 1, "Índice idx_despesas_parlamentar_nome deve existir");
+
+        // Testa inserção com colunas novas de empresas_qsa
+        conn.execute(
+            "INSERT INTO empresas_qsa (
+                cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado,
+                socio_nome, qualificacao_socio, data_inicio_atividade, capital_social
+             ) VALUES ('12345678', '0001', '90', 'EMPRESA TESTE LTDA', '***123456**', 'SOCIO TESTE', '49', '2023-01-15', 50000.0)",
+            [],
+        )?;
+
+        let cap: f64 = conn.query_row(
+            "SELECT capital_social FROM empresas_qsa WHERE cnpj_basico = '12345678'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(cap, 50000.0);
 
         Ok(())
     }
