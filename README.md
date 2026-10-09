@@ -52,6 +52,10 @@ radar-civico/
 | **Fornecedores Fantasmas** | Empresas abertas a menos de 30 dias da eleição ou com CNPJ inapto/baixado recebendo verbas eleitorais. | Receita Federal / TSE |
 | **Ubiquidade Geotemporal** | Notas fiscais emitidas presencialmente pelo mesmo parlamentar em cidades distantes exigindo velocidade > 800 km/h. | Análise Geotemporal |
 | **Auxílio Emergencial Indevido** | Recebimento de benefício social por detentor de mandato ativo (Prefeito/Vereador) ou patrimônio > R$ 300.000,00. | Lei 13.982/2020 e TCU Acórdão 2.438/2020 |
+| **Evolução Patrimonial Abrupta** | Crescimento patrimonial acima de 300% com saldo absoluto superior a R$ 200.000 entre pleitos consecutivos. | TSE / DivulgaCandContas |
+| **Doador Incompatível** | Cidadão beneficiário de programas sociais de vulnerabilidade doando valores substanciais para campanhas. | CGU / TSE Prestação de Contas |
+| **Conluio em Licitações** | Empresas concorrendo ou contratadas pelo mesmo órgão público que compartilham o mesmo quadro societário. | PNCP / Receita Federal QSA |
+| **Capital Social Ínfimo vs Faturamento** | Empresas com capital social $\le$ R$ 5.000 faturando mais de R$ 100.000 em órgãos públicos ou cotas parlamentares. | CEAP / PNCP / Receita Federal |
 
 ---
 
@@ -179,6 +183,9 @@ volumes:
   - Doadores eleitorais (`receitas_campanha`).
   - Quadro de Sócios e Administradores da Receita Federal (`empresas_qsa`) com suporte a CPF completo (11 dígitos), miolo de 6 dígitos, CPF mascarado (`***123456**`) e CNPJ de empresas.
 * `GET /api/v1/politico/{id}` - Dossiê consolidado: candidaturas, bens declarados, doadores e foto oficial do TSE.
+* `GET /api/politicos?ano=2022&cargo=PRESIDENTE` - Listagem e busca de políticos com filtro multi-ano (2022/2024), ordenação por escalão e cargos executivos (Presidentes, Governadores, Prefeitos).
+* `GET /api/politicos/duplicados/resumo` - Diagnóstico de cadastros redundantes multi-pleito acelerado por cache em memória TTL.
+* `POST /api/politicos/duplicados/mesclar-automatico?limite={N}` - Unificação em lote atômica de cadastros redundantes por nome civil e data de nascimento.
 * `GET /api/v1/grafo/{id}?grau=2` - Subgrafo relacional formatado para Cytoscape.js e Apache ECharts.
 * `GET /api/v1/auditoria/alertas?ano=2024&severidade=CRITICA` - Ranking de anomalias com indicação de fontes primárias, filtros e sincronização em tempo real.
 * `GET /api/v1/investigar/nomeacao/{doador_id}` - Disparo sob demanda na API do Querido Diário e CNA/OAB com checagem do Art. 28 da Lei 8.906/94.
@@ -188,11 +195,15 @@ volumes:
 ## 🧪 Suíte de Testes e Validação
 
 ```bash
-# Executa todos os testes unitários do workspace Rust (52 testes)
+# Executa todos os testes unitários e de integração do workspace Rust (> 90 testes)
 cargo test --all
 
-# Executa o teste de integração ponta a ponta
+# Executa as suítes de pipeline ponta a ponta
 cargo test --test e2e_pipeline
+cargo test --test camara_pipeline
+cargo test --test config_pipeline
+cargo test --test dossie_pipeline
+cargo test --test ingestion_pipeline
 
 # Valida tipagem TypeScript e build do frontend
 cd web && npm run check && npm run build
