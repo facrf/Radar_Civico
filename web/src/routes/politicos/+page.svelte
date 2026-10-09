@@ -23,6 +23,7 @@
 	let paginaDuplicados = 1;
 	let mesclandoIds: Record<number, boolean> = {};
 	let mesclandoAutomatico = false;
+	let loteUnificacao = 500;
 	let msgAuditoria: string | null = null;
 
 	// Parâmetros de Filtro
@@ -119,7 +120,7 @@
 		mesclandoAutomatico = true;
 		msgAuditoria = null;
 		try {
-			const res = await fetch('/api/politicos/duplicados/mesclar-automatico', {
+			const res = await fetch(`/api/politicos/duplicados/mesclar-automatico?limite=${loteUnificacao}`, {
 				method: 'POST'
 			});
 			const data = await res.json();
@@ -978,20 +979,37 @@
 								</div>
 							</div>
 
-							<!-- Botão de Ação: Mesclar Automático com 100% de Certeza -->
-							<button
-								type="button"
-								on:click={unificarAutomaticoTodos}
-								disabled={mesclandoAutomatico}
-								class="px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg hover:shadow-amber-950/40 disabled:opacity-50 flex items-center gap-2 flex-shrink-0"
-							>
-								{#if mesclandoAutomatico}
-									<div class="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-									<span>Unificando grupos...</span>
-								{:else}
-									<span>⚡ Unificar Grupos Confirmados</span>
-								{/if}
-							</button>
+							<!-- Controles de Ação: Seletor de Lote e Botão de Mesclagem -->
+							<div class="flex items-center gap-2 flex-shrink-0">
+								<div class="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-950/80 px-2.5 py-1.5 rounded-xl border border-slate-800">
+									<label for="lote-select" class="text-[10px] text-slate-400 font-semibold uppercase">Lote:</label>
+									<select
+										id="lote-select"
+										bind:value={loteUnificacao}
+										class="bg-transparent text-amber-300 font-bold font-mono focus:outline-none text-xs cursor-pointer"
+									>
+										<option value={100} class="bg-slate-900 text-white">100 grupos</option>
+										<option value={250} class="bg-slate-900 text-white">250 grupos</option>
+										<option value={500} class="bg-slate-900 text-white">500 grupos</option>
+										<option value={1000} class="bg-slate-900 text-white">1.000 grupos</option>
+									</select>
+								</div>
+
+								<button
+									type="button"
+									on:click={unificarAutomaticoTodos}
+									disabled={mesclandoAutomatico}
+									class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg hover:shadow-amber-950/40 disabled:opacity-50 flex items-center gap-2 flex-shrink-0"
+									title="Consolida grupos com 100% de correspondência cadastral"
+								>
+									{#if mesclandoAutomatico}
+										<div class="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+										<span>Unificando {loteUnificacao} grupos...</span>
+									{:else}
+										<span>⚡ Unificar Grupos</span>
+									{/if}
+								</button>
+							</div>
 						</div>
 
 						<!-- Métricas do Diagnóstico -->

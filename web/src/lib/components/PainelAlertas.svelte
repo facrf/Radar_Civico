@@ -158,6 +158,10 @@
 					<option value="TRIANGULACAO">Triangulação (&lt;180 dias)</option>
 					<option value="FORNECEDOR_HUB">Fornecedor Hub (&gt;70%)</option>
 					<option value="FANTASMA">Fornecedor Inapto/Recente</option>
+					<option value="EVOLUCAO_PATRIMONIAL">Evolução Patrimonial Abrupta</option>
+					<option value="DOADOR_INCOMPATIVEL">Doador Beneficiário Social</option>
+					<option value="CONLUIO_LICITACAO">Sócios Comuns em Licitação</option>
+					<option value="CAPITAL_DESPROPORCIONAL">Capital Social Ínfimo vs Faturamento</option>
 					<option value="UBIQUIDADE">Inconsistência Geotemporal</option>
 					<option value="AUXILIO_EMERGENCIAL">Auxílio Emergencial Indevido</option>
 				</select>
