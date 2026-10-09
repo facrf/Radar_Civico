@@ -24,7 +24,16 @@ pub fn get_or_init_importer_manager(pool: &DbPool) -> Arc<ImporterManager> {
     }
     let sink = Arc::new(BatchSink::new(pool.clone()));
     let manager = ImporterManager::new(sink);
-    manager.register(Arc::new(TseImporter::new(2024)));
+    manager.register(Arc::new(TseImporter::new_with_id(
+        2024,
+        "tse",
+        "Tribunal Superior Eleitoral (2024 - Municipais)",
+    )));
+    manager.register(Arc::new(TseImporter::new_with_id(
+        2022,
+        "tse-2022",
+        "Tribunal Superior Eleitoral (2022 - Presidência e Governos)",
+    )));
     manager.register(Arc::new(ReceitaFederalImporter::new()));
     manager.register(Arc::new(CamaraCeapImporter::new(2024)));
     manager.register(Arc::new(PncpImporter::new(2024)));

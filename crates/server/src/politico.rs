@@ -475,10 +475,12 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
         )?;
 
         let rows = stmt_cand.query_map([politico_id], |row| {
+            let raw_cargo: String = row.get(2)?;
+            let cargo = ingestion::normalizar_cargo(&raw_cargo);
             Ok(CandidaturaItem {
                 id: row.get(0)?,
                 ano_eleicao: row.get(1)?,
-                cargo: row.get(2)?,
+                cargo,
                 numero_urna: row.get(3)?,
                 sigla_partido: row.get(4)?,
                 uf: row.get(5)?,
@@ -714,13 +716,28 @@ pub async fn listar_politicos_handler(
         anos_disponiveis = vec![2024, 2022, 2020, 2018];
     }
 
-    let cargos_disponiveis = vec![
+    let mut cargos_disponiveis = vec![
+        "PRESIDENTE".to_string(),
+        "VICE-PRESIDENTE".to_string(),
+        "GOVERNADOR".to_string(),
+        "VICE-GOVERNADOR".to_string(),
+        "SENADOR".to_string(),
         "DEPUTADO FEDERAL".to_string(),
-        "VEREADOR".to_string(),
+        "DEPUTADO ESTADUAL".to_string(),
+        "DEPUTADO DISTRITAL".to_string(),
         "PREFEITO".to_string(),
         "VICE-PREFEITO".to_string(),
-        "SENADOR".to_string(),
+        "VEREADOR".to_string(),
     ];
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT cargo FROM candidaturas WHERE cargo IS NOT NULL AND cargo != '' AND cargo NOT IN ('1','2','3','4','5','6','7','8','11','12','13','CARGO','INDEFINIDO') ORDER BY cargo ASC") {
+        if let Ok(cargos_iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for c in cargos_iter.flatten() {
+                if !cargos_disponiveis.contains(&c) {
+                    cargos_disponiveis.push(c);
+                }
+            }
+        }
+    }
 
     // Construção dinâmica da query
     let mut where_clauses = Vec::new();
@@ -764,16 +781,28 @@ pub async fn listar_politicos_handler(
     // 4. Filtro por Cargo com distinção estrita (evita que PREFEITO traga VICE-PREFEITO e vice-versa)
     if !filtro_cargo.is_empty() {
         let cargo_upper = filtro_cargo.to_uppercase();
-        if cargo_upper == "VEREADOR" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%VEREADOR%' OR c.cargo = '13')".to_string());
+        if cargo_upper == "PRESIDENTE" {
+            where_clauses.push("((UPPER(c.cargo) LIKE '%PRESIDENTE%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '1')".to_string());
+        } else if cargo_upper == "VICE-PRESIDENTE" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-PRESIDENTE%' OR c.cargo = '2')".to_string());
+        } else if cargo_upper == "GOVERNADOR" {
+            where_clauses.push("((UPPER(c.cargo) LIKE '%GOVERNADOR%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '3')".to_string());
+        } else if cargo_upper == "VICE-GOVERNADOR" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-GOVERNADOR%' OR c.cargo = '4')".to_string());
+        } else if cargo_upper == "SENADOR" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%SENADOR%' OR c.cargo = '5')".to_string());
+        } else if cargo_upper == "DEPUTADO FEDERAL" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO FEDERAL%' OR c.cargo = '6' OR UPPER(c.cargo) = 'DEPUTADO')".to_string());
+        } else if cargo_upper == "DEPUTADO ESTADUAL" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO ESTADUAL%' OR c.cargo = '7')".to_string());
+        } else if cargo_upper == "DEPUTADO DISTRITAL" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO DISTRITAL%' OR c.cargo = '8')".to_string());
         } else if cargo_upper == "PREFEITO" {
             where_clauses.push("((UPPER(c.cargo) LIKE '%PREFEITO%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '11')".to_string());
         } else if cargo_upper == "VICE-PREFEITO" {
             where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-PREFEITO%' OR c.cargo = '12')".to_string());
-        } else if cargo_upper == "DEPUTADO FEDERAL" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO FEDERAL%' OR c.cargo = '6' OR UPPER(c.cargo) = 'DEPUTADO')".to_string());
-        } else if cargo_upper == "SENADOR" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%SENADOR%' OR c.cargo = '5')".to_string());
+        } else if cargo_upper == "VEREADOR" {
+            where_clauses.push("(UPPER(c.cargo) LIKE '%VEREADOR%' OR c.cargo = '13')".to_string());
         } else {
             where_clauses.push("(UPPER(c.cargo) LIKE ?)".to_string());
             let clike = format!("%{}%", cargo_upper);
@@ -821,13 +850,21 @@ pub async fn listar_politicos_handler(
         .query_row(&sql_contagem, params_refs.as_slice(), |r| r.get(0))
         .unwrap_or(0);
 
-    // Ordenação: se usuário está navegando sem busca específica, prioriza deputados federais e mais recentes
+    // Ordenação: se usuário está navegando sem busca específica, prioriza Executivo e Legislativo de maior escalão
     let order_clause = if !q_term.is_empty() {
         "p.nome_urna ASC"
     } else if !filtro_cargo.is_empty() {
         "c.ano_eleicao DESC, p.nome_urna ASC"
     } else {
-        "(CASE WHEN c.cargo = 'DEPUTADO FEDERAL' THEN 1 WHEN c.cargo LIKE '%PREFEITO%' THEN 2 ELSE 3 END) ASC, c.ano_eleicao DESC, p.id ASC"
+        "(CASE \
+            WHEN UPPER(c.cargo) LIKE '%PRESIDENTE%' AND UPPER(c.cargo) NOT LIKE '%VICE%' THEN 1 \
+            WHEN UPPER(c.cargo) LIKE '%GOVERNADOR%' AND UPPER(c.cargo) NOT LIKE '%VICE%' THEN 2 \
+            WHEN UPPER(c.cargo) LIKE '%SENADOR%' THEN 3 \
+            WHEN UPPER(c.cargo) = 'DEPUTADO FEDERAL' THEN 4 \
+            WHEN UPPER(c.cargo) LIKE '%PREFEITO%' AND UPPER(c.cargo) NOT LIKE '%VICE%' THEN 5 \
+            WHEN UPPER(c.cargo) LIKE '%DEPUTADO ESTADUAL%' OR UPPER(c.cargo) LIKE '%DISTRITAL%' THEN 6 \
+            WHEN UPPER(c.cargo) LIKE '%VICE%' THEN 7 \
+            ELSE 8 END) ASC, c.ano_eleicao DESC, p.id ASC"
     };
 
     let sql_dados = format!(
@@ -856,12 +893,20 @@ pub async fn listar_politicos_handler(
             let id: i64 = row.get(0)?;
             let foto_blob: Option<Vec<u8>> = row.get(10)?;
             let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
-            let cargo: String = row.get(7)?;
+            let raw_cargo: String = row.get(7)?;
+            let cargo = ingestion::normalizar_cargo(&raw_cargo);
             let mandatos_str: Option<String> = row.get(13)?;
             let mandatos = mandatos_str
                 .map(|s| {
                     s.split(',')
-                        .map(|m| m.trim().to_string())
+                        .map(|m| {
+                            let part = m.trim();
+                            if let Some((cg, ano)) = part.split_once(" (") {
+                                format!("{} ({}", ingestion::normalizar_cargo(cg), ano)
+                            } else {
+                                ingestion::normalizar_cargo(part)
+                            }
+                        })
                         .filter(|m| !m.is_empty())
                         .collect()
                 })
