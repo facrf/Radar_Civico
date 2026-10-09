@@ -422,7 +422,7 @@
 						class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
 					>
 						<option value="">Todos os Cargos</option>
-						{#each dados.cargos_disponiveis.length ? dados.cargos_disponiveis : ['DEPUTADO FEDERAL', 'VEREADOR', 'PREFEITO', 'VICE-PREFEITO', 'SENADOR'] as cargo}
+						{#each dados.cargos_disponiveis.length ? dados.cargos_disponiveis : ['PRESIDENTE', 'VICE-PRESIDENTE', 'GOVERNADOR', 'VICE-GOVERNADOR', 'SENADOR', 'DEPUTADO FEDERAL', 'DEPUTADO ESTADUAL', 'DEPUTADO DISTRITAL', 'PREFEITO', 'VICE-PREFEITO', 'VEREADOR'] as cargo}
 							<option value={cargo}>{cargo}</option>
 						{/each}
 					</select>
