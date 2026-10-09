@@ -874,13 +874,13 @@ pub async fn listar_politicos_handler(
     if !filtro_cargo.is_empty() {
         let cargo_upper = filtro_cargo.to_uppercase();
         if cargo_upper == "MINISTRO DO STF" || cargo_upper.contains("STF") {
-            where_clauses.push("(UPPER(COALESCE(ca.cargo, '')) LIKE '%MINISTR%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%STF%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%SUPREMO%')".to_string());
-        } else if cargo_upper == "PROCURADOR-GERAL DA REPÚBLICA" || cargo_upper.contains("PGR") {
-            where_clauses.push("(UPPER(COALESCE(ca.cargo, '')) LIKE '%PROCURADOR%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%PGR%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%REPÚBLICA%')".to_string());
+            where_clauses.push("(ca.cargo LIKE '%Ministr%' OR ca.cargo LIKE '%MINISTR%' OR ca.orgao LIKE '%STF%' OR ca.orgao LIKE '%Supremo%')".to_string());
+        } else if cargo_upper == "PROCURADOR-GERAL DA REPÚBLICA" || cargo_upper == "PROCURADOR-GERAL DA REPUBLICA" || cargo_upper.contains("PGR") {
+            where_clauses.push("(ca.cargo LIKE '%Procurador%' OR ca.cargo LIKE '%PROCURADOR%' OR ca.orgao LIKE '%PGR%' OR ca.orgao LIKE '%Procuradoria%')".to_string());
         } else if cargo_upper == "EMBAIXADOR" || cargo_upper.contains("EMBAIXAD") {
-            where_clauses.push("(UPPER(COALESCE(ca.cargo, '')) LIKE '%EMBAIXAD%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%EMBAIXADA%')".to_string());
-        } else if cargo_upper == "SECRETÁRIO DE ESTADO" || cargo_upper.contains("SECRET") {
-            where_clauses.push("(UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETÁR%' OR UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETAR%')".to_string());
+            where_clauses.push("(ca.cargo LIKE '%Embaixad%' OR ca.cargo LIKE '%EMBAIXAD%' OR ca.orgao LIKE '%Embaixada%')".to_string());
+        } else if cargo_upper == "SECRETÁRIO DE ESTADO" || cargo_upper == "SECRETARIO DE ESTADO" || cargo_upper.contains("SECRET") {
+            where_clauses.push("(ca.cargo LIKE '%Secret%' OR ca.cargo LIKE '%SECRET%' OR ca.orgao LIKE '%Secretaria%' OR ca.orgao LIKE '%SECRETARIA%')".to_string());
         } else if cargo_upper == "PRESIDENTE" {
             where_clauses.push("(((UPPER(c.cargo) LIKE '%PRESIDENTE%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '1') AND UPPER(COALESCE(ca.cargo, '')) NOT LIKE '%STF%')".to_string());
         } else if cargo_upper == "VICE-PRESIDENTE" {
