@@ -539,6 +539,34 @@ pub const MIGRATIONS: &[Migration] = &[
             ALTER TABLE empresas_qsa ADD COLUMN capital_social REAL DEFAULT 0.0;
         ",
     },
+    Migration {
+        version: 18,
+        name: "adiciona_cargos_autoridades_e_tipo_agente",
+        sql: "
+            -- Adiciona categorização de agente público na tabela principal
+            ALTER TABLE politicos ADD COLUMN tipo_agente TEXT DEFAULT 'POLITICO';
+            CREATE INDEX IF NOT EXISTS idx_politicos_tipo_agente ON politicos(tipo_agente);
+
+            -- Tabela para histórico de mandatos de autoridades não-eletivas (STF, PGR, Secretarias, Embaixadas)
+            CREATE TABLE IF NOT EXISTS cargos_autoridades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                politico_id INTEGER REFERENCES politicos(id),
+                orgao TEXT NOT NULL,
+                cargo TEXT NOT NULL,
+                esfera TEXT NOT NULL,
+                uf TEXT,
+                data_posse TEXT,
+                data_exoneracao TEXT,
+                ato_nomeacao TEXT,
+                biografia_resumo TEXT,
+                origem_dado TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cargos_autoridades_pol ON cargos_autoridades(politico_id);
+            CREATE INDEX IF NOT EXISTS idx_cargos_autoridades_orgao ON cargos_autoridades(orgao);
+            CREATE INDEX IF NOT EXISTS idx_cargos_autoridades_cargo ON cargos_autoridades(cargo);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1100,6 +1128,52 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_migrations_cargos_autoridades_e_tipo_agente() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        // Verifica existência da tabela cargos_autoridades
+        let count_tab: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'cargos_autoridades'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count_tab, 1, "Tabela cargos_autoridades deve existir");
+
+        // Insere autoridade na tabela politicos com tipo_agente
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, tipo_agente)
+             VALUES ('LUÍS ROBERTO BARROSO', 'MIN. LUÍS ROBERTO BARROSO', 'MINISTRO_STF')",
+            [],
+        )?;
+        let pol_id = conn.last_insert_rowid();
+
+        // Insere cargo na tabela cargos_autoridades
+        conn.execute(
+            "INSERT INTO cargos_autoridades (
+                politico_id, orgao, cargo, esfera, data_posse, ato_nomeacao, origem_dado
+             ) VALUES (?1, 'Supremo Tribunal Federal', 'Ministro', 'FEDERAL', '2013-06-26', 'Decreto Presidencial', 'STF')",
+            [pol_id],
+        )?;
+
+        let (tipo, cargo): (String, String) = conn.query_row(
+            "SELECT p.tipo_agente, c.cargo
+             FROM politicos p
+             JOIN cargos_autoridades c ON c.politico_id = p.id
+             WHERE p.id = ?1",
+            [pol_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        assert_eq!(tipo, "MINISTRO_STF");
+        assert_eq!(cargo, "Ministro");
+
+        Ok(())
+    }
 }
+
 
 

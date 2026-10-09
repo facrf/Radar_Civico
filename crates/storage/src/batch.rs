@@ -394,6 +394,111 @@ pub fn batch_insert_candidatos_tse(
     Ok(candidatos.len())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NovaAutoridade {
+    pub nome_completo: String,
+    pub nome_usual: String,
+    pub cpf_mascarado: Option<String>,
+    pub tipo_agente: String,
+    pub orgao: String,
+    pub cargo: String,
+    pub esfera: String,
+    pub uf: Option<String>,
+    pub data_posse: Option<String>,
+    pub data_exoneracao: Option<String>,
+    pub ato_nomeacao: Option<String>,
+    pub biografia_resumo: Option<String>,
+    pub foto_url: Option<String>,
+    pub origem_dado: String,
+}
+
+pub fn batch_insert_autoridades(
+    conn: &mut Connection,
+    autoridades: &[NovaAutoridade],
+) -> Result<usize> {
+    if autoridades.is_empty() {
+        return Ok(0);
+    }
+
+    let tx = transaction_immediate(conn)?;
+    {
+        for a in autoridades {
+            // 1. Procura se já existe político com mesmo nome completo
+            let pol_id_opt: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM politicos WHERE UPPER(TRIM(nome_completo)) = UPPER(TRIM(?1)) LIMIT 1",
+                    [&a.nome_completo],
+                    |r| r.get(0),
+                )
+                .ok();
+
+            let politico_id = match pol_id_opt {
+                Some(id) => {
+                    // Atualiza o tipo_agente e foto se não tiver
+                    tx.execute(
+                        "UPDATE politicos SET 
+                            tipo_agente = ?1,
+                            foto_url = COALESCE(foto_url, ?2),
+                            cpf_mascarado = COALESCE(cpf_mascarado, ?3)
+                         WHERE id = ?4",
+                        rusqlite::params![a.tipo_agente, a.foto_url, a.cpf_mascarado, id],
+                    )?;
+                    id
+                }
+                None => {
+                    tx.execute(
+                        "INSERT INTO politicos (
+                            nome_completo, nome_urna, cpf_mascarado, tipo_agente, foto_url
+                         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![
+                            a.nome_completo,
+                            a.nome_usual,
+                            a.cpf_mascarado,
+                            a.tipo_agente,
+                            a.foto_url
+                        ],
+                    )?;
+                    tx.last_insert_rowid()
+                }
+            };
+
+            // 2. Insere na tabela cargos_autoridades se ainda não existir exatamente aquele cargo/orgao
+            let ja_tem_cargo: bool = tx
+                .query_row(
+                    "SELECT 1 FROM cargos_autoridades 
+                     WHERE politico_id = ?1 AND orgao = ?2 AND cargo = ?3 LIMIT 1",
+                    rusqlite::params![politico_id, a.orgao, a.cargo],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !ja_tem_cargo {
+                tx.execute(
+                    "INSERT INTO cargos_autoridades (
+                        politico_id, orgao, cargo, esfera, uf, data_posse,
+                        data_exoneracao, ato_nomeacao, biografia_resumo, origem_dado
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![
+                        politico_id,
+                        a.orgao,
+                        a.cargo,
+                        a.esfera,
+                        a.uf,
+                        a.data_posse,
+                        a.data_exoneracao,
+                        a.ato_nomeacao,
+                        a.biografia_resumo,
+                        a.origem_dado
+                    ],
+                )?;
+            }
+        }
+    }
+    tx.commit()?;
+
+    Ok(autoridades.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
