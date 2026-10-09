@@ -717,6 +717,148 @@ pub async fn mesclar_automatico_handler(
     }))
 }
 
+/// POST /api/politicos/duplicados/mesclar-automatico-job
+pub async fn mesclar_automatico_job_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<MesclarAutomaticoQueryParams>,
+) -> Result<(StatusCode, Json<crate::config::ExecutarIngestaoResponse>), (StatusCode, String)> {
+    let limite_grupos = params.limite.unwrap_or(5000).clamp(1, 50000);
+
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let job = crate::config::JobInfo {
+        job_id: job_id.clone(),
+        fonte: "DEDUPLICACAO_MASSA".to_string(),
+        ano: None,
+        status: "PROCESSANDO".to_string(),
+        progresso: 5,
+        mensagem: format!("Iniciando deduplicação em massa de até {} grupos...", limite_grupos),
+        logs: vec![format!("[{now}] Job de deduplicação em massa iniciado (limite: {limite_grupos} grupos)")],
+        criado_em: now,
+        concluido_em: None,
+    };
+
+    {
+        let jobs = crate::config::get_jobs();
+        if let Ok(mut map) = jobs.write() {
+            map.insert(job_id.clone(), job);
+        }
+    }
+
+    let job_id_spawn = job_id.clone();
+    let pool_spawn = pool.clone();
+
+    tokio::spawn(async move {
+        crate::config::atualizar_job(&job_id_spawn, 15, "Localizando grupos redundantes por nome e data de nascimento no SQLite...").await;
+
+        let grupos = {
+            let conn = match pool_spawn.get() {
+                Ok(c) => c,
+                Err(e) => {
+                    crate::config::atualizar_job_concluido(&job_id_spawn, 100, "ERRO", &format!("Erro de conexão: {e}")).await;
+                    return;
+                }
+            };
+
+            let sql_grupos = format!(
+                "SELECT UPPER(TRIM(nome_completo)), data_nascimento, GROUP_CONCAT(id)
+                 FROM politicos
+                 WHERE data_nascimento IS NOT NULL AND data_nascimento != ''
+                   AND nome_completo IS NOT NULL AND length(nome_completo) > 5
+                 GROUP BY UPPER(TRIM(nome_completo)), data_nascimento
+                 HAVING count(*) > 1
+                 LIMIT {}",
+                limite_grupos
+            );
+
+            let res = conn.prepare(&sql_grupos).and_then(|mut stmt| {
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+                let list: Vec<(String, String, String)> = rows.filter_map(|r| r.ok()).collect();
+                Ok(list)
+            });
+
+            match res {
+                Ok(list) => list,
+                Err(e) => {
+                    crate::config::atualizar_job_concluido(&job_id_spawn, 100, "ERRO", &format!("Erro na consulta de grupos: {e}")).await;
+                    return;
+                }
+            }
+        };
+
+        let total_encontrados = grupos.len();
+        if total_encontrados == 0 {
+            crate::config::atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", "Nenhum grupo de duplicados pendente encontrado.").await;
+            return;
+        }
+
+        crate::config::atualizar_job(
+            &job_id_spawn,
+            25,
+            &format!("Encontrados {total_encontrados} grupos. Iniciando unificação com consolidação de bens e mandatos..."),
+        ).await;
+
+        let mut processados = 0;
+        let mut unificados = 0;
+        let chunks: Vec<Vec<(String, String, String)>> = grupos.chunks(100).map(|c| c.to_vec()).collect();
+
+        for chunk in chunks {
+            if let Ok(mut conn) = pool_spawn.get() {
+                for (_nome, _nasc, ids_str) in chunk {
+                    let mut ids: Vec<i64> = ids_str
+                        .split(',')
+                        .filter_map(|s| s.trim().parse::<i64>().ok())
+                        .collect();
+
+                    if ids.len() < 2 {
+                        continue;
+                    }
+
+                    ids.sort();
+                    let id_canonico = ids[0];
+
+                    for &id_dup in &ids[1..] {
+                        if mesclar_politicos_db(&mut conn, id_canonico, id_dup).is_ok() {
+                            unificados += 1;
+                        }
+                    }
+                    processados += 1;
+                }
+            }
+
+            let progresso = 25 + (((processados as f64 / total_encontrados as f64) * 70.0) as u8).min(70);
+            crate::config::atualizar_job(
+                &job_id_spawn,
+                progresso,
+                &format!("Processando grupos ({processados}/{total_encontrados} - {unificados} registros unificados)..."),
+            ).await;
+        }
+
+        invalidar_cache_resumo_duplicados();
+
+        let msg_final = format!(
+            "Deduplicação em massa concluída com sucesso: {processados} grupos resolvidos e {unificados} registros consolidados."
+        );
+        crate::config::atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg_final).await;
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(crate::config::ExecutarIngestaoResponse {
+            status: "PROCESSANDO".to_string(),
+            job_id,
+            mensagem: "Processo de deduplicação em massa iniciado com sucesso em segundo plano.".to_string(),
+        }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,6 +1116,50 @@ mod tests {
             .unwrap();
         assert_eq!(cpf_res.as_deref(), Some("***.444.555-**"));
         assert_eq!(ocup_res.as_deref(), Some("EMPRESARIO"));
+    }
+
+    #[tokio::test]
+    async fn test_mesclar_automatico_job_endpoint() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, data_nascimento)
+             VALUES ('MARIA SILVA SOUZA', 'MARIA SOUZA', '1980-05-10')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, data_nascimento)
+             VALUES ('MARIA SILVA SOUZA', 'MARIA DA SAUDE', '1980-05-10')",
+            [],
+        )
+        .unwrap();
+
+        let app = crate::criar_router(pool.clone());
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/politicos/duplicados/mesclar-automatico-job?limite=10")
+            .body(Body::empty())
+            .unwrap();
+
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let resp: crate::config::ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(resp.status, "PROCESSANDO");
+        assert!(!resp.job_id.is_empty());
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        let total_politicos: i64 = pool.get().unwrap()
+            .query_row("SELECT count(*) FROM politicos WHERE nome_completo = 'MARIA SILVA SOUZA'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_politicos, 1, "Deveria ter unificado para 1 registro canônico");
     }
 }
 

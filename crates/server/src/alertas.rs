@@ -759,6 +759,104 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         }
     }
 
+    // 9. Sincroniza fornecedores recém-criados (< 180 dias de fundação formal ao emitir despesa CEAP)
+    {
+        let mut stmt = conn.prepare(
+            "SELECT d.id, d.fornecedor_cnpj_cpf, d.fornecedor_nome,
+                    q.data_inicio_atividade,
+                    d.data_emissao,
+                    d.valor_liquido,
+                    COALESCE(d.parlamentar_nome, 'PARLAMENTAR')
+             FROM despesas_parlamentares d
+             JOIN empresas_qsa q ON q.cnpj_basico = SUBSTR(REPLACE(REPLACE(REPLACE(d.fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', ''), 1, 8)
+             WHERE d.fornecedor_cnpj_cpf IS NOT NULL 
+               AND length(d.fornecedor_cnpj_cpf) >= 14
+               AND q.data_inicio_atividade IS NOT NULL AND q.data_inicio_atividade != ''
+               AND d.data_emissao IS NOT NULL AND d.data_emissao != ''
+               AND d.valor_liquido >= 5000.0
+               AND (julianday(d.data_emissao) - julianday(q.data_inicio_atividade)) >= 0
+               AND (julianday(d.data_emissao) - julianday(q.data_inicio_atividade)) <= 180
+             ORDER BY d.valor_liquido DESC
+             LIMIT 300",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let desp_id: i64 = row.get(0)?;
+            let cnpj: String = row.get(1)?;
+            let nome: String = row.get(2)?;
+            let dt_inicio: String = row.get(3)?;
+            let dt_emissao: String = row.get(4)?;
+            let valor: f64 = row.get(5)?;
+            let parlamentar: String = row.get(6)?;
+            Ok((desp_id, cnpj, nome, dt_inicio, dt_emissao, valor, parlamentar))
+        })?;
+
+        for r in rows.flatten() {
+            let (desp_id, cnpj, nome, dt_inicio, dt_emissao, valor, parlamentar) = r;
+            let chave = format!("\"despesa_id\":{}", desp_id);
+            let ja_existe: bool = conn
+                .query_row(
+                    "SELECT 1 FROM alertas_auditoria WHERE tipo = 'EMPRESA_RECEM_CRIADA' AND detalhes_json LIKE ?1 LIMIT 1",
+                    [format!("%{}%", chave)],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !ja_existe {
+                let dias_diff = chrono::NaiveDate::parse_from_str(&dt_emissao, "%Y-%m-%d")
+                    .ok()
+                    .and_then(|d_e| {
+                        chrono::NaiveDate::parse_from_str(&dt_inicio, "%Y-%m-%d")
+                            .ok()
+                            .map(|d_i| (d_e - d_i).num_days())
+                    })
+                    .unwrap_or(0);
+
+                let gravidade = if dias_diff <= 30 {
+                    "CRITICA"
+                } else if dias_diff <= 90 {
+                    "ALTA"
+                } else {
+                    "MEDIA"
+                };
+
+                let detalhes = serde_json::json!({
+                    "despesa_id": desp_id,
+                    "cnpj": cnpj,
+                    "fornecedor": nome,
+                    "data_abertura": dt_inicio,
+                    "data_emissao": dt_emissao,
+                    "dias_de_vida": dias_diff,
+                    "valor": valor,
+                    "parlamentar": parlamentar,
+                    "regra": "Empresa faturou recursos da CEAP com menos de 180 dias de fundação formal (alerta de empresa recém-criada)"
+                });
+
+                registrar_alerta(
+                    conn,
+                    &NovoAlerta {
+                        tipo: "EMPRESA_RECEM_CRIADA".to_string(),
+                        severidade: gravidade.to_string(),
+                        titulo: format!("Fornecedor Recém-Criado ({dias_diff} dias) - {}", nome),
+                        descricao: format!(
+                            "Empresa constituída em {} recebeu R$ {:.2} do parlamentar {} apenas {} dias após abertura formal.",
+                            dt_inicio, valor, parlamentar, dias_diff
+                        ),
+                        alvo_nome: nome,
+                        alvo_documento: Some(cnpj),
+                        municipio: None,
+                        uf: None,
+                        ano: None,
+                        valor_envolvido: Some(valor),
+                        fonte_dado: "CÂMARA/RECEITA_FEDERAL".to_string(),
+                        detalhes_json: Some(detalhes.to_string()),
+                    },
+                )?;
+                novos_inseridos += 1;
+            }
+        }
+    }
+
     Ok(novos_inseridos)
 }
 
@@ -1297,10 +1395,25 @@ mod tests {
              VALUES (?1, 'DOADOR HUMILDE', '***.555.666-**', 2500.0, '2024-09-01')",
             [pol_id],
         ).unwrap();
+        conn.execute(
+            "INSERT INTO empresas_qsa (cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, data_inicio_atividade, capital_social)
+             VALUES ('99887766', '0001', '55', 'EMPRESA RECEM CRIADA LTDA', '***.111.222-**', 'SOCIO TESTE', '2024-01-01', 50000.0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO despesas_parlamentares (
+                casa_legislativa, parlamentar_nome, fornecedor_nome, fornecedor_cnpj_cpf,
+                data_emissao, categoria_despesa, valor_liquido
+             ) VALUES (
+                'CAMARA', 'DEPUTADO TESTE', 'EMPRESA RECEM CRIADA LTDA', '99.887.766/0001-55',
+                '2024-02-15', 'CONSULTORIA', 25000.0
+             )",
+            [],
+        ).unwrap();
 
         let params = crate::routes::config::ParametrosAuditoria::default();
         let novos = sincronizar_alertas_sistema_com_parametros(&conn, &params).unwrap();
-        assert!(novos >= 3);
+        assert!(novos >= 4);
 
         let alertas = carregar_alertas(&conn, &AlertasQueryParams {
             municipio: None,
@@ -1315,6 +1428,7 @@ mod tests {
         assert!(tipos.contains(&"COMBUSTIVEL_SOBREPRECO".to_string()));
         assert!(tipos.contains(&"EVOLUCAO_PATRIMONIAL".to_string()));
         assert!(tipos.contains(&"DOADOR_INCOMPATIVEL".to_string()));
+        assert!(tipos.contains(&"EMPRESA_RECEM_CRIADA".to_string()));
 
         let app = Router::new()
             .route("/api/auditoria/sincronizar", post(sincronizar_alertas_handler))

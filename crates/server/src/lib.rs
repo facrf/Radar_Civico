@@ -85,6 +85,8 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/politicos/duplicados/mesclar", post(mesclar_politicos_handler))
         .route("/api/politicos/duplicados/mesclar-automatico", post(mesclar_automatico_handler))
         .route("/api/v1/politicos/duplicados/mesclar-automatico", post(mesclar_automatico_handler))
+        .route("/api/politicos/duplicados/mesclar-automatico-job", post(mesclar_automatico_job_handler))
+        .route("/api/v1/politicos/duplicados/mesclar-automatico-job", post(mesclar_automatico_job_handler))
         .route("/api/politicos/sincronizar-fotos-camara", post(sincronizar_fotos_camara_handler))
         .route("/api/v1/politicos/sincronizar-fotos-camara", post(sincronizar_fotos_camara_handler))
         .route("/api/politicos/:id", get(politico_detalhe_handler))

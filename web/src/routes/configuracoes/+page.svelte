@@ -523,6 +523,29 @@
 		}
 	}
 
+	let deduplicandoMassa = false;
+	async function dispararDeduplicacaoMassa() {
+		if (!confirm('Deseja iniciar o processo assíncrono de consolidação de identidades repetidas no banco?')) {
+			return;
+		}
+		deduplicandoMassa = true;
+		try {
+			const res = await fetch('/api/v1/politicos/duplicados/mesclar-automatico-job?limite=10000', {
+				method: 'POST'
+			});
+			if (!res.ok) {
+				const err = await res.json();
+				throw new Error(err.erro || 'Falha ao despachar deduplicação');
+			}
+			const data = await res.json();
+			iniciarPollingJob(data.job_id);
+		} catch (e: any) {
+			alert(`Erro na deduplicação: ${e.message}`);
+		} finally {
+			deduplicandoMassa = false;
+		}
+	}
+
 	function iniciarPollingJob(jobId: string) {
 		if (pollingInterval) clearInterval(pollingInterval);
 
@@ -1558,6 +1581,42 @@
 				{:else}
 					<span class="text-base">🔄</span>
 					<span>Sincronizar Tudo</span>
+				{/if}
+			</button>
+		</div>
+
+		<!-- Card de Destaque: Deduplicação Inteligente em Massa -->
+		<div class="mb-6 p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-indigo-500/30 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+			<div class="space-y-1">
+				<div class="flex items-center gap-2">
+					<span class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+						Consolidação de Identidades
+					</span>
+					<span class="text-xs text-slate-400">Nome Civil + Data de Nascimento</span>
+				</div>
+				<h3 class="text-lg font-bold text-white flex items-center gap-2">
+					<span>Deduplicação Inteligente em Massa &bull; Background Job</span>
+				</h3>
+				<p class="text-xs text-slate-300 max-w-2xl leading-relaxed">
+					Analisa grupos com mesmo nome civil e data de nascimento (ex.: candidatos com candidaturas separadas em eleições distintas), unificando bens, mandatos e registros para um único perfil canônico sem perda de integridade.
+				</p>
+			</div>
+
+			<button
+				type="button"
+				on:click={dispararDeduplicacaoMassa}
+				disabled={deduplicandoMassa || (activeJob?.fonte === 'DEDUPLICACAO_MASSA' && activeJob?.status === 'PROCESSANDO')}
+				class="flex-shrink-0 px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-950/50 transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+			>
+				{#if deduplicandoMassa || (activeJob?.fonte === 'DEDUPLICACAO_MASSA' && activeJob?.status === 'PROCESSANDO')}
+					<svg class="w-4 h-4 animate-spin text-white" fill="none" viewBox="0 0 24 24">
+						<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+						<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+					</svg>
+					<span>Deduplicando em Segundo Plano...</span>
+				{:else}
+					<span class="text-base">🧬</span>
+					<span>Executar Deduplicação em Massa</span>
 				{/if}
 			</button>
 		</div>

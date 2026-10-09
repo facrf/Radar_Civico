@@ -508,7 +508,7 @@ pub async fn versao_handler() -> Json<VersaoResponse> {
     })
 }
 
-async fn atualizar_job(job_id: &str, progresso: u8, mensagem: &str) {
+pub async fn atualizar_job(job_id: &str, progresso: u8, mensagem: &str) {
     let jobs = get_jobs();
     if let Ok(mut map) = jobs.write() {
         if let Some(job) = map.get_mut(job_id) {
@@ -520,7 +520,7 @@ async fn atualizar_job(job_id: &str, progresso: u8, mensagem: &str) {
     }
 }
 
-async fn atualizar_job_concluido(job_id: &str, progresso: u8, status: &str, mensagem: &str) {
+pub async fn atualizar_job_concluido(job_id: &str, progresso: u8, status: &str, mensagem: &str) {
     let jobs = get_jobs();
     if let Ok(mut map) = jobs.write() {
         if let Some(job) = map.get_mut(job_id) {

@@ -162,6 +162,7 @@
 					<option value="DOADOR_INCOMPATIVEL">Doador Beneficiário Social</option>
 					<option value="CONLUIO_LICITACAO">Sócios Comuns em Licitação</option>
 					<option value="CAPITAL_DESPROPORCIONAL">Capital Social Ínfimo vs Faturamento</option>
+					<option value="EMPRESA_RECEM_CRIADA">Empresa Recém-Criada (&lt;180 dias)</option>
 					<option value="UBIQUIDADE">Inconsistência Geotemporal</option>
 					<option value="AUXILIO_EMERGENCIAL">Auxílio Emergencial Indevido</option>
 				</select>
