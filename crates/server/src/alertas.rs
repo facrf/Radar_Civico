@@ -683,6 +683,82 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         }
     }
 
+    // 8. Sincroniza empresas com capital social desproporcional ao faturamento
+    {
+        let mut stmt = conn.prepare(
+            "SELECT d.fornecedor_cnpj_cpf, d.fornecedor_nome,
+                    COALESCE(MAX(q.capital_social), 0.0),
+                    SUM(d.valor_liquido),
+                    COUNT(d.id),
+                    COALESCE(d.parlamentar_nome, 'PARLAMENTAR')
+             FROM despesas_parlamentares d
+             JOIN empresas_qsa q ON q.cnpj_basico = SUBSTR(REPLACE(REPLACE(REPLACE(d.fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', ''), 1, 8)
+             WHERE d.fornecedor_cnpj_cpf IS NOT NULL AND length(d.fornecedor_cnpj_cpf) >= 14
+             GROUP BY d.fornecedor_cnpj_cpf, d.fornecedor_nome
+             HAVING SUM(d.valor_liquido) >= 100000.0 AND COALESCE(MAX(q.capital_social), 0.0) <= 5000.0",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(auditor::FornecedorCapitalFaturamento {
+                cnpj: row.get::<_, String>(0)?,
+                razao_social: row.get::<_, String>(1)?,
+                capital_social: row.get::<_, f64>(2)?,
+                total_faturado: row.get::<_, f64>(3)?,
+                quantidade_operacoes: row.get::<_, usize>(4)?,
+                parlamentar_ou_orgao: row.get::<_, String>(5)?,
+            })
+        })?;
+
+        let fornecedores: Vec<auditor::FornecedorCapitalFaturamento> = rows.flatten().collect();
+        if !fornecedores.is_empty() {
+            let alertas = auditor::auditar_capital_desproporcional(
+                &fornecedores,
+                auditor::LIMITE_CAPITAL_INVEROSIMIL_MAX,
+                auditor::LIMITE_FATURAMENTO_PUBLICO_MIN,
+            );
+            for a in alertas {
+                let chave = format!("\"cnpj\":{:?}", a.cnpj);
+                let ja_existe: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM alertas_auditoria WHERE tipo = 'CAPITAL_DESPROPORCIONAL' AND detalhes_json LIKE ?1 LIMIT 1",
+                        [format!("%{}%", chave)],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false);
+
+                if !ja_existe {
+                    let detalhes = serde_json::json!({
+                        "cnpj": a.cnpj,
+                        "razao_social": a.razao_social,
+                        "capital_social": a.capital_social,
+                        "total_faturado": a.total_faturado,
+                        "multiplicador": a.multiplicador,
+                        "regra": "Empresa faturou valor expressivo com capital social ínfimo (possível empresa de fachada)"
+                    });
+
+                    registrar_alerta(
+                        conn,
+                        &NovoAlerta {
+                            tipo: "CAPITAL_DESPROPORCIONAL".to_string(),
+                            severidade: a.gravidade,
+                            titulo: format!("Capital Social Ínfimo vs Faturamento - {}", a.razao_social),
+                            descricao: a.motivo,
+                            alvo_nome: a.razao_social,
+                            alvo_documento: Some(a.cnpj),
+                            municipio: None,
+                            uf: None,
+                            ano: None,
+                            valor_envolvido: Some(a.total_faturado),
+                            fonte_dado: "CÂMARA/RECEITA_FEDERAL".to_string(),
+                            detalhes_json: Some(detalhes.to_string()),
+                        },
+                    )?;
+                    novos_inseridos += 1;
+                }
+            }
+        }
+    }
+
     Ok(novos_inseridos)
 }
 

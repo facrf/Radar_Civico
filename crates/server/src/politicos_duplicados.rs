@@ -1,3 +1,6 @@
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -7,6 +10,19 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use storage::{rusqlite::Connection, DbPool};
+
+static RESUMO_CACHE: Mutex<Option<(Instant, ResumoDuplicadosResponse)>> = Mutex::new(None);
+
+pub fn invalidar_cache_resumo_duplicados() {
+    if let Ok(mut lock) = RESUMO_CACHE.lock() {
+        *lock = None;
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct MesclarAutomaticoQueryParams {
+    pub limite: Option<usize>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParametrosConsultaDuplicados {
@@ -185,6 +201,14 @@ fn carregar_itens_politicos(conn: &Connection, ids: &[i64]) -> Vec<ItemPoliticoD
 pub async fn resumo_politicos_duplicados_handler(
     State(pool): State<DbPool>,
 ) -> Result<Json<ResumoDuplicadosResponse>, (StatusCode, String)> {
+    if let Ok(lock) = RESUMO_CACHE.lock() {
+        if let Some((instant, ref dados)) = *lock {
+            if instant.elapsed() < Duration::from_secs(120) {
+                return Ok(Json(dados.clone()));
+            }
+        }
+    }
+
     let conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // 1. Grupos com mesmo Nome Completo e Data de Nascimento (100% de certeza)
@@ -239,13 +263,19 @@ pub async fn resumo_politicos_duplicados_handler(
         (2) A sincronização da Câmara dos Deputados (CEAP) cria parlamentares com nomes encurtados sem 'sq_candidato'; \
         (3) As bases recentes do TSE mascaram o CPF como '-4' devido à LGPD, impedindo o uso exclusivo do CPF como chave primária.".to_string();
 
-    Ok(Json(ResumoDuplicadosResponse {
+    let resp = ResumoDuplicadosResponse {
         total_grupos: grupos_nascimento + grupos_ceap,
         total_registros_duplicados: registros_redundantes + grupos_ceap,
         grupos_nascimento_exato: grupos_nascimento,
         grupos_ceap_tse: grupos_ceap,
         explicacao_tecnica: explicacao,
-    }))
+    };
+
+    if let Ok(mut lock) = RESUMO_CACHE.lock() {
+        *lock = Some((Instant::now(), resp.clone()));
+    }
+
+    Ok(Json(resp))
 }
 
 /// GET /api/politicos/duplicados
@@ -592,16 +622,19 @@ pub async fn mesclar_politicos_handler(
     let mut conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match mesclar_politicos_db(&mut conn, payload.id_canonico, payload.id_duplicado) {
-        Ok(qtd) => Ok(Json(MesclarPoliticosResponse {
-            sucesso: true,
-            mensagem: format!(
-                "Político #{} unificado com sucesso no registro canônico #{}. Candidaturas consolidadas.",
-                payload.id_duplicado, payload.id_canonico
-            ),
-            id_canonico: payload.id_canonico,
-            id_removido: payload.id_duplicado,
-            candidaturas_migradas: qtd,
-        })),
+        Ok(qtd) => {
+            invalidar_cache_resumo_duplicados();
+            Ok(Json(MesclarPoliticosResponse {
+                sucesso: true,
+                mensagem: format!(
+                    "Político #{} unificado com sucesso no registro canônico #{}. Candidaturas consolidadas.",
+                    payload.id_duplicado, payload.id_canonico
+                ),
+                id_canonico: payload.id_canonico,
+                id_removido: payload.id_duplicado,
+                candidaturas_migradas: qtd,
+            }))
+        }
         Err(storage::StorageError::NotFound(msg)) => Err((StatusCode::NOT_FOUND, msg)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Falha ao mesclar políticos: {e}"))),
     }
@@ -610,20 +643,25 @@ pub async fn mesclar_politicos_handler(
 /// POST /api/politicos/duplicados/mesclar-automatico
 pub async fn mesclar_automatico_handler(
     State(pool): State<DbPool>,
+    Query(params): Query<MesclarAutomaticoQueryParams>,
 ) -> Result<Json<MesclarAutomaticoResponse>, (StatusCode, String)> {
     let mut conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let limite_grupos = params.limite.unwrap_or(100).clamp(1, 2000);
 
     // Busca grupos com mesmo nome civil e data de nascimento
+    let sql_grupos = format!(
+        "SELECT UPPER(TRIM(nome_completo)), data_nascimento, GROUP_CONCAT(id)
+         FROM politicos
+         WHERE data_nascimento IS NOT NULL AND data_nascimento != ''
+           AND nome_completo IS NOT NULL AND length(nome_completo) > 5
+         GROUP BY UPPER(TRIM(nome_completo)), data_nascimento
+         HAVING count(*) > 1
+         LIMIT {}",
+        limite_grupos
+    );
+
     let mut stmt = conn
-        .prepare(
-            "SELECT UPPER(TRIM(nome_completo)), data_nascimento, GROUP_CONCAT(id)
-             FROM politicos
-             WHERE data_nascimento IS NOT NULL AND data_nascimento != ''
-               AND nome_completo IS NOT NULL AND length(nome_completo) > 5
-             GROUP BY UPPER(TRIM(nome_completo)), data_nascimento
-             HAVING count(*) > 1
-             LIMIT 100",
-        )
+        .prepare(&sql_grupos)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let grupos = stmt
@@ -663,6 +701,10 @@ pub async fn mesclar_automatico_handler(
             }
         }
         processados += 1;
+    }
+
+    if processados > 0 {
+        invalidar_cache_resumo_duplicados();
     }
 
     Ok(Json(MesclarAutomaticoResponse {
