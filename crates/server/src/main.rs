@@ -64,6 +64,11 @@ async fn main() -> Result<()> {
     {
         let mut conn = pool.get().context("Falha ao obter conexão para migrações")?;
         run_migrations(&mut conn).context("Falha ao executar migrações no arranque")?;
+        if let Err(e) = ingestion::sincronizar_autoridades_cupula(&mut conn) {
+            tracing::warn!("Aviso ao sincronizar autoridades de cúpula no arranque: {}", e);
+        } else {
+            info!("Autoridades de cúpula (STF, PGR, Embaixadores, Secretários) sincronizadas com sucesso.");
+        }
     }
 
     if eh_auditoria {

@@ -69,6 +69,20 @@ pub struct PontoEvolucaoPatrimonial {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CargoAutoridadeItem {
+    pub id: i64,
+    pub orgao: String,
+    pub cargo: String,
+    pub esfera: String,
+    pub uf: Option<String>,
+    pub data_posse: Option<String>,
+    pub data_exoneracao: Option<String>,
+    pub ato_nomeacao: Option<String>,
+    pub biografia_resumo: Option<String>,
+    pub origem_dado: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DossiePolitico {
     pub id: i64,
     pub sq_candidato: Option<String>,
@@ -81,6 +95,8 @@ pub struct DossiePolitico {
     pub foto_base64: Option<String>,
     pub foto_mime: Option<String>,
     pub foto_url: Option<String>,
+    #[serde(default)]
+    pub tipo_agente: Option<String>,
     pub candidaturas: Vec<CandidaturaItem>,
     pub historico_bens: Vec<BemItem>,
     pub doadores: Vec<DoadorItem>,
@@ -90,6 +106,8 @@ pub struct DossiePolitico {
     pub evolucao_patrimonial: Vec<PontoEvolucaoPatrimonial>,
     #[serde(default)]
     pub alertas_evolucao_patrimonial: Vec<auditor::AlertaEvolucaoPatrimonial>,
+    #[serde(default)]
+    pub cargos_autoridades: Vec<CargoAutoridadeItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -155,6 +173,10 @@ pub struct PoliticoDetalheResponse {
     pub evolucao_patrimonial: Vec<PontoEvolucaoPatrimonial>,
     #[serde(default)]
     pub alertas_evolucao_patrimonial: Vec<auditor::AlertaEvolucaoPatrimonial>,
+    #[serde(default)]
+    pub tipo_agente: Option<String>,
+    #[serde(default)]
+    pub cargos_autoridades: Vec<CargoAutoridadeItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -199,6 +221,7 @@ pub struct ListarPoliticosQueryParams {
     pub ano: Option<i32>,
     pub ano_eleicao: Option<i32>,
     pub apenas_com_gastos: Option<bool>,
+    pub tipo_agente: Option<String>,
     pub page: Option<usize>,
     pub limit: Option<usize>,
 }
@@ -225,6 +248,8 @@ pub struct ItemPoliticoListagem {
     pub mandatos: Vec<String>,
     #[serde(default)]
     pub ano_eleicao: Option<i32>,
+    #[serde(default)]
+    pub tipo_agente: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -428,7 +453,8 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
 
     let mut stmt = conn.prepare(
         "SELECT id, sq_candidato, cpf_mascarado, nome_completo, nome_urna,
-                data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime, foto_url
+                data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime, foto_url,
+                tipo_agente
          FROM politicos WHERE id = ?1",
     )?;
 
@@ -449,12 +475,14 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
                 foto_base64,
                 foto_mime: row.get(9)?,
                 foto_url: row.get(10)?,
+                tipo_agente: row.get(11).ok(),
                 candidaturas: Vec::new(),
                 historico_bens: Vec::new(),
                 doadores: Vec::new(),
                 alertas_auxilio: Vec::new(),
                 evolucao_patrimonial: Vec::new(),
                 alertas_evolucao_patrimonial: Vec::new(),
+                cargos_autoridades: Vec::new(),
             })
         })
         .ok();
@@ -642,6 +670,36 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
         );
     }
 
+    // Cargos de autoridades públicas (STF, PGR, Embaixadores, Secretários de Estado)
+    {
+        let mut stmt_cargos = conn.prepare(
+            "SELECT id, orgao, cargo, esfera, uf, data_posse, data_exoneracao,
+                    ato_nomeacao, biografia_resumo, origem_dado
+             FROM cargos_autoridades
+             WHERE politico_id = ?1
+             ORDER BY data_posse DESC, id DESC",
+        )?;
+
+        let rows = stmt_cargos.query_map([politico_id], |row| {
+            Ok(CargoAutoridadeItem {
+                id: row.get(0)?,
+                orgao: row.get(1)?,
+                cargo: row.get(2)?,
+                esfera: row.get(3)?,
+                uf: row.get(4)?,
+                data_posse: row.get(5)?,
+                data_exoneracao: row.get(6)?,
+                ato_nomeacao: row.get(7)?,
+                biografia_resumo: row.get(8)?,
+                origem_dado: row.get(9)?,
+            })
+        })?;
+
+        for r in rows.flatten() {
+            dossie.cargos_autoridades.push(r);
+        }
+    }
+
     Ok(Some(dossie))
 }
 
@@ -694,6 +752,15 @@ pub async fn listar_politicos_handler(
             }
         }
     }
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT orgao FROM cargos_autoridades WHERE orgao IS NOT NULL AND orgao != '' ORDER BY orgao ASC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for o in rows.flatten() {
+                if !partidos_disponiveis.contains(&o) {
+                    partidos_disponiveis.push(o);
+                }
+            }
+        }
+    }
 
     let mut ufs_disponiveis = Vec::new();
     if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT uf FROM candidaturas WHERE uf IS NOT NULL AND uf != '' AND length(uf) = 2 ORDER BY uf ASC") {
@@ -703,6 +770,16 @@ pub async fn listar_politicos_handler(
             }
         }
     }
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT uf FROM cargos_autoridades WHERE uf IS NOT NULL AND uf != '' AND length(uf) = 2 ORDER BY uf ASC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for u in rows.flatten() {
+                if !ufs_disponiveis.contains(&u) {
+                    ufs_disponiveis.push(u);
+                }
+            }
+        }
+    }
+    ufs_disponiveis.sort();
 
     let mut anos_disponiveis = Vec::new();
     if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT ano_eleicao FROM candidaturas WHERE ano_eleicao IS NOT NULL AND ano_eleicao > 1900 ORDER BY ano_eleicao DESC") {
@@ -717,6 +794,10 @@ pub async fn listar_politicos_handler(
     }
 
     let mut cargos_disponiveis = vec![
+        "MINISTRO DO STF".to_string(),
+        "PROCURADOR-GERAL DA REPÚBLICA".to_string(),
+        "EMBAIXADOR".to_string(),
+        "SECRETÁRIO DE ESTADO".to_string(),
         "PRESIDENTE".to_string(),
         "VICE-PRESIDENTE".to_string(),
         "GOVERNADOR".to_string(),
@@ -730,6 +811,15 @@ pub async fn listar_politicos_handler(
         "VEREADOR".to_string(),
     ];
     if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT cargo FROM candidaturas WHERE cargo IS NOT NULL AND cargo != '' AND cargo NOT IN ('1','2','3','4','5','6','7','8','11','12','13','CARGO','INDEFINIDO') ORDER BY cargo ASC") {
+        if let Ok(cargos_iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for c in cargos_iter.flatten() {
+                if !cargos_disponiveis.contains(&c) {
+                    cargos_disponiveis.push(c);
+                }
+            }
+        }
+    }
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT cargo FROM cargos_autoridades WHERE cargo IS NOT NULL AND cargo != '' ORDER BY cargo ASC") {
         if let Ok(cargos_iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
             for c in cargos_iter.flatten() {
                 if !cargos_disponiveis.contains(&c) {
@@ -766,23 +856,33 @@ pub async fn listar_politicos_handler(
         }
     }
 
-    // 2. Filtro por Partido
+    // 2. Filtro por Partido ou Órgão
     if !filtro_partido.is_empty() {
-        where_clauses.push("UPPER(c.sigla_partido) = ?".to_string());
+        where_clauses.push("(UPPER(COALESCE(c.sigla_partido, '')) = ? OR UPPER(COALESCE(ca.orgao, '')) = ?)".to_string());
+        sql_params.push(Box::new(filtro_partido.to_uppercase()));
         sql_params.push(Box::new(filtro_partido.to_uppercase()));
     }
 
     // 3. Filtro por UF
     if !filtro_uf.is_empty() {
-        where_clauses.push("UPPER(c.uf) = ?".to_string());
+        where_clauses.push("(UPPER(COALESCE(c.uf, '')) = ? OR UPPER(COALESCE(ca.uf, '')) = ?)".to_string());
+        sql_params.push(Box::new(filtro_uf.to_uppercase()));
         sql_params.push(Box::new(filtro_uf.to_uppercase()));
     }
 
-    // 4. Filtro por Cargo com distinção estrita (evita que PREFEITO traga VICE-PREFEITO e vice-versa)
+    // 4. Filtro por Cargo com suporte a cargos eletivos e autoridades de cúpula
     if !filtro_cargo.is_empty() {
         let cargo_upper = filtro_cargo.to_uppercase();
-        if cargo_upper == "PRESIDENTE" {
-            where_clauses.push("((UPPER(c.cargo) LIKE '%PRESIDENTE%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '1')".to_string());
+        if cargo_upper == "MINISTRO DO STF" || cargo_upper.contains("STF") {
+            where_clauses.push("(UPPER(COALESCE(ca.cargo, '')) LIKE '%MINISTR%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%STF%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%SUPREMO%')".to_string());
+        } else if cargo_upper == "PROCURADOR-GERAL DA REPÚBLICA" || cargo_upper.contains("PGR") {
+            where_clauses.push("(UPPER(COALESCE(ca.cargo, '')) LIKE '%PROCURADOR%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%PGR%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%REPÚBLICA%')".to_string());
+        } else if cargo_upper == "EMBAIXADOR" || cargo_upper.contains("EMBAIXAD") {
+            where_clauses.push("(UPPER(COALESCE(ca.cargo, '')) LIKE '%EMBAIXAD%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%EMBAIXADA%')".to_string());
+        } else if cargo_upper == "SECRETÁRIO DE ESTADO" || cargo_upper.contains("SECRET") {
+            where_clauses.push("(UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETÁR%' OR UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETAR%')".to_string());
+        } else if cargo_upper == "PRESIDENTE" {
+            where_clauses.push("(((UPPER(c.cargo) LIKE '%PRESIDENTE%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '1') AND UPPER(COALESCE(ca.cargo, '')) NOT LIKE '%STF%')".to_string());
         } else if cargo_upper == "VICE-PRESIDENTE" {
             where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-PRESIDENTE%' OR c.cargo = '2')".to_string());
         } else if cargo_upper == "GOVERNADOR" {
@@ -804,13 +904,20 @@ pub async fn listar_politicos_handler(
         } else if cargo_upper == "VEREADOR" {
             where_clauses.push("(UPPER(c.cargo) LIKE '%VEREADOR%' OR c.cargo = '13')".to_string());
         } else {
-            where_clauses.push("(UPPER(c.cargo) LIKE ?)".to_string());
+            where_clauses.push("(UPPER(COALESCE(ca.cargo, c.cargo, '')) LIKE ?)".to_string());
             let clike = format!("%{}%", cargo_upper);
             sql_params.push(Box::new(clike));
         }
     }
 
-    // 5. Filtro por Ano da Eleição
+    // 5. Filtro por Tipo de Agente (POLITICO, AUTORIDADE_STF, etc.)
+    let filtro_tipo_agente = params.tipo_agente.as_deref().unwrap_or("").trim();
+    if !filtro_tipo_agente.is_empty() {
+        where_clauses.push("UPPER(COALESCE(p.tipo_agente, '')) LIKE ?".to_string());
+        sql_params.push(Box::new(format!("%{}%", filtro_tipo_agente.to_uppercase())));
+    }
+
+    // 6. Filtro por Ano da Eleição
     let filtro_ano = params.ano.or(params.ano_eleicao);
     if let Some(ano) = filtro_ano {
         if ano > 1900 {
@@ -819,7 +926,7 @@ pub async fn listar_politicos_handler(
         }
     }
 
-    // 6. Filtro Apenas com Gastos CEAP (usa subquery rápida indexada evitando produto cartesiano)
+    // 7. Filtro Apenas com Gastos CEAP
     if apenas_gastos {
         where_clauses.push(
             "(p.nome_urna IN (SELECT DISTINCT parlamentar_nome FROM despesas_parlamentares WHERE parlamentar_nome IS NOT NULL) \
@@ -841,7 +948,8 @@ pub async fn listar_politicos_handler(
     let sql_contagem = format!(
         "SELECT COUNT(DISTINCT p.id)
          FROM politicos p
-         JOIN candidaturas c ON c.politico_id = p.id
+         LEFT JOIN candidaturas c ON c.politico_id = p.id
+         LEFT JOIN cargos_autoridades ca ON ca.politico_id = p.id
          {}",
         where_str
     );
@@ -850,33 +958,41 @@ pub async fn listar_politicos_handler(
         .query_row(&sql_contagem, params_refs.as_slice(), |r| r.get(0))
         .unwrap_or(0);
 
-    // Ordenação: se usuário está navegando sem busca específica, prioriza Executivo e Legislativo de maior escalão
+    // Ordenação: prioriza cúpula dos poderes, Executivo e Legislativo
     let order_clause = if !q_term.is_empty() {
         "p.nome_urna ASC"
     } else if !filtro_cargo.is_empty() {
         "c.ano_eleicao DESC, p.nome_urna ASC"
     } else {
         "(CASE \
-            WHEN UPPER(c.cargo) LIKE '%PRESIDENTE%' AND UPPER(c.cargo) NOT LIKE '%VICE%' THEN 1 \
-            WHEN UPPER(c.cargo) LIKE '%GOVERNADOR%' AND UPPER(c.cargo) NOT LIKE '%VICE%' THEN 2 \
-            WHEN UPPER(c.cargo) LIKE '%SENADOR%' THEN 3 \
-            WHEN UPPER(c.cargo) = 'DEPUTADO FEDERAL' THEN 4 \
-            WHEN UPPER(c.cargo) LIKE '%PREFEITO%' AND UPPER(c.cargo) NOT LIKE '%VICE%' THEN 5 \
-            WHEN UPPER(c.cargo) LIKE '%DEPUTADO ESTADUAL%' OR UPPER(c.cargo) LIKE '%DISTRITAL%' THEN 6 \
-            WHEN UPPER(c.cargo) LIKE '%VICE%' THEN 7 \
-            ELSE 8 END) ASC, c.ano_eleicao DESC, p.id ASC"
+            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%MINISTRO DO SUPREMO%' OR UPPER(COALESCE(ca.cargo, '')) LIKE '%STF%' THEN 1 \
+            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%PROCURADOR-GERAL%' THEN 2 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%PRESIDENTE%' AND UPPER(COALESCE(c.cargo, '')) NOT LIKE '%VICE%' THEN 3 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%GOVERNADOR%' AND UPPER(COALESCE(c.cargo, '')) NOT LIKE '%VICE%' THEN 4 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%SENADOR%' THEN 5 \
+            WHEN UPPER(COALESCE(c.cargo, '')) = 'DEPUTADO FEDERAL' THEN 6 \
+            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%EMBAIXADOR%' THEN 7 \
+            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETÁRIO%' OR UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETARIO%' THEN 8 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%PREFEITO%' AND UPPER(COALESCE(c.cargo, '')) NOT LIKE '%VICE%' THEN 9 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%DEPUTADO ESTADUAL%' OR UPPER(COALESCE(c.cargo, '')) LIKE '%DISTRITAL%' THEN 10 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%VICE%' THEN 11 \
+            ELSE 12 END) ASC, c.ano_eleicao DESC, p.id ASC"
     };
 
     let sql_dados = format!(
         "SELECT p.id, p.sq_candidato, p.cpf_mascarado, p.nome_completo, p.nome_urna,
-                COALESCE(c.sigla_partido, 'S/P'), COALESCE(c.uf, 'BR'),
-                COALESCE(c.cargo, 'PARLAMENTAR'), c.municipio,
+                COALESCE(c.sigla_partido, ca.orgao, 'S/P'),
+                COALESCE(c.uf, ca.uf, 'BR'),
+                COALESCE(ca.cargo, c.cargo, 'PARLAMENTAR'),
+                c.municipio,
                 COALESCE(c.total_bens_declarados, 0.0),
                 p.foto_blob, p.foto_mime, p.foto_url,
-                GROUP_CONCAT(DISTINCT c.cargo || CASE WHEN c.ano_eleicao IS NOT NULL AND c.ano_eleicao > 0 THEN ' (' || c.ano_eleicao || ')' ELSE '' END) as mandatos_str,
-                MAX(c.ano_eleicao) as ano_eleicao
+                GROUP_CONCAT(DISTINCT COALESCE(ca.cargo || ' (' || ca.orgao || ')', c.cargo || CASE WHEN c.ano_eleicao IS NOT NULL AND c.ano_eleicao > 0 THEN ' (' || c.ano_eleicao || ')' ELSE '' END)) as mandatos_str,
+                MAX(c.ano_eleicao) as ano_eleicao,
+                p.tipo_agente
          FROM politicos p
-         JOIN candidaturas c ON c.politico_id = p.id
+         LEFT JOIN candidaturas c ON c.politico_id = p.id
+         LEFT JOIN cargos_autoridades ca ON ca.politico_id = p.id
          {}
          GROUP BY p.id
          ORDER BY {}
@@ -912,6 +1028,7 @@ pub async fn listar_politicos_handler(
                 })
                 .unwrap_or_else(|| vec![cargo.clone()]);
             let ano_eleicao: Option<i32> = row.get(14).ok();
+            let tipo_agente: Option<String> = row.get(15).ok();
 
             Ok(ItemPoliticoListagem {
                 id,
@@ -932,6 +1049,7 @@ pub async fn listar_politicos_handler(
                 foto_url: row.get(12)?,
                 mandatos,
                 ano_eleicao,
+                tipo_agente,
             })
         })
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -990,12 +1108,13 @@ pub async fn politico_detalhe_handler(
     let mut stmt = conn
         .prepare(
             "SELECT id, sq_candidato, cpf_mascarado, nome_completo, nome_urna,
-                    data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime, foto_url
+                    data_nascimento, grau_instrucao, ocupacao, foto_blob, foto_mime, foto_url,
+                    tipo_agente
              FROM politicos WHERE id = ?1",
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let (id_pol, sq, cpf_masc, nome_completo, nome_urna, dt_nasc, grau, ocup, foto_blob, foto_mime, foto_url) =
+    let (id_pol, sq, cpf_masc, nome_completo, nome_urna, dt_nasc, grau, ocup, foto_blob, foto_mime, foto_url, tipo_agente) =
         match stmt.query_row([id], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -1009,6 +1128,7 @@ pub async fn politico_detalhe_handler(
                 r.get::<_, Option<Vec<u8>>>(8)?,
                 r.get::<_, Option<String>>(9)?,
                 r.get::<_, Option<String>>(10)?,
+                r.get::<_, Option<String>>(11).ok().flatten(),
             ))
         }) {
             Ok(tuple) => tuple,
@@ -1017,7 +1137,7 @@ pub async fn politico_detalhe_handler(
 
     let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
 
-    // Carrega dados eleitorais básicos da candidatura mais recente
+    // Carrega dados eleitorais básicos da candidatura mais recente ou de cargo de autoridade pública
     let (partido, uf, cargo, mun_cand, total_bens_cand) = conn
         .query_row(
             "SELECT sigla_partido, uf, cargo, municipio, total_bens_declarados
@@ -1034,6 +1154,18 @@ pub async fn politico_detalhe_handler(
                 ))
             },
         )
+        .or_else(|_| {
+            conn.query_row(
+                "SELECT orgao, uf, cargo FROM cargos_autoridades WHERE politico_id = ?1 ORDER BY data_posse DESC LIMIT 1",
+                [id],
+                |r| {
+                    let orgao: String = r.get(0)?;
+                    let uf_val: Option<String> = r.get(1)?;
+                    let cargo_val: String = r.get(2)?;
+                    Ok((orgao, uf_val.unwrap_or_else(|| "BR".to_string()), cargo_val, None, 0.0))
+                },
+            )
+        })
         .unwrap_or_else(|_| {
             let (part, est) = inferir_partido_e_uf_deputado(&nome_completo);
             (part, est, ocup.clone().unwrap_or_else(|| "DEPUTADO FEDERAL".to_string()), None, 0.0)
@@ -1159,7 +1291,7 @@ pub async fn politico_detalhe_handler(
         valor_categoria_mais_gasta: (val_cat_mais_gasta * 100.0).round() / 100.0,
     };
 
-    // Carrega dossiê detalhado (candidaturas, bens, doadores, auxílios)
+    // Carrega dossiê detalhado (candidaturas, bens, doadores, auxílios, cargos_autoridades)
     let dossie_base = carregar_dossie(&pool, id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .unwrap_or(DossiePolitico {
@@ -1174,12 +1306,14 @@ pub async fn politico_detalhe_handler(
             foto_base64: foto_base64.clone(),
             foto_mime: foto_mime.clone(),
             foto_url: foto_url.clone(),
+            tipo_agente: tipo_agente.clone(),
             candidaturas: Vec::new(),
             historico_bens: Vec::new(),
             doadores: Vec::new(),
             alertas_auxilio: Vec::new(),
             evolucao_patrimonial: Vec::new(),
             alertas_evolucao_patrimonial: Vec::new(),
+            cargos_autoridades: Vec::new(),
         });
 
     Ok(Json(PoliticoDetalheResponse {
@@ -1207,6 +1341,8 @@ pub async fn politico_detalhe_handler(
         alertas_auxilio: dossie_base.alertas_auxilio,
         evolucao_patrimonial: dossie_base.evolucao_patrimonial,
         alertas_evolucao_patrimonial: dossie_base.alertas_evolucao_patrimonial,
+        tipo_agente,
+        cargos_autoridades: dossie_base.cargos_autoridades,
     }))
 }
 
@@ -2174,5 +2310,49 @@ mod tests {
         assert_eq!(dossie.alertas_evolucao_patrimonial.len(), 1);
         assert_eq!(dossie.alertas_evolucao_patrimonial[0].ano_anterior, 2020);
         assert_eq!(dossie.alertas_evolucao_patrimonial[0].ano_recente, 2024);
+    }
+
+    #[tokio::test]
+    async fn test_autoridades_cupula_listagem_e_detalhe() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Sincroniza autoridades de cúpula
+        let inseridos = ingestion::sincronizar_autoridades_cupula(&mut conn).unwrap();
+        assert!(inseridos > 0, "Deveria inserir autoridades de cúpula");
+
+        let app = Router::new()
+            .route("/api/politicos", get(listar_politicos_handler))
+            .route("/api/politicos/:id", get(politico_detalhe_handler))
+            .with_state(pool.clone());
+
+        // 1. Listagem filtrando por cargo MINISTRO DO STF
+        let req_stf = Request::builder()
+            .uri("/api/politicos?cargo=MINISTRO%20DO%20STF")
+            .body(Body::empty())
+            .unwrap();
+        let res_stf = app.clone().oneshot(req_stf).await.unwrap();
+        assert_eq!(res_stf.status(), StatusCode::OK);
+        let bytes_stf = axum::body::to_bytes(res_stf.into_body(), usize::MAX).await.unwrap();
+        let resp_stf: ListarPoliticosResponse = serde_json::from_slice(&bytes_stf).unwrap();
+        println!("TOTAL RETORNADO: {} / politicos: {:?}", resp_stf.total, resp_stf.politicos.iter().map(|p| (&p.nome_completo, &p.cargo)).collect::<Vec<_>>());
+        assert!(resp_stf.total >= 11, "Deveria listar os 11 ministros do STF");
+        assert!(resp_stf.politicos.iter().any(|p| p.nome_completo.contains("LUÍS ROBERTO BARROSO") || p.nome_completo.contains("BARROSO")));
+
+        // 2. Detalhe de uma autoridade
+        let barroso = resp_stf.politicos.iter().find(|p| p.nome_completo.contains("BARROSO")).unwrap();
+        let req_det = Request::builder()
+            .uri(format!("/api/politicos/{}", barroso.id))
+            .body(Body::empty())
+            .unwrap();
+        let res_det = app.clone().oneshot(req_det).await.unwrap();
+        assert_eq!(res_det.status(), StatusCode::OK);
+        let bytes_det = axum::body::to_bytes(res_det.into_body(), usize::MAX).await.unwrap();
+        let resp_det: PoliticoDetalheResponse = serde_json::from_slice(&bytes_det).unwrap();
+        assert_eq!(resp_det.tipo_agente.as_deref(), Some("MINISTRO_STF"));
+        assert!(!resp_det.cargos_autoridades.is_empty());
+        assert_eq!(resp_det.cargos_autoridades[0].orgao, "Supremo Tribunal Federal");
+        assert!(resp_det.cargos_autoridades[0].cargo.to_uppercase().contains("MINISTR"));
     }
 }

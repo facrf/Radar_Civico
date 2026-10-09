@@ -346,6 +346,11 @@
 							<span class="px-2.5 py-0.5 rounded-lg text-xs font-medium bg-slate-800/80 border border-slate-700/60 text-slate-300">
 								{politico.cargo || 'Político / Candidato'}
 							</span>
+							{#if politico.tipo_agente && politico.tipo_agente !== 'POLITICO'}
+								<span class="px-2.5 py-0.5 rounded-lg text-xs font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-sm">
+									🏛️ {politico.tipo_agente === 'MINISTRO_STF' ? 'STF • Supremo Tribunal Federal' : politico.tipo_agente === 'PGR' ? 'MPU • Procuradoria-Geral da República' : politico.tipo_agente === 'EMBAIXADOR' ? 'MRE • Missão Diplomática' : 'Secretaria de Estado'}
+								</span>
+							{/if}
 							{#if politico.municipio}
 								<span class="text-xs text-slate-400">
 									• {politico.municipio}
@@ -779,6 +784,70 @@
 					{/if}
 				</section>
 
+				<!-- Cargos Públicos e Nomeações de Autoridade de Cúpula -->
+				{#if politico.cargos_autoridades && politico.cargos_autoridades.length > 0}
+					<section class="bg-slate-900 border border-purple-500/30 rounded-2xl p-5 shadow-xl space-y-4">
+						<div class="flex items-center justify-between pb-3 border-b border-slate-800">
+							<div class="flex items-center gap-2">
+								<span class="text-xl">🏛️</span>
+								<div>
+									<h3 class="text-sm font-bold text-white">Cargos & Nomeações de Autoridade Pública</h3>
+									<p class="text-xs text-purple-300/80">Funções de Estado, cúpula dos poderes e secretarias</p>
+								</div>
+							</div>
+							<span class="text-xs text-purple-300 font-mono font-bold bg-purple-500/10 px-2.5 py-1 rounded-lg border border-purple-500/20">
+								{politico.cargos_autoridades.length} {politico.cargos_autoridades.length === 1 ? 'registro' : 'registros'}
+							</span>
+						</div>
+
+						<div class="space-y-3">
+							{#each politico.cargos_autoridades as cargoAuth}
+								<div class="p-3.5 bg-slate-950/80 border border-slate-800/90 rounded-xl space-y-2 text-xs">
+									<div class="flex items-start justify-between gap-3">
+										<div>
+											<div class="flex items-center gap-2 flex-wrap">
+												<span class="font-bold text-white text-sm">{cargoAuth.cargo}</span>
+												<span class="px-2 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-300 font-bold border border-purple-500/40">
+													{cargoAuth.orgao}
+												</span>
+												<span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 font-mono">
+													{cargoAuth.esfera} • {cargoAuth.uf || 'BR'}
+												</span>
+											</div>
+											{#if cargoAuth.ato_nomeacao}
+												<p class="text-slate-400 text-[11px] mt-1">
+													📜 <strong>Ato / Nomeação:</strong> {cargoAuth.ato_nomeacao}
+												</p>
+											{/if}
+										</div>
+
+										<div class="text-right text-[11px] text-slate-400 font-mono whitespace-nowrap">
+											{#if cargoAuth.data_posse}
+												<div>Posse: <strong class="text-slate-200">{cargoAuth.data_posse}</strong></div>
+											{/if}
+											{#if cargoAuth.data_exoneracao}
+												<div class="text-slate-500">Exoneração: {cargoAuth.data_exoneracao}</div>
+											{:else}
+												<span class="text-emerald-400 font-bold text-[10px]">Ativo / Em Exercício</span>
+											{/if}
+										</div>
+									</div>
+
+									{#if cargoAuth.biografia_resumo}
+										<p class="text-slate-300 text-[11px] bg-slate-900/70 p-2.5 rounded-lg border border-slate-800/80 leading-relaxed">
+											{cargoAuth.biografia_resumo}
+										</p>
+									{/if}
+
+									<div class="text-[10px] text-slate-500 flex items-center justify-between pt-1">
+										<span>Fonte primária: {cargoAuth.origem_dado || 'DADOS_ABERTOS_OFICIAIS'}</span>
+									</div>
+								</div>
+							{/each}
+						</div>
+					</section>
+				{/if}
+
 				<!-- Histórico de Candidaturas -->
 				<section class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
 					<div class="flex items-center justify-between pb-3 border-b border-slate-800">
@@ -813,7 +882,10 @@
 							{/each}
 						</div>
 					{:else}
-						<p class="text-xs text-slate-500 text-center py-6">Nenhuma candidatura histórica listada.</p>
+						<div class="p-6 text-center text-xs text-slate-400 space-y-1 bg-slate-950/40 rounded-xl border border-slate-800/50">
+							<p class="font-medium text-slate-300">Sem candidaturas partidárias registradas no TSE</p>
+							<p class="text-slate-500 text-[11px]">Agente com trajetória em cargos técnicos, de Estado ou sabatinados pelo Senado.</p>
+						</div>
 					{/if}
 				</section>
 			</div>

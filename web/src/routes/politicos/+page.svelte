@@ -423,7 +423,7 @@
 						class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
 					>
 						<option value="">Todos os Cargos</option>
-						{#each dados.cargos_disponiveis.length ? dados.cargos_disponiveis : ['PRESIDENTE', 'VICE-PRESIDENTE', 'GOVERNADOR', 'VICE-GOVERNADOR', 'SENADOR', 'DEPUTADO FEDERAL', 'DEPUTADO ESTADUAL', 'DEPUTADO DISTRITAL', 'PREFEITO', 'VICE-PREFEITO', 'VEREADOR'] as cargo}
+						{#each dados.cargos_disponiveis.length ? dados.cargos_disponiveis : ['MINISTRO DO STF', 'PROCURADOR-GERAL DA REPÚBLICA', 'EMBAIXADOR', 'SECRETÁRIO DE ESTADO', 'PRESIDENTE', 'VICE-PRESIDENTE', 'GOVERNADOR', 'VICE-GOVERNADOR', 'SENADOR', 'DEPUTADO FEDERAL', 'DEPUTADO ESTADUAL', 'DEPUTADO DISTRITAL', 'PREFEITO', 'VICE-PREFEITO', 'VEREADOR'] as cargo}
 							<option value={cargo}>{cargo}</option>
 						{/each}
 					</select>
@@ -692,6 +692,11 @@
 											<span class="px-1.5 py-0.5 rounded text-[11px] font-bold bg-slate-800/80 border border-slate-700/60 text-slate-300 font-mono">
 												{politico.uf || 'BR'}
 											</span>
+											{#if politico.tipo_agente && politico.tipo_agente !== 'POLITICO'}
+												<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40" title="Autoridade Pública de Cúpula">
+													🏛️ {politico.tipo_agente === 'MINISTRO_STF' ? 'STF' : politico.tipo_agente === 'PGR' ? 'MPU' : politico.tipo_agente === 'EMBAIXADOR' ? 'MRE' : 'Estado'}
+												</span>
+											{/if}
 											{#if politico.tem_alertas}
 												<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 ml-auto" title="Anomalias identificadas">
 													⚠️ Alerta
@@ -868,6 +873,11 @@
 											<span class="px-1.5 py-0.5 rounded text-[11px] font-bold bg-slate-800/80 border border-slate-700/60 text-slate-300 font-mono">
 												{politico.uf || 'BR'}
 											</span>
+											{#if politico.tipo_agente && politico.tipo_agente !== 'POLITICO'}
+												<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40" title="Autoridade Pública de Cúpula">
+													🏛️ {politico.tipo_agente === 'MINISTRO_STF' ? 'STF' : politico.tipo_agente === 'PGR' ? 'MPU' : politico.tipo_agente === 'EMBAIXADOR' ? 'MRE' : 'Gov'}
+												</span>
+											{/if}
 										</div>
 									</td>
 

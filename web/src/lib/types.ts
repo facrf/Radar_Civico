@@ -76,6 +76,19 @@ export interface AlertaEvolucaoPatrimonial {
 	motivo: string;
 }
 
+export interface CargoAutoridadeItem {
+	id: number;
+	orgao: string;
+	cargo: string;
+	esfera: string;
+	uf: string | null;
+	data_posse: string | null;
+	data_exoneracao: string | null;
+	ato_nomeacao: string | null;
+	biografia_resumo: string | null;
+	origem_dado: string | null;
+}
+
 export interface DossiePolitico {
 	id: number;
 	sq_candidato: string | null;
@@ -87,12 +100,14 @@ export interface DossiePolitico {
 	ocupacao: string | null;
 	foto_base64: string | null;
 	foto_mime: string | null;
+	tipo_agente?: string | null;
 	candidaturas: CandidaturaItem[];
 	historico_bens: BemItem[];
 	doadores: DoadorItem[];
 	alertas_auxilio?: AlertaAuxilioItem[];
 	evolucao_patrimonial?: PontoEvolucaoPatrimonial[];
 	alertas_evolucao_patrimonial?: AlertaEvolucaoPatrimonial[];
+	cargos_autoridades?: CargoAutoridadeItem[];
 }
 
 export interface AlertaItem {
@@ -358,6 +373,7 @@ export interface ItemPoliticoListagem {
 	foto_url?: string | null;
 	mandatos?: string[];
 	ano_eleicao?: number | null;
+	tipo_agente?: string | null;
 }
 
 export interface BuscarFotoResponse {
@@ -443,6 +459,8 @@ export interface PoliticoDetalheResponse {
 	alertas_auxilio?: AlertaAuxilioItem[];
 	evolucao_patrimonial?: PontoEvolucaoPatrimonial[];
 	alertas_evolucao_patrimonial?: AlertaEvolucaoPatrimonial[];
+	tipo_agente?: string | null;
+	cargos_autoridades?: CargoAutoridadeItem[];
 }
 
 export interface BackupItemInfo {
