@@ -8,6 +8,8 @@ use crate::importers::traits::{ImportContext, ImportStage, SourceImporter};
 use crate::tse_ckan::{descobrir_urls_tse, processar_zip_tse_bytes};
 
 pub struct TseImporter {
+    pub custom_id: Option<String>,
+    pub custom_name: Option<String>,
     pub ano: u32,
     pub mock_data: Option<Vec<u8>>,
     pub datasets: Vec<String>,
@@ -16,6 +18,26 @@ pub struct TseImporter {
 impl TseImporter {
     pub fn new(ano: u32) -> Self {
         Self {
+            custom_id: if ano == 2024 { None } else { Some(format!("tse-{}", ano)) },
+            custom_name: if ano == 2024 {
+                None
+            } else {
+                Some(format!("Tribunal Superior Eleitoral ({})", ano))
+            },
+            ano,
+            mock_data: None,
+            datasets: vec![
+                "candidatos".to_string(),
+                "bens-candidatos".to_string(),
+                "prestacao-contas-eleitorais-candidatos".to_string(),
+            ],
+        }
+    }
+
+    pub fn new_with_id(ano: u32, id: &str, name: &str) -> Self {
+        Self {
+            custom_id: Some(id.to_string()),
+            custom_name: Some(name.to_string()),
             ano,
             mock_data: None,
             datasets: vec![
@@ -28,6 +50,8 @@ impl TseImporter {
 
     pub fn with_mock_data(ano: u32, mock_data: Vec<u8>) -> Self {
         Self {
+            custom_id: None,
+            custom_name: None,
             ano,
             mock_data: Some(mock_data),
             datasets: Vec::new(),
@@ -49,11 +73,11 @@ impl Default for TseImporter {
 #[async_trait]
 impl SourceImporter for TseImporter {
     fn id(&self) -> &str {
-        "tse"
+        self.custom_id.as_deref().unwrap_or("tse")
     }
 
     fn name(&self) -> &str {
-        "Tribunal Superior Eleitoral"
+        self.custom_name.as_deref().unwrap_or("Tribunal Superior Eleitoral")
     }
 
     fn description(&self) -> &str {

@@ -24,9 +24,9 @@ pub use progress::{
 
 pub use tse_ckan::{
     baixar_e_processar_pacote_tse, descobrir_urls_tse, descobrir_urls_tse_com_base,
-    processar_csv_tse_str, processar_csv_tse_str_com_progresso, processar_zip_tse_bytes,
-    processar_zip_tse_bytes_com_progresso, selecionar_arquivos_zip, CkanPackage, CkanResource,
-    CkanResponse, LOTE_BATCH_SIZE,
+    normalizar_cargo, processar_csv_tse_str, processar_csv_tse_str_com_progresso,
+    processar_zip_tse_bytes, processar_zip_tse_bytes_com_progresso, selecionar_arquivos_zip,
+    CkanPackage, CkanResource, CkanResponse, LOTE_BATCH_SIZE,
 };
 
 pub use auxilio_emergencial::{

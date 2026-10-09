@@ -85,7 +85,22 @@ pub fn selecionar_arquivos_zip(nomes: &[String]) -> Vec<String> {
 pub fn deve_ignorar_recurso_ckan(nome: &str, url: &str) -> bool {
     let lower_name = nome.to_lowercase();
     let lower_url = url.to_lowercase();
-    let padroes = ["foto_cand", "fotos", "proposta_governo", "extrato_bancario", "fefc_"];
+    let padroes = [
+        "foto_cand",
+        "fotos",
+        "proposta_governo",
+        "extrato_bancario",
+        "fefc_",
+        "certidao_criminal",
+        "nota_fiscal",
+        "rede_social",
+        "complementar",
+        "cnpj_campanha",
+        "orgaos_partidarios",
+        "coligacao",
+        "vagas",
+        "motivo_cassacao",
+    ];
     for p in padroes {
         if lower_name.contains(p) || lower_url.contains(p) {
             return true;
@@ -139,30 +154,36 @@ pub async fn descobrir_urls_tse_com_base(
         };
 
         if !resp.status().is_success() {
-            // Suporte a alias caso seja prestação de contas na API real do TSE
+            // Suporte a alias caso seja prestação de contas na API real do TSE (ex: 2022 usa prefixo dadosabertos-tse-jus-br-dataset-)
             if slug == "prestacao-contas-eleitorais-candidatos" {
-                let alias_id = format!("prestacao-de-contas-eleitorais-{}", ano);
-                let alias_url = format!(
-                    "{}/api/3/action/package_show?id={}",
-                    base_url.trim_end_matches('/'),
-                    alias_id
-                );
-                if let Ok(alias_resp) = client.get(&alias_url).send().await {
-                    if alias_resp.status().is_success() {
-                        if let Ok(ckan_data) =
-                            alias_resp.json::<CkanResponse<CkanPackage>>().await
-                        {
-                            for res in ckan_data.result.resources {
-                                if deve_ignorar_recurso_ckan(&res.name, &res.url) {
-                                    continue;
+                let aliases = [
+                    format!("prestacao-de-contas-eleitorais-{}", ano),
+                    format!("dadosabertos-tse-jus-br-dataset-prestacao-de-contas-eleitorais-{}", ano),
+                ];
+                for alias_id in &aliases {
+                    let alias_url = format!(
+                        "{}/api/3/action/package_show?id={}",
+                        base_url.trim_end_matches('/'),
+                        alias_id
+                    );
+                    if let Ok(alias_resp) = client.get(&alias_url).send().await {
+                        if alias_resp.status().is_success() {
+                            if let Ok(ckan_data) =
+                                alias_resp.json::<CkanResponse<CkanPackage>>().await
+                            {
+                                for res in ckan_data.result.resources {
+                                    if deve_ignorar_recurso_ckan(&res.name, &res.url) {
+                                        continue;
+                                    }
+                                    let fmt = res.format.trim().to_uppercase();
+                                    let u = res.url.trim();
+                                    if (fmt == "ZIP" || u.to_lowercase().ends_with(".zip"))
+                                        && !urls.contains(&res.url)
+                                    {
+                                        urls.push(res.url);
+                                    }
                                 }
-                                let fmt = res.format.trim().to_uppercase();
-                                let u = res.url.trim();
-                                if (fmt == "ZIP" || u.to_lowercase().ends_with(".zip"))
-                                    && !urls.contains(&res.url)
-                                {
-                                    urls.push(res.url);
-                                }
+                                break;
                             }
                         }
                     }
@@ -190,16 +211,65 @@ pub async fn descobrir_urls_tse_com_base(
     Ok(urls)
 }
 
-fn find_col_idx(headers: &csv::StringRecord, candidates: &[&str]) -> Option<usize> {
-    for (i, h) in headers.iter().enumerate() {
-        let h_norm = h.trim().to_uppercase().replace(['"', '\'', '_', ' '], "");
-        for &c in candidates {
-            let c_norm = c.to_uppercase().replace(['"', '\'', '_', ' '], "");
-            if h_norm == c_norm || h_norm.contains(&c_norm) {
+pub fn normalizar_cargo(cargo_raw: &str) -> String {
+    let clean = cargo_raw.trim().to_uppercase();
+    match clean.as_str() {
+        "1" => "PRESIDENTE".to_string(),
+        "2" => "VICE-PRESIDENTE".to_string(),
+        "3" => "GOVERNADOR".to_string(),
+        "4" => "VICE-GOVERNADOR".to_string(),
+        "5" => "SENADOR".to_string(),
+        "6" => "DEPUTADO FEDERAL".to_string(),
+        "7" => "DEPUTADO ESTADUAL".to_string(),
+        "8" => "DEPUTADO DISTRITAL".to_string(),
+        "9" | "10" => "SUPLENTE".to_string(),
+        "11" => "PREFEITO".to_string(),
+        "12" => "VICE-PREFEITO".to_string(),
+        "13" => "VEREADOR".to_string(),
+        other => {
+            if other.is_empty() || other == "CARGO" {
+                "INDEFINIDO".to_string()
+            } else {
+                other.to_string()
+            }
+        }
+    }
+}
+
+pub fn find_col_idx(headers: &csv::StringRecord, candidates: &[&str]) -> Option<usize> {
+    // 1. Passada de correspondência EXATA, respeitando a ordem de preferência dos candidatos
+    for &c in candidates {
+        let c_norm = c.to_uppercase().replace(['"', '\'', '_', ' '], "");
+        for (i, h) in headers.iter().enumerate() {
+            let h_norm = h.trim().to_uppercase().replace(['"', '\'', '_', ' '], "");
+            if h_norm == c_norm {
                 return Some(i);
             }
         }
     }
+
+    // 2. Prefixo/substring sem colidir CD_ (códigos) com descrições (DS_) ou siglas (SG_)
+    for &c in candidates {
+        let c_norm = c.to_uppercase().replace(['"', '\'', '_', ' '], "");
+        for (i, h) in headers.iter().enumerate() {
+            let h_norm = h.trim().to_uppercase().replace(['"', '\'', '_', ' '], "");
+            if !h_norm.starts_with("CD") && h_norm.contains(&c_norm) {
+                return Some(i);
+            }
+        }
+    }
+
+    // 3. Fallback genérico se nada mais casou
+    for &c in candidates {
+        let c_norm = c.to_uppercase().replace(['"', '\'', '_', ' '], "");
+        for (i, h) in headers.iter().enumerate() {
+            let h_norm = h.trim().to_uppercase().replace(['"', '\'', '_', ' '], "");
+            if h_norm.contains(&c_norm) {
+                return Some(i);
+            }
+        }
+    }
+
     None
 }
 
@@ -430,7 +500,7 @@ where
 
         for record in reader.records().flatten() {
             let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
-            if sq.is_empty() {
+            if sq.is_empty() || sq.eq_ignore_ascii_case("SQ_CANDIDATO") {
                 continue;
             }
 
@@ -439,7 +509,11 @@ where
                 .and_then(|s| s.trim().parse::<i32>().ok())
                 .unwrap_or(2024);
             let uf = col_uf.and_then(|i| record.get(i)).unwrap_or("BR").trim().to_string();
-            let cargo = col_cargo.and_then(|i| record.get(i)).unwrap_or("CARGO").trim().to_string();
+            let raw_cargo = col_cargo.and_then(|i| record.get(i)).unwrap_or("").trim();
+            let cargo = normalizar_cargo(raw_cargo);
+            if cargo == "INDEFINIDO" {
+                continue;
+            }
             let nr = col_nr.and_then(|i| record.get(i)).and_then(|s| s.trim().parse::<i32>().ok());
             let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("CANDIDATO").trim().to_string();
             let urna = col_urna.and_then(|i| record.get(i)).unwrap_or(&nome).trim().to_string();
@@ -865,5 +939,34 @@ ANO_ELEICAO;CD_TIPO_ELEICAO;NM_TIPO_ELEICAO;CD_ELEICAO;DS_ELEICAO;DT_ELEICAO;SG_
             .query_row("SELECT count(*) FROM politicos", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total_politicos, 0);
+    }
+
+    #[test]
+    fn test_normalizar_cargo() {
+        assert_eq!(normalizar_cargo("1"), "PRESIDENTE");
+        assert_eq!(normalizar_cargo("2"), "VICE-PRESIDENTE");
+        assert_eq!(normalizar_cargo("3"), "GOVERNADOR");
+        assert_eq!(normalizar_cargo("4"), "VICE-GOVERNADOR");
+        assert_eq!(normalizar_cargo("5"), "SENADOR");
+        assert_eq!(normalizar_cargo("6"), "DEPUTADO FEDERAL");
+        assert_eq!(normalizar_cargo("7"), "DEPUTADO ESTADUAL");
+        assert_eq!(normalizar_cargo("8"), "DEPUTADO DISTRITAL");
+        assert_eq!(normalizar_cargo("11"), "PREFEITO");
+        assert_eq!(normalizar_cargo("12"), "VICE-PREFEITO");
+        assert_eq!(normalizar_cargo("13"), "VEREADOR");
+        assert_eq!(normalizar_cargo("PRESIDENTE"), "PRESIDENTE");
+        assert_eq!(normalizar_cargo("GOVERNADOR"), "GOVERNADOR");
+        assert_eq!(normalizar_cargo("CARGO"), "INDEFINIDO");
+        assert_eq!(normalizar_cargo(""), "INDEFINIDO");
+    }
+
+    #[test]
+    fn test_find_col_idx_prioriza_exato_sobre_codigo() {
+        let headers = csv::StringRecord::from(vec![
+            "CD_CARGO", "DS_CARGO", "CD_PARTIDO", "SG_PARTIDO", "CD_SIT_TOT_TURNO", "DS_SIT_TOT_TURNO"
+        ]);
+        assert_eq!(find_col_idx(&headers, &["DS_CARGO", "CARGO"]), Some(1));
+        assert_eq!(find_col_idx(&headers, &["SG_PARTIDO", "PARTIDO"]), Some(3));
+        assert_eq!(find_col_idx(&headers, &["DS_SIT_TOT_TURNO", "SITUACAO_TOTALIZACAO"]), Some(5));
     }
 }
