@@ -83,9 +83,13 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
     // 1. Busca em politicos_fts (se houver texto para FTS)
     if !fts_query.is_empty() {
         let mut stmt = conn.prepare(
-            "SELECT politico_id, nome_completo, nome_urna, sq_candidato
-             FROM politicos_fts
+            "SELECT f.politico_id, f.nome_completo, f.nome_urna, f.sq_candidato,
+                    p.tipo_agente, ca.cargo, ca.orgao
+             FROM politicos_fts f
+             LEFT JOIN politicos p ON p.id = f.politico_id
+             LEFT JOIN cargos_autoridades ca ON ca.politico_id = f.politico_id
              WHERE politicos_fts MATCH ?1
+             ORDER BY rank
              LIMIT ?2",
         )?;
 
@@ -94,14 +98,33 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
             let nome_completo: String = row.get(1)?;
             let nome_urna: String = row.get(2)?;
             let sq: String = row.get(3)?;
+            let tipo_agente: Option<String> = row.get(4).ok().flatten();
+            let cargo_auth: Option<String> = row.get(5).ok().flatten();
+            let orgao_auth: Option<String> = row.get(6).ok().flatten();
+
+            let subtitulo = if let (Some(cargo), Some(orgao)) = (cargo_auth, orgao_auth) {
+                format!("{} • {}", cargo, orgao)
+            } else if let Some(tipo) = tipo_agente.filter(|t| t != "POLITICO") {
+                format!("Autoridade Pública ({})", tipo)
+            } else {
+                format!("Nome de urna: {}", nome_urna)
+            };
+
+            let identificador = if !sq.is_empty() {
+                sq.clone()
+            } else if let Some(i) = id {
+                i.to_string()
+            } else {
+                nome_urna.clone()
+            };
 
             Ok(ItemBuscaUnificada::novo(
                 "POLITICO",
                 id,
-                &sq,
+                &identificador,
                 &nome_completo,
-                Some(format!("Nome de urna: {}", nome_urna)),
-            ).com_documento(&sq))
+                Some(subtitulo),
+            ).com_documento(&identificador))
         })?;
 
         for r in rows.flatten() {
@@ -113,10 +136,12 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
     if (!digits.is_empty()) && resultados.len() < limite {
         let rem_limite = limite - resultados.len();
         let mut stmt = conn.prepare(
-            "SELECT id, nome_completo, nome_urna, sq_candidato, cpf_mascarado
-             FROM politicos
-             WHERE sq_candidato = ?1
-                OR (cpf_mascarado IS NOT NULL AND cpf_mascarado != '-4' AND (cpf_mascarado LIKE ?2 OR cpf_mascarado LIKE ?3))
+            "SELECT p.id, p.nome_completo, p.nome_urna, p.sq_candidato, p.cpf_mascarado,
+                    p.tipo_agente, ca.cargo, ca.orgao
+             FROM politicos p
+             LEFT JOIN cargos_autoridades ca ON ca.politico_id = p.id
+             WHERE p.sq_candidato = ?1
+                OR (p.cpf_mascarado IS NOT NULL AND p.cpf_mascarado != '-4' AND (p.cpf_mascarado LIKE ?2 OR p.cpf_mascarado LIKE ?3))
              LIMIT ?4",
         )?;
 
@@ -131,22 +156,41 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
                 let nome_urna: String = row.get(2)?;
                 let sq: String = row.get(3)?;
                 let cpf: Option<String> = row.get(4)?;
+                let tipo_agente: Option<String> = row.get(5).ok().flatten();
+                let cargo_auth: Option<String> = row.get(6).ok().flatten();
+                let orgao_auth: Option<String> = row.get(7).ok().flatten();
+
+                let mut desc = if let (Some(cargo), Some(orgao)) = (cargo_auth, orgao_auth) {
+                    format!("{} • {}", cargo, orgao)
+                } else if let Some(tipo) = tipo_agente.filter(|t| t != "POLITICO") {
+                    format!("Autoridade Pública ({})", tipo)
+                } else {
+                    format!("Nome de urna: {}", nome_urna)
+                };
+
+                if let Some(ref c) = cpf {
+                    desc.push_str(&format!(" • CPF: {}", c));
+                }
+
+                let identificador = if !sq.is_empty() {
+                    sq.clone()
+                } else if let Some(i) = id {
+                    i.to_string()
+                } else {
+                    nome_urna.clone()
+                };
 
                 let mut item = ItemBuscaUnificada::novo(
                     "POLITICO",
                     id,
-                    &sq,
+                    &identificador,
                     &nome_completo,
-                    Some(format!(
-                        "Nome de urna: {}{}",
-                        nome_urna,
-                        cpf.as_ref().map(|c| format!(" • CPF: {}", c)).unwrap_or_default()
-                    )),
+                    Some(desc),
                 );
                 if let Some(ref c) = cpf {
                     item = item.com_documento(c);
                 } else {
-                    item = item.com_documento(&sq);
+                    item = item.com_documento(&identificador);
                 }
                 Ok(item)
             },

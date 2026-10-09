@@ -82,6 +82,8 @@ pub struct TotalRegistros {
     pub beneficios_emergenciais: i64,
     #[serde(default)]
     pub alertas_beneficio_indevido: i64,
+    #[serde(default)]
+    pub cargos_autoridades: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +447,11 @@ pub async fn status_handler(
             r.get(0)
         })
         .unwrap_or(0);
+    let cargos_autoridades: i64 = conn
+        .query_row("SELECT count(*) FROM cargos_autoridades", [], |r| {
+            r.get(0)
+        })
+        .unwrap_or(0);
 
     let ultimo_evento_sincronizacao: Option<String> = conn
         .query_row(
@@ -482,6 +489,7 @@ pub async fn status_handler(
             registros_profissionais,
             beneficios_emergenciais,
             alertas_beneficio_indevido,
+            cargos_autoridades,
         },
         ultimo_evento_sincronizacao,
         versao_sistema: option_env!("APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string(),
@@ -1137,6 +1145,87 @@ pub async fn sincronizar_camara_handler(
     ))
 }
 
+pub async fn sincronizar_autoridades_handler(
+    State(pool): State<DbPool>,
+) -> Result<(StatusCode, Json<ExecutarIngestaoResponse>), (StatusCode, Json<serde_json::Value>)> {
+    let job_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+
+    let job = JobInfo {
+        job_id: job_id.clone(),
+        fonte: "AUTORIDADES_CUPULA".to_string(),
+        ano: None,
+        status: "PROCESSANDO".to_string(),
+        progresso: 10,
+        mensagem: "Iniciando sincronização de autoridades de cúpula (STF, PGR, Embaixadores, Secretários)...".to_string(),
+        logs: vec![format!("[{now}] Disparada sincronização de autoridades de cúpula")],
+        criado_em: now,
+        concluido_em: None,
+    };
+
+    {
+        let jobs = get_jobs();
+        let mut map = jobs.write().unwrap();
+        map.insert(job_id.clone(), job);
+    }
+
+    let job_id_spawn = job_id.clone();
+    let pool_spawn = pool.clone();
+
+    tokio::spawn(async move {
+        atualizar_job(
+            &job_id_spawn,
+            30,
+            "Catalogando ministros do STF, PGR, corpo diplomático e secretários de estado...",
+        )
+        .await;
+
+        let total = if let Ok(mut conn) = pool_spawn.get() {
+            match ingestion::autoridades::sincronizar_autoridades_cupula(&mut conn) {
+                Ok(n) => n,
+                Err(e) => {
+                    let err_msg = format!("Erro na sincronização de autoridades: {e}");
+                    atualizar_job_concluido(&job_id_spawn, 100, "ERRO", &err_msg).await;
+                    return;
+                }
+            }
+        } else {
+            0
+        };
+
+        atualizar_job(
+            &job_id_spawn,
+            75,
+            &format!("Registros processados com idempotência ({} registros ingeridos)...", total),
+        )
+        .await;
+
+        let total_cargos: i64 = pool_spawn.get().map(|c| {
+            c.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0)).unwrap_or(0)
+        }).unwrap_or(0);
+
+        let msg = format!("Sincronização de autoridades concluída: {} cargos registrados no sistema.", total_cargos);
+        atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
+
+        if let Ok(conn) = pool_spawn.get() {
+            let _ = conn.execute(
+                "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
+                 VALUES ('AUTORIDADES_CUPULA', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
+                rusqlite::params![msg],
+            );
+        }
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ExecutarIngestaoResponse {
+            job_id,
+            status: "PROCESSANDO".to_string(),
+            mensagem: "Processo de sincronização de autoridades de cúpula iniciado com sucesso em segundo plano.".to_string(),
+        }),
+    ))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SincronizarTudoRequest {
     pub ano_eleitoral: Option<i32>,
@@ -1144,6 +1233,7 @@ pub struct SincronizarTudoRequest {
     pub incluir_tse: Option<bool>,
     pub incluir_camara: Option<bool>,
     pub incluir_receita: Option<bool>,
+    pub incluir_autoridades: Option<bool>,
     pub incluir_auditoria: Option<bool>,
 }
 
@@ -1157,6 +1247,7 @@ pub async fn sincronizar_tudo_handler(
     let incluir_tse = payload.incluir_tse.unwrap_or(true);
     let incluir_camara = payload.incluir_camara.unwrap_or(true);
     let incluir_receita = payload.incluir_receita.unwrap_or(true);
+    let incluir_autoridades = payload.incluir_autoridades.unwrap_or(true);
     let incluir_auditoria = payload.incluir_auditoria.unwrap_or(true);
 
     let job_id = Uuid::new_v4().to_string();
@@ -1343,7 +1434,32 @@ pub async fn sincronizar_tudo_handler(
             .await;
         }
 
-        // 4. Execução do Motor de Auditoria Analítico
+        // 4. Sincronização de Autoridades de Cúpula (STF, PGR, Embaixadores, Secretários)
+        if incluir_autoridades {
+            atualizar_job(
+                &job_id_spawn,
+                88,
+                "Sincronizando catálogo de autoridades públicas de cúpula (STF, PGR, Embaixadores, Secretários)...",
+            )
+            .await;
+
+            if let Ok(mut conn) = pool_spawn.get() {
+                let _ = ingestion::autoridades::sincronizar_autoridades_cupula(&mut conn);
+            }
+
+            let total_auth = pool_spawn.get().map(|c| {
+                c.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get::<_, i64>(0)).unwrap_or(0)
+            }).unwrap_or(0);
+
+            atualizar_job(
+                &job_id_spawn,
+                90,
+                &format!("Autoridades de cúpula sincronizadas ({} cargos catalogados).", total_auth),
+            )
+            .await;
+        }
+
+        // 5. Execução do Motor de Auditoria Analítico
         if incluir_auditoria {
             atualizar_job(
                 &job_id_spawn,
@@ -3523,6 +3639,52 @@ mod tests {
             |r| r.get(0),
         ).unwrap_or(0);
         assert!(hist_count >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_sincronizar_autoridades_endpoint() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        storage::run_migrations(&mut conn).unwrap();
+
+        let app = crate::criar_router(pool.clone());
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/sincronizar/autoridades")
+            .header("content-type", "application/json")
+            .body(Body::empty())
+            .unwrap();
+
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let resp: ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(resp.status, "PROCESSANDO");
+        assert!(!resp.job_id.is_empty());
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+
+        let req_status = Request::builder()
+            .uri(format!("/api/v1/config/ingestao/status/{}", resp.job_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let res_status = app.clone().oneshot(req_status).await.unwrap();
+        assert_eq!(res_status.status(), StatusCode::OK);
+
+        let bytes_st = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let job_st: JobInfo = serde_json::from_slice(&bytes_st).unwrap();
+        assert_eq!(job_st.fonte, "AUTORIDADES_CUPULA");
+
+        let c = pool.get().unwrap();
+        let total_cargos: i64 = c.query_row(
+            "SELECT count(*) FROM cargos_autoridades",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        assert!(total_cargos >= 15);
     }
 }
 

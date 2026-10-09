@@ -12,6 +12,7 @@
 		alertas_auditoria: number;
 		empresas_qsa?: number;
 		registros_profissionais?: number;
+		cargos_autoridades?: number;
 	}
 
 	interface ConfigStatus {
@@ -187,7 +188,9 @@
 	let incluirTseTudo = true;
 	let incluirCamaraTudo = true;
 	let incluirReceitaTudo = true;
+	let incluirAutoridadesTudo = true;
 	let incluirAuditoriaTudo = true;
+	let sincronizandoAutoridades = false;
 
 	// Monitor de Job & Ingestão
 	let activeJob: JobInfo | null = null;
@@ -466,6 +469,28 @@
 		}
 	}
 
+	async function dispararSincronizarAutoridades() {
+		sincronizandoAutoridades = true;
+		try {
+			const res = await fetch('/api/v1/config/sincronizar/autoridades', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' }
+			});
+
+			if (!res.ok) {
+				const err = await res.json();
+				throw new Error(err.erro || 'Falha ao sincronizar autoridades de cúpula');
+			}
+
+			const data = await res.json();
+			iniciarPollingJob(data.job_id);
+		} catch (e: any) {
+			alert(`Erro na sincronização de autoridades: ${e.message}`);
+		} finally {
+			sincronizandoAutoridades = false;
+		}
+	}
+
 	async function dispararSincronizarTudo() {
 		sincronizandoTudo = true;
 		modalSincronizarTudo = false;
@@ -479,6 +504,7 @@
 					incluir_tse: incluirTseTudo,
 					incluir_camara: incluirCamaraTudo,
 					incluir_receita: incluirReceitaTudo,
+					incluir_autoridades: incluirAutoridadesTudo,
 					incluir_auditoria: incluirAuditoriaTudo
 				})
 			});
@@ -881,7 +907,7 @@
 						{/if}
 					</p>
 					<p class="text-xs text-slate-400">
-						{(status?.total_registros.candidaturas ?? 0).toLocaleString('pt-BR')} candidaturas ativas
+						{(status?.total_registros.candidaturas ?? 0).toLocaleString('pt-BR')} candidaturas • {(status?.total_registros.cargos_autoridades ?? 0).toLocaleString('pt-BR')} autoridades públicas
 					</p>
 				</div>
 			</div>
@@ -1813,6 +1839,40 @@
 					</button>
 				</div>
 			</div>
+
+			<!-- Fonte 5: Autoridades de Cúpula (STF, PGR, Diplomacia, Secretarias) -->
+			<div class="p-6 bg-slate-800/50 border border-slate-700/60 rounded-xl space-y-4 md:col-span-2">
+				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+					<div class="flex items-center gap-3">
+						<div class="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400 font-bold text-sm">
+							🏛️
+						</div>
+						<div>
+							<h3 class="font-medium text-white">Autoridades Públicas de Cúpula</h3>
+							<p class="text-xs text-slate-400">Ministros do STF, Procuradoria-Geral da República (PGR), Embaixadores e Secretários de Estado</p>
+						</div>
+					</div>
+
+					<button
+						type="button"
+						on:click={dispararSincronizarAutoridades}
+						disabled={sincronizandoAutoridades}
+						class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50 flex items-center gap-2 cursor-pointer self-start sm:self-auto"
+					>
+						{#if sincronizandoAutoridades}
+							<svg class="w-3.5 h-3.5 animate-spin text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+							</svg>
+							<span>Sincronizando...</span>
+						{:else}
+							<span>🏛️ Sincronizar Autoridades de Cúpula</span>
+						{/if}
+					</button>
+				</div>
+				<p class="text-xs text-slate-300 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800/80 leading-relaxed">
+					Ingere e sincroniza com deduplicação por nome civil e cruzamento eleitoral: os 11 Ministros do Supremo Tribunal Federal, Procuradores-Gerais da República, embaixadores em postos diplomáticos estratégicos e secretários de estado.
+				</p>
+			</div>
 		</div>
 	</div>
 
@@ -2449,8 +2509,13 @@
 						</label>
 
 						<label class="flex items-center gap-2 p-2.5 bg-slate-800/40 border border-slate-700/60 rounded-lg cursor-pointer hover:bg-slate-800/70">
+							<input type="checkbox" bind:checked={incluirAutoridadesTudo} class="rounded bg-slate-950 border-slate-600 text-emerald-500 focus:ring-emerald-500" />
+							<span>Autoridades de Cúpula (STF/PGR/MRE)</span>
+						</label>
+
+						<label class="flex items-center gap-2 p-2.5 bg-slate-800/40 border border-slate-700/60 rounded-lg cursor-pointer hover:bg-slate-800/70 sm:col-span-2">
 							<input type="checkbox" bind:checked={incluirAuditoriaTudo} class="rounded bg-slate-950 border-slate-600 text-emerald-500 focus:ring-emerald-500" />
-							<span>Motor de Auditoria</span>
+							<span>Motor de Auditoria (Recálculo de Heurísticas)</span>
 						</label>
 					</div>
 				</div>
@@ -2467,7 +2532,7 @@
 					<button
 						type="button"
 						on:click={dispararSincronizarTudo}
-						disabled={sincronizandoTudo || (!incluirCamaraTudo && !incluirTseTudo && !incluirReceitaTudo && !incluirAuditoriaTudo)}
+						disabled={sincronizandoTudo || (!incluirCamaraTudo && !incluirTseTudo && !incluirReceitaTudo && !incluirAutoridadesTudo && !incluirAuditoriaTudo)}
 						class="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-md transition-colors disabled:opacity-50 flex items-center gap-2 cursor-pointer"
 					>
 						{#if sincronizandoTudo}
