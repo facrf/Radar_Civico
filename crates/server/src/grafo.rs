@@ -167,6 +167,8 @@ pub fn formatar_subgrafo(
 
         let eh_anomalia = a.tipo_relacao.to_uppercase().contains("ANOMALIA")
             || a.tipo_relacao.to_uppercase().contains("SUSPEIT")
+            || a.tipo_relacao.to_uppercase().contains("PARENTESCO")
+            || a.tipo_relacao.to_uppercase().contains("NEPOTISMO")
             || a.metadata_json
                 .as_ref()
                 .map(|m| m.contains("anomalia") || m.contains("alerta"))

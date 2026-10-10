@@ -28,6 +28,7 @@ pub const TABELAS_PERMITIDAS: &[&str] = &[
     "registros_profissionais",
     "historico_sincronizacao",
     "configuracoes_sistema",
+    "emendas_parlamentares",
 ];
 
 pub const DEFAULT_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
@@ -84,6 +85,8 @@ pub struct TotalRegistros {
     pub alertas_beneficio_indevido: i64,
     #[serde(default)]
     pub cargos_autoridades: i64,
+    #[serde(default)]
+    pub emendas_parlamentares: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -452,6 +455,11 @@ pub async fn status_handler(
             r.get(0)
         })
         .unwrap_or(0);
+    let emendas_parlamentares: i64 = conn
+        .query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
+            r.get(0)
+        })
+        .unwrap_or(0);
 
     let ultimo_evento_sincronizacao: Option<String> = conn
         .query_row(
@@ -490,6 +498,7 @@ pub async fn status_handler(
             beneficios_emergenciais,
             alertas_beneficio_indevido,
             cargos_autoridades,
+            emendas_parlamentares,
         },
         ultimo_evento_sincronizacao,
         versao_sistema: option_env!("APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string(),
@@ -1809,6 +1818,8 @@ fn detectar_tipo_por_cabecalho(headers: &csv::StringRecord) -> String {
         "TSE_CANDIDATOS".to_string()
     } else if header_str.contains("TERMO_PESQUISADO") || header_str.contains("MUNICIPIO_UF") || header_str.contains("QUERIDO_DIARIO") {
         "DIARIOS_OFICIAIS".to_string()
+    } else if header_str.contains("EMENDA") || header_str.contains("NUMERO_EMENDA") || (header_str.contains("AUTOR") && (header_str.contains("VALOR_EMPENHADO") || header_str.contains("EMPENHO") || header_str.contains("VALOR_PAGO"))) {
+        "EMENDAS_PARLAMENTARES".to_string()
     } else if header_str.contains("BENEFICIARIO") || header_str.contains("BENEFICIO") || header_str.contains("AUXILIO") {
         "AUXILIO_EMERGENCIAL".to_string()
     } else {
@@ -2213,6 +2224,50 @@ fn processar_csv_records<R: std::io::Read>(
 
             // Roda auditoria automática para criar alertas de auxilio indevido
             let _ = auditor::executar_auditoria_auxilio_sqlite(conn);
+        }
+        "EMENDAS_PARLAMENTARES" | "EMENDAS" => {
+            let col_ano = find_col(&headers, &["ANO", "ANO_EMENDA", "ANO_PROPOSTA", "EXERCICIO"]);
+            let col_numero = find_col(&headers, &["NUMERO_EMENDA", "NR_EMENDA", "NUMERO", "CODIGO_EMENDA"]);
+            let col_autor = find_col(&headers, &["AUTOR_NOME", "NOME_AUTOR", "AUTOR", "PARLAMENTAR", "PROPONENTE"]);
+            let col_tipo = find_col(&headers, &["TIPO_EMENDA", "MODALIDADE", "TIPO"]);
+            let col_localidade = find_col(&headers, &["LOCALIDADE_DESTINO", "LOCALIDADE", "MUNICIPIO", "DESTINO"]);
+            let col_uf = find_col(&headers, &["UF", "SG_UF", "ESTADO"]);
+            let col_beneficiario = find_col(&headers, &["BENEFICIARIO", "NOME_BENEFICIARIO", "FAVORECIDO", "ORGAO_DESTINATARIO"]);
+            let col_val_emp = find_col(&headers, &["VALOR_EMPENHADO", "VALOR_EMPENHO", "VR_EMPENHADO", "VALOR_PROPOSTA", "VALOR"]);
+            let col_val_pago = find_col(&headers, &["VALOR_PAGO", "VALOR_LIQUIDADO", "VR_PAGO", "VALOR_PAGAMENTO"]);
+
+            let mut novas_emendas = Vec::new();
+            for record in reader.records().flatten() {
+                let ano = col_ano.and_then(|i| record.get(i)).and_then(|s| s.parse::<i32>().ok()).unwrap_or(2024);
+                let numero = col_numero.and_then(|i| record.get(i)).unwrap_or("S/N").trim().to_string();
+                let autor = col_autor.and_then(|i| record.get(i)).unwrap_or("PARLAMENTAR").trim().to_string();
+                let tipo = col_tipo.and_then(|i| record.get(i)).unwrap_or("INDIVIDUAL").trim().to_string();
+                let localidade = col_localidade.and_then(|i| record.get(i)).unwrap_or("BRASIL").trim().to_string();
+                let uf = col_uf.and_then(|i| record.get(i)).unwrap_or("BR").trim().to_uppercase();
+                let beneficiario = col_beneficiario.and_then(|i| record.get(i)).unwrap_or("MUNICÍPIO / ÓRGÃO").trim().to_string();
+                let val_emp = col_val_emp.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
+                let val_pago = col_val_pago.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
+
+                if !numero.is_empty() {
+                    novas_emendas.push(storage::NovaEmendaParlamentar {
+                        politico_id: None,
+                        ano,
+                        numero_emenda: numero,
+                        autor_nome: autor,
+                        tipo_emenda: tipo,
+                        localidade_destino: localidade,
+                        uf,
+                        beneficiario,
+                        valor_empenhado: val_emp,
+                        valor_pago: val_pago,
+                    });
+                }
+            }
+
+            if !novas_emendas.is_empty() {
+                count = storage::batch_insert_emendas_parlamentares(conn, &novas_emendas)
+                    .map_err(std::io::Error::other)?;
+            }
         }
         _ => {
             for _ in reader.records().flatten() {
@@ -3428,6 +3483,67 @@ mod tests {
             .query_row("SELECT count(*) FROM registros_profissionais", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total_oab, 1);
+    }
+
+    #[tokio::test]
+    async fn test_upload_csv_emendas_multipart() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+        let boundary = "---------------------------emendas974767299852498929531610575";
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"arquivo\"; filename=\"emendas_2024.csv\"\r\n\
+             Content-Type: text/csv\r\n\r\n\
+             NUMERO_EMENDA;AUTOR_NOME;ANO;TIPO_EMENDA;VALOR_EMPENHADO;VALOR_PAGO;BENEFICIARIO_NOME;BENEFICIARIO_CNPJ;FUNCAO_NOME;SUBFUNCAO_NOME;LOCALIDADE_DO_GASTO\r\n\
+             2024001;DEPUTADO TESTE;2024;INDIVIDUAL;500000.00;450000.00;MUNICIPIO DE EXEMPLO;11222333000199;SAUDE;ATENCAO BASICA;SP\r\n\
+             --{boundary}--\r\n"
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/ingestao/upload")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(upload_res.status, "CONCLUIDO");
+        assert_eq!(upload_res.tipo_detectado, "EMENDAS_PARLAMENTARES");
+        assert_eq!(upload_res.registros_inseridos, 1);
+
+        let conn = pool.get().unwrap();
+        let total_emendas: i64 = conn
+            .query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_emendas, 1);
+
+        // Verifica se o status do sistema reflete o total de emendas
+        let req_status = Request::builder()
+            .method("GET")
+            .uri("/api/v1/config/status")
+            .body(Body::empty())
+            .unwrap();
+        let res_status = app.oneshot(req_status).await.unwrap();
+        assert_eq!(res_status.status(), StatusCode::OK);
+        let bytes_status = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let status_json: serde_json::Value = serde_json::from_slice(&bytes_status).unwrap();
+        assert_eq!(
+            status_json["total_registros"]["emendas_parlamentares"],
+            1
+        );
     }
 
     #[tokio::test]

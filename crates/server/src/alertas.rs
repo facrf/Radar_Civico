@@ -857,6 +857,107 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         }
     }
 
+    // 10. Sincroniza detecção de Possível Parentesco / Nepotismo Cruzado (Sobrenomes Raros em Fornecedores CEAP e Doadores)
+    {
+        if let Ok(mut stmt_pols) = conn.prepare(
+            "SELECT DISTINCT p.id, p.nome_completo, p.nome_urna, p.cpf_mascarado, COALESCE(c.uf, 'BR')
+             FROM politicos p
+             LEFT JOIN candidaturas c ON c.politico_id = p.id
+             WHERE EXISTS (SELECT 1 FROM despesas_parlamentares dp WHERE dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo)
+                OR EXISTS (SELECT 1 FROM receitas_campanha rc JOIN candidaturas cand ON rc.candidatura_id = cand.id WHERE cand.politico_id = p.id)
+             LIMIT 150",
+        ) {
+            if let Ok(politicos) = stmt_pols.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            }) {
+                for p in politicos.flatten() {
+                    let (pol_id, nome_completo, nome_urna, cpf_mascarado, uf) = p;
+                    let mut alvos = Vec::new();
+
+                    // 1. Sócios de fornecedores CEAP deste parlamentar
+                    if let Ok(mut stmt_socios) = conn.prepare(
+                        "SELECT DISTINCT q.socio_nome, q.cnpj, COALESCE(q.uf, ?2)
+                         FROM empresas_qsa q
+                         JOIN despesas_parlamentares dp ON dp.fornecedor_cnpj_cpf = q.cnpj
+                         WHERE (dp.parlamentar_nome = ?1 OR dp.parlamentar_nome = ?3)
+                           AND q.socio_nome IS NOT NULL AND length(q.socio_nome) > 4
+                         LIMIT 50",
+                    ) {
+                        if let Ok(rows) = stmt_socios.query_map(
+                            params![nome_urna, uf, nome_completo],
+                            |r| Ok(auditor::AlvoAuditoriaParentesco {
+                                nome: r.get(0)?,
+                                cnpj_cpf: r.get(1)?,
+                                uf: r.get(2)?,
+                                tipo_vinculo: "SOCIO_FORNECEDOR_CEAP".to_string(),
+                            }),
+                        ) {
+                            for item in rows.flatten() {
+                                alvos.push(item);
+                            }
+                        }
+                    }
+
+                    if !alvos.is_empty() {
+                        let alertas_nep = auditor::auditar_possivel_parentesco(&nome_completo, &uf, &alvos);
+                        for al in alertas_nep {
+                            let chave = format!("\"politico_id\":{},\"alvo_doc\":{:?}", pol_id, al.cnpj_cpf_alvo);
+                            let ja_existe: bool = conn
+                                .query_row(
+                                    "SELECT 1 FROM alertas_auditoria WHERE tipo = 'POSSIVEL_PARENTESCO' AND detalhes_json LIKE ?1 LIMIT 1",
+                                    [format!("%{}%", chave)],
+                                    |_| Ok(true),
+                                )
+                                .unwrap_or(false);
+
+                            if !ja_existe {
+                                let severidade = "MEDIA";
+                                let detalhes = serde_json::json!({
+                                    "politico_id": pol_id,
+                                    "politico_nome": nome_completo,
+                                    "alvo_nome": al.alvo_nome,
+                                    "alvo_doc": al.cnpj_cpf_alvo,
+                                    "uf": al.uf,
+                                    "sobrenome_compartilhado": al.sobrenome_compartilhado,
+                                    "tipo_vinculo": al.tipo_vinculo,
+                                    "regra": "Coincidência de sobrenomes raros com pessoas ligadas a recursos públicos ou de campanha na mesma UF"
+                                });
+
+                                registrar_alerta(
+                                    conn,
+                                    &NovoAlerta {
+                                        tipo: "POSSIVEL_PARENTESCO".to_string(),
+                                        severidade: severidade.to_string(),
+                                        titulo: format!("Possível Parentesco em Fornecedor/Doador - {}", al.alvo_nome),
+                                        descricao: format!(
+                                            "Identificada coincidência de sobrenome raro ('{}') entre o parlamentar {} e {} ({}) na UF {}.",
+                                            al.sobrenome_compartilhado, nome_urna, al.alvo_nome, al.cnpj_cpf_alvo, al.uf
+                                        ),
+                                        alvo_nome: nome_urna.clone(),
+                                        alvo_documento: cpf_mascarado.clone(),
+                                        municipio: None,
+                                        uf: Some(uf.clone()),
+                                        ano: None,
+                                        valor_envolvido: None,
+                                        fonte_dado: "RECEITA_FEDERAL/CEAP".to_string(),
+                                        detalhes_json: Some(detalhes.to_string()),
+                                    },
+                                )?;
+                                novos_inseridos += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(novos_inseridos)
 }
 
