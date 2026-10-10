@@ -33,7 +33,7 @@ pub use config::{
     job_status_handler, listar_backups_handler, obter_audit_rules_handler, obter_favicon_handler,
     obter_icone_handler, obter_identidade_handler, remover_icone_handler, salvar_audit_rules_handler,
     salvar_icone_handler, salvar_parametros_auditoria, sincronizar_autoridades_handler, sincronizar_camara_handler,
-    sincronizar_tse_handler, sincronizar_tudo_handler, status_handler, testar_webhook_handler, upload_arquivo_handler,
+    sincronizar_diarios_handler, sincronizar_tse_handler, sincronizar_tudo_handler, status_handler, testar_webhook_handler, upload_arquivo_handler,
     verificar_tse_ano_handler, versao_handler, BackupItemInfo, ConfigStatusResponse,
     ExecutarIngestaoRequest, ExecutarIngestaoResponse, IdentidadeVisualResponse, ImportProgress,
     JobInfo, ParametrosAuditoria, SalvarAuditRulesResponse, SalvarIconeResponse,
@@ -160,6 +160,8 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/config/sincronizar/autoridades", post(config::sincronizar_autoridades_handler))
         .route("/api/config/autoridades/sincronizar", post(config::sincronizar_autoridades_handler))
         .route("/api/v1/config/autoridades/sincronizar", post(config::sincronizar_autoridades_handler))
+        .route("/api/config/diarios/sincronizar", post(config::sincronizar_diarios_handler))
+        .route("/api/v1/config/diarios/sincronizar", post(config::sincronizar_diarios_handler))
         .route("/api/config/sincronizar-tudo", post(config::sincronizar_tudo_handler))
         .route("/api/v1/config/sincronizar-tudo", post(config::sincronizar_tudo_handler))
         .route("/api/v1/config/ingestao/upload", post(upload_arquivo_handler))

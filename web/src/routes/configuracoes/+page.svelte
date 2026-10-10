@@ -191,6 +191,9 @@
 	let incluirAutoridadesTudo = true;
 	let incluirAuditoriaTudo = true;
 	let sincronizandoAutoridades = false;
+	let sincronizandoDiarios = false;
+	let termoDiario = '';
+	let municipioDiario = '';
 
 	// Monitor de Job & Ingestão
 	let activeJob: JobInfo | null = null;
@@ -488,6 +491,33 @@
 			alert(`Erro na sincronização de autoridades: ${e.message}`);
 		} finally {
 			sincronizandoAutoridades = false;
+		}
+	}
+
+	async function dispararSincronizarDiarios() {
+		sincronizandoDiarios = true;
+		try {
+			const res = await fetch('/api/v1/config/diarios/sincronizar', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					termo: termoDiario.trim() || undefined,
+					municipio: municipioDiario.trim() || undefined,
+					limite: 15
+				})
+			});
+
+			if (!res.ok) {
+				const err = await res.json();
+				throw new Error(err.erro || 'Falha ao sincronizar diários municipais');
+			}
+
+			const data = await res.json();
+			iniciarPollingJob(data.job_id);
+		} catch (e: any) {
+			alert(`Erro na sincronização do Querido Diário: ${e.message}`);
+		} finally {
+			sincronizandoDiarios = false;
 		}
 	}
 
@@ -1899,7 +1929,7 @@
 				</div>
 			</div>
 
-			<!-- Fonte 5: Autoridades de Cúpula (STF, PGR, Diplomacia, Secretarias) -->
+			<!-- Fonte 5: Autoridades de Cúpula (STF, TCU, PGR, Diplomacia, Secretarias) -->
 			<div class="p-6 bg-slate-800/50 border border-slate-700/60 rounded-xl space-y-4 md:col-span-2">
 				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
 					<div class="flex items-center gap-3">
@@ -1907,8 +1937,8 @@
 							🏛️
 						</div>
 						<div>
-							<h3 class="font-medium text-white">Autoridades Públicas de Cúpula</h3>
-							<p class="text-xs text-slate-400">Ministros do STF, Procuradoria-Geral da República (PGR), Embaixadores e Secretários de Estado</p>
+							<h3 class="font-medium text-white">Autoridades Públicas de Cúpula (STF, TCU, PGR, MPTCU)</h3>
+							<p class="text-xs text-slate-400">Ministros do STF e TCU, Procuradoria-Geral da República (PGR e MPTCU), Embaixadores e Secretários de Estado</p>
 						</div>
 					</div>
 
@@ -1929,7 +1959,65 @@
 					</button>
 				</div>
 				<p class="text-xs text-slate-300 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800/80 leading-relaxed">
-					Ingere e sincroniza com deduplicação por nome civil e cruzamento eleitoral: os 11 Ministros do Supremo Tribunal Federal, Procuradores-Gerais da República, embaixadores em postos diplomáticos estratégicos e secretários de estado.
+					Ingere e sincroniza com deduplicação por nome civil e cruzamento eleitoral: os 11 Ministros do Supremo Tribunal Federal, os 9 Ministros titulares do Tribunal de Contas da União (TCU), Procuradores-Gerais da República e do MPTCU, embaixadores em postos diplomáticos estratégicos e secretários estaduais.
+				</p>
+			</div>
+
+			<!-- Fonte 6: Diários Oficiais Municipais (Querido Diário) -->
+			<div class="p-6 bg-slate-800/50 border border-slate-700/60 rounded-xl space-y-4 md:col-span-2">
+				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+					<div class="flex items-center gap-3">
+						<div class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-sm">
+							📰
+						</div>
+						<div>
+							<h3 class="font-medium text-white">Diários Oficiais Municipais (Querido Diário)</h3>
+							<p class="text-xs text-slate-400">Varredura e auditoria de atos de nomeação, portarias e contratos públicos em centenas de municípios</p>
+						</div>
+					</div>
+
+					<button
+						type="button"
+						on:click={dispararSincronizarDiarios}
+						disabled={sincronizandoDiarios}
+						class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50 flex items-center gap-2 cursor-pointer self-start sm:self-auto"
+					>
+						{#if sincronizandoDiarios}
+							<svg class="w-3.5 h-3.5 animate-spin text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+							</svg>
+							<span>Varrendo Diários...</span>
+						{:else}
+							<span>📰 Sincronizar Querido Diário</span>
+						{/if}
+					</button>
+				</div>
+
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+					<div>
+						<label for="termoDiarioInput" class="block text-[11px] font-medium text-slate-400 mb-1">Termo / Nome para Busca (Opcional - padrão: Top Doadores & Políticos)</label>
+						<input
+							id="termoDiarioInput"
+							type="text"
+							bind:value={termoDiario}
+							placeholder="Ex: Nome de doador ou empresa fornecedora"
+							class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+						/>
+					</div>
+					<div>
+						<label for="municipioDiarioInput" class="block text-[11px] font-medium text-slate-400 mb-1">Município (Opcional)</label>
+						<input
+							id="municipioDiarioInput"
+							type="text"
+							bind:value={municipioDiario}
+							placeholder="Ex: São Paulo, Rio de Janeiro, Recife, Salvador..."
+							class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+						/>
+					</div>
+				</div>
+
+				<p class="text-xs text-slate-300 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800/80 leading-relaxed">
+					Consulta a API pública do projeto Querido Diário (Open Knowledge Brasil) indexando gazetas municipais. Registra ocorrências de nomeação e cruzamentos com doadores e agentes públicos na tabela de auditoria local com persistência no SQLite.
 				</p>
 			</div>
 		</div>

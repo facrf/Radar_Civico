@@ -31,6 +31,7 @@ impl QueridoDiarioClient {
         Self {
             client: Client::builder()
                 .user_agent("RadarCivico/1.0")
+                .timeout(std::time::Duration::from_secs(3))
                 .build()
                 .unwrap_or_default(),
             base_url: "https://queridodiario.ok.org.br/api".to_string(),

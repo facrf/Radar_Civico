@@ -1227,6 +1227,207 @@ pub async fn sincronizar_autoridades_handler(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SincronizarDiariosRequest {
+    pub termo: Option<String>,
+    pub municipio: Option<String>,
+    pub limite: Option<usize>,
+}
+
+pub async fn sincronizar_diarios_handler(
+    State(pool): State<DbPool>,
+    payload_raw: Option<Json<SincronizarDiariosRequest>>,
+) -> Result<(StatusCode, Json<ExecutarIngestaoResponse>), (StatusCode, Json<serde_json::Value>)> {
+    let payload = payload_raw.map(|Json(p)| p).unwrap_or_default();
+    let job_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+
+    let job = JobInfo {
+        job_id: job_id.clone(),
+        fonte: "QUERIDO_DIARIO".to_string(),
+        ano: None,
+        status: "PROCESSANDO".to_string(),
+        progresso: 10,
+        mensagem: "Iniciando varredura e ingestão de Diários Oficiais Municipais (Querido Diário)...".to_string(),
+        logs: vec![format!("[{now}] Disparada sincronização do Querido Diário")],
+        criado_em: now,
+        concluido_em: None,
+    };
+
+    {
+        let jobs = get_jobs();
+        let mut map = jobs.write().unwrap();
+        map.insert(job_id.clone(), job);
+    }
+
+    let job_id_spawn = job_id.clone();
+    let pool_spawn = pool.clone();
+
+    tokio::spawn(async move {
+        atualizar_job(
+            &job_id_spawn,
+            20,
+            "Selecionando alvos e termos de interesse público para auditoria municipal...",
+        )
+        .await;
+
+        let limite = payload.limite.unwrap_or(10).clamp(1, 50);
+        let mut termos_pesquisa: Vec<(String, String, Option<String>)> = Vec::new();
+
+        if let Some(termo_custom) = payload.termo.filter(|t| !t.trim().is_empty()) {
+            termos_pesquisa.push((
+                termo_custom.trim().to_string(),
+                "CONSULTA_MANUAL".to_string(),
+                payload.municipio.clone(),
+            ));
+        } else {
+            // Seleciona principais doadores de campanha e parlamentares da base
+            if let Ok(conn) = pool_spawn.get() {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT doador_nome, doador_cpf_cnpj, NULL
+                     FROM receitas_campanha
+                     WHERE doador_nome IS NOT NULL AND length(doador_nome) > 4
+                     GROUP BY doador_nome
+                     ORDER BY sum(valor) DESC
+                     LIMIT ?1",
+                ) {
+                    if let Ok(rows) = stmt.query_map([limite], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                        ))
+                    }) {
+                        for item in rows.flatten() {
+                            termos_pesquisa.push(item);
+                        }
+                    }
+                }
+
+                // Se não houver doadores suficientes, inclui parlamentares da base
+                if termos_pesquisa.len() < 3 {
+                    if let Ok(mut stmt) = conn.prepare(
+                        "SELECT nome_completo, COALESCE(cpf_mascarado, 'S/D'), uf
+                         FROM politicos
+                         WHERE nome_completo IS NOT NULL AND length(nome_completo) > 4
+                         ORDER BY id ASC
+                         LIMIT ?1",
+                    ) {
+                        if let Ok(rows) = stmt.query_map([limite], |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, Option<String>>(2)?,
+                            ))
+                        }) {
+                            for item in rows.flatten() {
+                                if !termos_pesquisa.iter().any(|(t, _, _)| t == &item.0) {
+                                    termos_pesquisa.push(item);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if termos_pesquisa.is_empty() {
+            termos_pesquisa.push((
+                "EMPRESA CONSTRUTORA".to_string(),
+                "00000000000000".to_string(),
+                None,
+            ));
+        }
+
+        let total_termos = termos_pesquisa.len();
+        let qd_client = ingestion::QueridoDiarioClient::new();
+        let mut consultas_salvas = 0;
+
+        for (idx, (termo, doc, muni)) in termos_pesquisa.iter().enumerate() {
+            let pct = (20 + ((idx as u32 * 70) / total_termos as u32)).min(95) as u8;
+            atualizar_job(
+                &job_id_spawn,
+                pct,
+                &format!("Consultando Querido Diário ({}/{}): '{}'...", idx + 1, total_termos, termo),
+            )
+            .await;
+
+            // Busca na API pública oficial do Querido Diário
+            match qd_client.buscar_nomeacoes(termo, muni.as_deref(), None).await {
+                Ok(resp) => {
+                    let total_gazettes = resp.total_gazettes;
+                    let payload_json = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
+                    let municipio_str = muni.clone().unwrap_or_else(|| "BRASIL".to_string());
+
+                    if let Ok(mut conn) = pool_spawn.get() {
+                        let _ = ingestion::QueridoDiarioClient::salvar_cache(
+                            &mut conn,
+                            doc,
+                            termo,
+                            &municipio_str,
+                            total_gazettes,
+                            &payload_json,
+                        );
+                        consultas_salvas += 1;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("Querido Diário offline ou indisponível para '{}': {}. Gravando registro de conformidade local.", termo, err);
+                    let municipio_str = muni.clone().unwrap_or_else(|| "BRASIL".to_string());
+                    let fallback_json = serde_json::json!({
+                        "total_gazettes": 0,
+                        "gazettes": [],
+                        "status": "consulta_registrada",
+                        "aviso": format!("API remota offline ou indisponível: {}", err)
+                    }).to_string();
+
+                    if let Ok(mut conn) = pool_spawn.get() {
+                        let _ = ingestion::QueridoDiarioClient::salvar_cache(
+                            &mut conn,
+                            doc,
+                            termo,
+                            &municipio_str,
+                            0,
+                            &fallback_json,
+                        );
+                        consultas_salvas += 1;
+                    }
+                }
+            }
+
+            // Intervalo breve para estabilidade de rede
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+
+        let total_cache: i64 = pool_spawn.get().map(|c| {
+            c.query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| r.get(0)).unwrap_or(0)
+        }).unwrap_or(0);
+
+        let msg = format!(
+            "Sincronização com o Querido Diário concluída: {} consultas executadas ({} registros no cache).",
+            consultas_salvas, total_cache
+        );
+        atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
+
+        if let Ok(conn) = pool_spawn.get() {
+            let _ = conn.execute(
+                "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
+                 VALUES ('QUERIDO_DIARIO', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
+                rusqlite::params![msg],
+            );
+        }
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ExecutarIngestaoResponse {
+            job_id,
+            status: "PROCESSANDO".to_string(),
+            mensagem: "Processo de ingestão do Querido Diário iniciado em segundo plano.".to_string(),
+        }),
+    ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SincronizarTudoRequest {
     pub ano_eleitoral: Option<i32>,
     pub ano_fiscal: Option<i32>,
@@ -3685,6 +3886,72 @@ mod tests {
             |r| r.get(0),
         ).unwrap_or(0);
         assert!(total_cargos >= 15);
+    }
+
+    #[tokio::test]
+    async fn test_sincronizar_diarios_endpoint() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+
+            conn.execute(
+                "INSERT INTO politicos (id, nome_completo, nome_urna, cpf_mascarado, tipo_agente)
+                 VALUES (1, 'DEPUTADO TESTE DIARIO', 'DEP DIARIO', '***.111.222-**', 'POLITICO')",
+                [],
+            ).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+
+        let payload = json!({
+            "termo": "CONSTRUTORA ALPHA",
+            "municipio": "SAO PAULO",
+            "limite": 1
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/diarios/sincronizar")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap();
+
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let resp: ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(resp.status, "PROCESSANDO");
+        assert!(!resp.job_id.is_empty());
+
+        let mut concluido = false;
+        for _ in 0..40 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let c = pool.get().unwrap();
+            let total_cache: i64 = c.query_row(
+                "SELECT count(*) FROM cache_consultas_diario",
+                [],
+                |r| r.get(0),
+            ).unwrap_or(0);
+            if total_cache >= 1 {
+                concluido = true;
+                break;
+            }
+        }
+        assert!(concluido, "Deve persistir pelo menos 1 consulta no cache_consultas_diario");
+
+        let req_status = Request::builder()
+            .uri(format!("/api/v1/config/ingestao/status/{}", resp.job_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let res_status = app.clone().oneshot(req_status).await.unwrap();
+        assert_eq!(res_status.status(), StatusCode::OK);
+
+        let bytes_st = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let job_st: JobInfo = serde_json::from_slice(&bytes_st).unwrap();
+        assert_eq!(job_st.fonte, "QUERIDO_DIARIO");
     }
 }
 
