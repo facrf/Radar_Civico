@@ -499,6 +499,70 @@ pub fn batch_insert_autoridades(
     Ok(autoridades.len())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NovaEmendaParlamentar {
+    pub politico_id: Option<i64>,
+    pub autor_nome: String,
+    pub ano: i32,
+    pub numero_emenda: String,
+    pub tipo_emenda: String,
+    pub localidade_destino: String,
+    pub uf: String,
+    pub beneficiario: String,
+    pub valor_empenhado: f64,
+    pub valor_pago: f64,
+}
+
+pub fn batch_insert_emendas_parlamentares(
+    conn: &mut Connection,
+    emendas: &[NovaEmendaParlamentar],
+) -> Result<usize> {
+    if emendas.is_empty() {
+        return Ok(0);
+    }
+
+    let tx = transaction_immediate(conn)?;
+    {
+        let mut stmt_find_pol = tx.prepare_cached(
+            "SELECT id FROM politicos 
+             WHERE UPPER(nome_completo) = UPPER(?1) OR UPPER(nome_urna) = UPPER(?1) 
+             LIMIT 1",
+        )?;
+
+        let mut stmt_insert = tx.prepare_cached(
+            "INSERT INTO emendas_parlamentares (
+                politico_id, autor_nome, ano, numero_emenda, tipo_emenda,
+                localidade_destino, uf, beneficiario, valor_empenhado, valor_pago
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )?;
+
+        for e in emendas {
+            let pol_id = match e.politico_id {
+                Some(id) => Some(id),
+                None => stmt_find_pol
+                    .query_row([&e.autor_nome], |r| r.get::<_, i64>(0))
+                    .ok(),
+            };
+
+            stmt_insert.execute(rusqlite::params![
+                pol_id,
+                e.autor_nome,
+                e.ano,
+                e.numero_emenda,
+                e.tipo_emenda,
+                e.localidade_destino,
+                e.uf,
+                e.beneficiario,
+                e.valor_empenhado,
+                e.valor_pago,
+            ])?;
+        }
+    }
+    tx.commit()?;
+
+    Ok(emendas.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,6 +791,61 @@ mod tests {
 
         let nome: String = conn.query_row("SELECT nome_completo FROM politicos WHERE sq_candidato = '1001'", [], |r| r.get(0))?;
         assert_eq!(nome, "CANDIDATO UM ATUALIZADO");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_batch_insert_emendas_parlamentares() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        conn.execute(
+            "INSERT INTO politicos (id, nome_completo, nome_urna, cpf_mascarado)
+             VALUES (10, 'DEPUTADO TESTE EMENDA', 'DEP TESTE', '***.555.666-**')",
+            [],
+        )?;
+
+        let emendas = vec![
+            NovaEmendaParlamentar {
+                politico_id: None, // Deve resolver automaticamente pelo nome do parlamentar
+                autor_nome: "DEPUTADO TESTE EMENDA".to_string(),
+                ano: 2024,
+                numero_emenda: "20249901".to_string(),
+                tipo_emenda: "TRANSFERENCIA_ESPECIAL_PIX".to_string(),
+                localidade_destino: "CAMPINAS".to_string(),
+                uf: "SP".to_string(),
+                beneficiario: "PREFEITURA MUNICIPAL".to_string(),
+                valor_empenhado: 500000.0,
+                valor_pago: 500000.0,
+            },
+            NovaEmendaParlamentar {
+                politico_id: Some(10),
+                autor_nome: "DEPUTADO TESTE EMENDA".to_string(),
+                ano: 2023,
+                numero_emenda: "20239902".to_string(),
+                tipo_emenda: "INDIVIDUAL".to_string(),
+                localidade_destino: "SANTOS".to_string(),
+                uf: "SP".to_string(),
+                beneficiario: "HOSPITAL REGIONAL".to_string(),
+                valor_empenhado: 300000.0,
+                valor_pago: 250000.0,
+            },
+        ];
+
+        let n = batch_insert_emendas_parlamentares(&mut conn, &emendas)?;
+        assert_eq!(n, 2);
+
+        let total: i64 = conn.query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| r.get(0))?;
+        assert_eq!(total, 2);
+
+        let pol_id_resolvido: Option<i64> = conn.query_row(
+            "SELECT politico_id FROM emendas_parlamentares WHERE numero_emenda = '20249901'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(pol_id_resolvido, Some(10));
 
         Ok(())
     }

@@ -6,7 +6,8 @@ pub mod migrations;
 pub use batch::{
     batch_insert_alertas_beneficio, batch_insert_autoridades, batch_insert_beneficios, batch_insert_bens_candidato,
     batch_insert_candidatos_tse, batch_insert_despesas, batch_insert_despesas_parlamentares,
-    batch_insert_receitas, NovaAutoridade, NovaDespesa, NovaDespesaParlamentar, NovaReceita,
+    batch_insert_emendas_parlamentares, batch_insert_receitas, NovaAutoridade, NovaDespesa,
+    NovaDespesaParlamentar, NovaEmendaParlamentar, NovaReceita,
     NovoAlertaBeneficioIndevido, NovoBemCandidato, NovoBeneficio, NovoCandidatoTse,
 };
 pub use connection::{

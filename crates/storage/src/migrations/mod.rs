@@ -567,6 +567,32 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_cargos_autoridades_cargo ON cargos_autoridades(cargo);
         ",
     },
+    Migration {
+        version: 19,
+        name: "adiciona_tabela_emendas_parlamentares",
+        sql: "
+            CREATE TABLE IF NOT EXISTS emendas_parlamentares (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                politico_id INTEGER REFERENCES politicos(id),
+                autor_nome TEXT NOT NULL,
+                ano INTEGER NOT NULL,
+                numero_emenda TEXT NOT NULL,
+                tipo_emenda TEXT NOT NULL,
+                localidade_destino TEXT NOT NULL,
+                uf TEXT NOT NULL,
+                beneficiario TEXT NOT NULL,
+                valor_empenhado REAL NOT NULL DEFAULT 0.0,
+                valor_pago REAL NOT NULL DEFAULT 0.0,
+                data_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_emendas_pol ON emendas_parlamentares(politico_id);
+            CREATE INDEX IF NOT EXISTS idx_emendas_autor ON emendas_parlamentares(autor_nome);
+            CREATE INDEX IF NOT EXISTS idx_emendas_ano ON emendas_parlamentares(ano);
+            CREATE INDEX IF NOT EXISTS idx_emendas_uf ON emendas_parlamentares(uf);
+            CREATE INDEX IF NOT EXISTS idx_emendas_tipo ON emendas_parlamentares(tipo_emenda);
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1170,6 +1196,40 @@ mod tests {
 
         assert_eq!(tipo, "MINISTRO_STF");
         assert_eq!(cargo, "Ministro");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_emendas_parlamentares() -> Result<()> {
+        let pool = DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        // Verifica existência da tabela emendas_parlamentares
+        let count_tab: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'emendas_parlamentares'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count_tab, 1, "Tabela emendas_parlamentares deve existir");
+
+        // Insere emenda e verifica persistência
+        conn.execute(
+            "INSERT INTO emendas_parlamentares (
+                autor_nome, ano, numero_emenda, tipo_emenda, localidade_destino, uf, beneficiario, valor_empenhado, valor_pago
+             ) VALUES ('PARLAMENTAR TESTE', 2024, '202441230001', 'TRANSFERENCIA_ESPECIAL_PIX', 'MUNICÍPIO EXEMPLO', 'SP', 'PREFEITURA MUNICIPAL', 1000000.0, 850000.0)",
+            [],
+        )?;
+
+        let (autor, val_pago): (String, f64) = conn.query_row(
+            "SELECT autor_nome, valor_pago FROM emendas_parlamentares WHERE ano = 2024",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        assert_eq!(autor, "PARLAMENTAR TESTE");
+        assert_eq!(val_pago, 850000.0);
 
         Ok(())
     }
