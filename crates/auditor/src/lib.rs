@@ -7,6 +7,8 @@ pub mod doador_incompativel;
 pub mod error;
 pub mod evolucao_patrimonial;
 pub mod fornecedores_fantasmas;
+pub mod nepotismo;
+pub mod score;
 pub mod triangulacao;
 pub mod ubiquidade;
 
@@ -44,6 +46,13 @@ pub use evolucao_patrimonial::{
 pub use fornecedores_fantasmas::{
     auditar_fornecedores_fantasmas, AlertaFornecedorFantasma, FornecedorReceita, PagamentoFornecedor,
     TipoIrregularidadeFornecedor, DIAS_LIMITE_RECEM_CRIADA,
+};
+pub use nepotismo::{
+    auditar_possivel_parentesco, extrair_sobrenomes_raros, AlertaPossivelParentesco,
+    AlvoAuditoriaParentesco,
+};
+pub use score::{
+    calcular_score_integridade, ItemPenalidadeScore, NivelRiscoCivico, ResumoScoreIntegridade,
 };
 pub use triangulacao::{
     auditar_triangulacao, auditar_triangulacao_com_janela, AlertaTriangulacao, ContratoPublico,
