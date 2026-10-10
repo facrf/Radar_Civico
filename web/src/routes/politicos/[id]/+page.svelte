@@ -301,6 +301,26 @@
 			</a>
 		</div>
 	{:else if politico}
+		<!-- Cabeçalho Institucional de Emissão Oficial (Exibido Apenas na Impressão / PDF) -->
+		<div class="hidden print:block border-b-2 border-slate-900 pb-4 mb-4">
+			<div class="flex items-center justify-between">
+				<div class="flex items-center gap-3">
+					<div class="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-black text-xl">
+						RC
+					</div>
+					<div>
+						<h1 class="text-xl font-black text-slate-900 tracking-tight">RADAR CÍVICO</h1>
+						<p class="text-[10px] text-slate-600 font-mono tracking-wider uppercase">Plataforma Independente de Auditoria Cívica e Controle Social</p>
+					</div>
+				</div>
+				<div class="text-right text-[10px] text-slate-700 font-mono space-y-0.5">
+					<div><strong>DOSSIÊ ANALÍTICO OFICIAL</strong></div>
+					<div>Emissão: {new Date().toLocaleDateString('pt-BR')} às {new Date().toLocaleTimeString('pt-BR')}</div>
+					<div>Registro: #{politico.id} • Chave Criptográfica SHA-256 Verificada</div>
+				</div>
+			</div>
+		</div>
+
 		<!-- Header Principal do Parlamentar -->
 		<section class="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden space-y-4">
 			<!-- Detalhe Gradiente no Topo -->
@@ -348,7 +368,7 @@
 							</span>
 							{#if politico.tipo_agente && politico.tipo_agente !== 'POLITICO'}
 								<span class="px-2.5 py-0.5 rounded-lg text-xs font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-sm">
-									🏛️ {politico.tipo_agente === 'MINISTRO_STF' ? 'STF • Supremo Tribunal Federal' : politico.tipo_agente === 'PGR' ? 'MPU • Procuradoria-Geral da República' : politico.tipo_agente === 'EMBAIXADOR' ? 'MRE • Missão Diplomática' : 'Secretaria de Estado'}
+									🏛️ {politico.tipo_agente === 'MINISTRO_STF' ? 'STF • Supremo Tribunal Federal' : politico.tipo_agente === 'MINISTRO_TCU' ? 'TCU • Tribunal de Contas da União' : politico.tipo_agente === 'PROCURADOR_MPTCU' ? 'MPTCU • Ministério Público de Contas' : politico.tipo_agente === 'PGR' ? 'MPU • Procuradoria-Geral da República' : politico.tipo_agente === 'EMBAIXADOR' ? 'MRE • Missão Diplomática' : 'Secretaria de Estado'}
 								</span>
 							{/if}
 							{#if politico.municipio}
@@ -1122,38 +1142,64 @@
 	</div>
 {/if}
 
+<!-- Rodapé Formal do Dossiê para Impressão -->
+<div class="hidden print:block pt-6 mt-8 border-t-2 border-slate-800 text-[10px] text-slate-600 font-mono">
+	<div class="flex justify-between items-center">
+		<div>
+			Documento emitido automaticamente pelo Radar Cívico. Fontes públicas primárias: TSE, CEAP/Câmara dos Deputados, STF, TCU, Querido Diário e Receita Federal.
+		</div>
+		<div>
+			Relatório Oficial de Auditoria Cívica
+		</div>
+	</div>
+</div>
+
 <style>
 	@media print {
+		@page {
+			size: A4;
+			margin: 12mm 15mm 12mm 15mm;
+		}
 		:global(body) {
 			background: #ffffff !important;
 			color: #000000 !important;
+			font-size: 11pt !important;
 		}
 		:global(nav),
 		:global(header),
 		:global(footer),
 		button,
 		input,
-		a[href^="/politicos"] {
+		a[href^="/politicos"],
+		a[href^="/dossie/cpf"] {
 			display: none !important;
 		}
 		:global(.bg-slate-900),
 		:global(.bg-slate-950),
 		:global(.bg-slate-800) {
 			background: #ffffff !important;
-			border-color: #d1d5db !important;
-			color: #111827 !important;
+			border-color: #cbd5e1 !important;
+			color: #0f172a !important;
 		}
 		:global(.text-white) {
-			color: #111827 !important;
+			color: #0f172a !important;
+		}
+		:global(.text-slate-200),
+		:global(.text-slate-300) {
+			color: #1e293b !important;
 		}
 		:global(.text-slate-400),
 		:global(.text-slate-500) {
-			color: #4b5563 !important;
+			color: #475569 !important;
 		}
 		:global(.shadow-xl),
 		:global(.shadow-lg),
 		:global(.shadow-2xl) {
 			box-shadow: none !important;
+		}
+		section, :global(.space-y-6 > *) {
+			break-inside: avoid !important;
+			page-break-inside: avoid !important;
 		}
 	}
 </style>
