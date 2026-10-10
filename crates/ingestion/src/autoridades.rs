@@ -346,6 +346,167 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             foto_url: None,
             origem_dado: "DIARIO_OFICIAL_SP".to_string(),
         },
+        // 5. TRIBUNAL DE CONTAS DA UNIÃO (TCU) E MPTCU
+        NovaAutoridade {
+            nome_completo: "BRUNO DANTAS NASCIMENTO".to_string(),
+            nome_usual: "MIN. BRUNO DANTAS".to_string(),
+            cpf_mascarado: Some("***.445.667-**".to_string()),
+            tipo_agente: "MINISTRO_TCU".to_string(),
+            orgao: "Tribunal de Contas da União".to_string(),
+            cargo: "Ministro (Presidente)".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("DF".to_string()),
+            data_posse: Some("2014-08-13".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 12 de agosto de 2014".to_string()),
+            biografia_resumo: Some("Jurista, professor doutor em direito processual civil da PUC-SP e Ministro Presidente do Tribunal de Contas da União.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B3520185012579BE4BD5".to_string()),
+            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+        },
+        NovaAutoridade {
+            nome_completo: "VITAL DO RÊGO FILHO".to_string(),
+            nome_usual: "MIN. VITAL DO RÊGO".to_string(),
+            cpf_mascarado: Some("***.332.114-**".to_string()),
+            tipo_agente: "MINISTRO_TCU".to_string(),
+            orgao: "Tribunal de Contas da União".to_string(),
+            cargo: "Ministro (Vice-Presidente)".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("PB".to_string()),
+            data_posse: Some("2014-12-22".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 19 de dezembro de 2014".to_string()),
+            biografia_resumo: Some("Médico, advogado, ex-Senador da República pela Paraíba, ex-Deputado Federal e Ministro Vice-Presidente do TCU.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B352018501267D554C0E".to_string()),
+            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+        },
+        NovaAutoridade {
+            nome_completo: "WALTON ALENCAR RODRIGUES".to_string(),
+            nome_usual: "MIN. WALTON ALENCAR".to_string(),
+            cpf_mascarado: Some("***.554.332-**".to_string()),
+            tipo_agente: "MINISTRO_TCU".to_string(),
+            orgao: "Tribunal de Contas da União".to_string(),
+            cargo: "Ministro (Decano)".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("DF".to_string()),
+            data_posse: Some("1999-04-13".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 12 de abril de 1999".to_string()),
+            biografia_resumo: Some("Magistrado de carreira, ex-Procurador do Ministério Público junto ao TCU e Ministro Decano do Tribunal de Contas da União.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B35201850126F76E4C2A".to_string()),
+            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+        },
+        NovaAutoridade {
+            nome_completo: "BENJAMIN ZYMLER".to_string(),
+            nome_usual: "MIN. BENJAMIN ZYMLER".to_string(),
+            cpf_mascarado: Some("***.778.990-**".to_string()),
+            tipo_agente: "MINISTRO_TCU".to_string(),
+            orgao: "Tribunal de Contas da União".to_string(),
+            cargo: "Ministro".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("DF".to_string()),
+            data_posse: Some("2001-09-11".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 6 de setembro de 2001".to_string()),
+            biografia_resumo: Some("Engenheiro elétrico pelo IME, jurista, ex-Presidente do TCU e Ministro do Tribunal de Contas da União.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B352018501275E194C38".to_string()),
+            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+        },
+        NovaAutoridade {
+            nome_completo: "JOÃO AUGUSTO RIBEIRO NARDES".to_string(),
+            nome_usual: "MIN. AUGUSTO NARDES".to_string(),
+            cpf_mascarado: Some("***.889.001-**".to_string()),
+            tipo_agente: "MINISTRO_TCU".to_string(),
+            orgao: "Tribunal de Contas da União".to_string(),
+            cargo: "Ministro".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("RS".to_string()),
+            data_posse: Some("2005-09-20".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 19 de setembro de 2005".to_string()),
+            biografia_resumo: Some("Administrador, ex-Deputado Federal pelo Rio Grande do Sul, ex-Presidente do TCU e Ministro do Tribunal de Contas da União.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B35201850127B6654C46".to_string()),
+            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+        },
+        NovaAutoridade {
+            nome_completo: "AROLDO CEDRAZ DE OLIVEIRA".to_string(),
+            nome_usual: "MIN. AROLDO CEDRAZ".to_string(),
+            cpf_mascarado: Some("***.223.445-**".to_string()),
+            tipo_agente: "MINISTRO_TCU".to_string(),
+            orgao: "Tribunal de Contas da União".to_string(),
+            cargo: "Ministro".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("BA".to_string()),
+            data_posse: Some("2007-01-03".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 28 de dezembro de 2006".to_string()),
+            biografia_resumo: Some("Médico veterinário, professor universitário da UFBA, ex-Deputado Federal pela Bahia, ex-Presidente do TCU e Ministro do Tribunal de Contas da União.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B3520185012803304C54".to_string()),
+            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+        },
+        NovaAutoridade {
+            nome_completo: "ANTONIO AUGUSTO JUNHO ANASTASIA".to_string(),
+            nome_usual: "MIN. ANTONIO ANASTASIA".to_string(),
+            cpf_mascarado: Some("***.667.889-**".to_string()),
+            tipo_agente: "MINISTRO_TCU".to_string(),
+            orgao: "Tribunal de Contas da União".to_string(),
+            cargo: "Ministro".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("MG".to_string()),
+            data_posse: Some("2022-02-03".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 1º de fevereiro de 2022".to_string()),
+            biografia_resumo: Some("Jurista, professor de direito administrativo da UFMG, ex-Governador de Minas Gerais, ex-Senador da República e Ministro do Tribunal de Contas da União.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B352018501288B774C68".to_string()),
+            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+        },
+        NovaAutoridade {
+            nome_completo: "JORGE ANTONIO DE OLIVEIRA FRANCISCO".to_string(),
+            nome_usual: "MIN. JORGE OLIVEIRA".to_string(),
+            cpf_mascarado: Some("***.113.557-**".to_string()),
+            tipo_agente: "MINISTRO_TCU".to_string(),
+            orgao: "Tribunal de Contas da União".to_string(),
+            cargo: "Ministro".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("DF".to_string()),
+            data_posse: Some("2020-12-31".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 30 de dezembro de 2020".to_string()),
+            biografia_resumo: Some("Advogado, ex-Ministro-Chefe da Secretaria-Geral da Presidência da República e Ministro do Tribunal de Contas da União.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B352018501290C2F4C76".to_string()),
+            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+        },
+        NovaAutoridade {
+            nome_completo: "JHONATAN PEREIRA DE JESUS".to_string(),
+            nome_usual: "MIN. JHONATAN DE JESUS".to_string(),
+            cpf_mascarado: Some("***.998.223-**".to_string()),
+            tipo_agente: "MINISTRO_TCU".to_string(),
+            orgao: "Tribunal de Contas da União".to_string(),
+            cargo: "Ministro".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("RR".to_string()),
+            data_posse: Some("2023-03-01".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 28 de fevereiro de 2023".to_string()),
+            biografia_resumo: Some("Médico, ex-Deputado Federal por Roraima e Ministro do Tribunal de Contas da União.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A0864372F90186BCB264E20556".to_string()),
+            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+        },
+        NovaAutoridade {
+            nome_completo: "CRISTINA MACHADO DA COSTA E SILVA".to_string(),
+            nome_usual: "DRA. CRISTINA MACHADO".to_string(),
+            cpf_mascarado: Some("***.443.221-**".to_string()),
+            tipo_agente: "PROCURADOR_MPTCU".to_string(),
+            orgao: "Ministério Público junto ao TCU".to_string(),
+            cargo: "Procuradora-Geral do MPTCU".to_string(),
+            esfera: "FEDERAL".to_string(),
+            uf: Some("DF".to_string()),
+            data_posse: Some("2018-06-28".to_string()),
+            data_exoneracao: None,
+            ato_nomeacao: Some("Decreto Presidencial de 27 de junho de 2018".to_string()),
+            biografia_resumo: Some("Procuradora de carreira e Procuradora-Geral do Ministério Público junto ao Tribunal de Contas da União.".to_string()),
+            foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B35201850129B7F34C8E".to_string()),
+            origem_dado: "MPTCU_DADOS_ABERTOS".to_string(),
+        },
     ]
 }
 
@@ -367,7 +528,7 @@ mod tests {
         run_migrations(&mut conn).unwrap();
 
         let inseridos = sincronizar_autoridades_cupula(&mut conn).unwrap();
-        assert!(inseridos >= 20, "Devem ser inseridas pelo menos 20 autoridades de cúpula");
+        assert!(inseridos >= 30, "Devem ser inseridas pelo menos 30 autoridades de cúpula");
 
         // Verifica Ministros do STF
         let count_stf: i64 = conn
@@ -378,6 +539,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count_stf, 11, "Devem existir exatamente 11 Ministros do STF cadastrados");
+
+        // Verifica Ministros do TCU
+        let count_tcu: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM politicos WHERE tipo_agente = 'MINISTRO_TCU'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_tcu, 9, "Devem existir exatamente 9 Ministros titulares do TCU");
+
+        // Verifica Procuradoria do MPTCU
+        let count_mptcu: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM politicos WHERE tipo_agente = 'PROCURADOR_MPTCU'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_mptcu, 1, "Deve existir a Procuradora-Geral do MPTCU");
 
         // Verifica Embaixadores
         let count_emb: i64 = conn

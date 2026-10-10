@@ -795,6 +795,7 @@ pub async fn listar_politicos_handler(
 
     let mut cargos_disponiveis = vec![
         "MINISTRO DO STF".to_string(),
+        "MINISTRO DO TCU".to_string(),
         "PROCURADOR-GERAL DA REPÚBLICA".to_string(),
         "EMBAIXADOR".to_string(),
         "SECRETÁRIO DE ESTADO".to_string(),
@@ -875,6 +876,8 @@ pub async fn listar_politicos_handler(
         let cargo_upper = filtro_cargo.to_uppercase();
         if cargo_upper == "MINISTRO DO STF" || cargo_upper.contains("STF") {
             where_clauses.push("(ca.cargo LIKE '%Ministr%' OR ca.cargo LIKE '%MINISTR%' OR ca.orgao LIKE '%STF%' OR ca.orgao LIKE '%Supremo%')".to_string());
+        } else if cargo_upper == "MINISTRO DO TCU" || cargo_upper.contains("TCU") {
+            where_clauses.push("(ca.cargo LIKE '%Ministr%' OR ca.cargo LIKE '%MINISTR%' OR ca.orgao LIKE '%TCU%' OR ca.orgao LIKE '%Tribunal de Contas da União%' OR ca.orgao LIKE '%MPTCU%')".to_string());
         } else if cargo_upper == "PROCURADOR-GERAL DA REPÚBLICA" || cargo_upper == "PROCURADOR-GERAL DA REPUBLICA" || cargo_upper.contains("PGR") {
             where_clauses.push("(ca.cargo LIKE '%Procurador%' OR ca.cargo LIKE '%PROCURADOR%' OR ca.orgao LIKE '%PGR%' OR ca.orgao LIKE '%Procuradoria%')".to_string());
         } else if cargo_upper == "EMBAIXADOR" || cargo_upper.contains("EMBAIXAD") {
@@ -882,7 +885,7 @@ pub async fn listar_politicos_handler(
         } else if cargo_upper == "SECRETÁRIO DE ESTADO" || cargo_upper == "SECRETARIO DE ESTADO" || cargo_upper.contains("SECRET") {
             where_clauses.push("(ca.cargo LIKE '%Secret%' OR ca.cargo LIKE '%SECRET%' OR ca.orgao LIKE '%Secretaria%' OR ca.orgao LIKE '%SECRETARIA%')".to_string());
         } else if cargo_upper == "PRESIDENTE" {
-            where_clauses.push("(((UPPER(c.cargo) LIKE '%PRESIDENTE%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '1') AND UPPER(COALESCE(ca.cargo, '')) NOT LIKE '%STF%')".to_string());
+            where_clauses.push("(((UPPER(c.cargo) LIKE '%PRESIDENTE%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '1') AND UPPER(COALESCE(ca.cargo, '')) NOT LIKE '%STF%' AND UPPER(COALESCE(ca.cargo, '')) NOT LIKE '%TCU%')".to_string());
         } else if cargo_upper == "VICE-PRESIDENTE" {
             where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-PRESIDENTE%' OR c.cargo = '2')".to_string());
         } else if cargo_upper == "GOVERNADOR" {
@@ -966,23 +969,24 @@ pub async fn listar_politicos_handler(
     } else {
         "(CASE \
             WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%MINISTRO DO SUPREMO%' OR UPPER(COALESCE(ca.cargo, '')) LIKE '%STF%' THEN 1 \
-            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%PROCURADOR-GERAL%' THEN 2 \
-            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%PRESIDENTE%' AND UPPER(COALESCE(c.cargo, '')) NOT LIKE '%VICE%' THEN 3 \
-            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%GOVERNADOR%' AND UPPER(COALESCE(c.cargo, '')) NOT LIKE '%VICE%' THEN 4 \
-            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%SENADOR%' THEN 5 \
-            WHEN UPPER(COALESCE(c.cargo, '')) = 'DEPUTADO FEDERAL' THEN 6 \
-            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%EMBAIXADOR%' THEN 7 \
-            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETÁRIO%' OR UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETARIO%' THEN 8 \
-            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%PREFEITO%' AND UPPER(COALESCE(c.cargo, '')) NOT LIKE '%VICE%' THEN 9 \
-            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%DEPUTADO ESTADUAL%' OR UPPER(COALESCE(c.cargo, '')) LIKE '%DISTRITAL%' THEN 10 \
-            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%VICE%' THEN 11 \
-            ELSE 12 END) ASC, c.ano_eleicao DESC, p.id ASC"
+            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%MINISTRO DO TCU%' OR UPPER(COALESCE(ca.orgao, '')) LIKE '%TCU%' THEN 2 \
+            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%PROCURADOR-GERAL%' THEN 3 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%PRESIDENTE%' AND UPPER(COALESCE(c.cargo, '')) NOT LIKE '%VICE%' THEN 4 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%GOVERNADOR%' AND UPPER(COALESCE(c.cargo, '')) NOT LIKE '%VICE%' THEN 5 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%SENADOR%' THEN 6 \
+            WHEN UPPER(COALESCE(c.cargo, '')) = 'DEPUTADO FEDERAL' THEN 7 \
+            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%EMBAIXADOR%' THEN 8 \
+            WHEN UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETÁRIO%' OR UPPER(COALESCE(ca.cargo, '')) LIKE '%SECRETARIO%' THEN 9 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%PREFEITO%' AND UPPER(COALESCE(c.cargo, '')) NOT LIKE '%VICE%' THEN 10 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%DEPUTADO ESTADUAL%' OR UPPER(COALESCE(c.cargo, '')) LIKE '%DISTRITAL%' THEN 11 \
+            WHEN UPPER(COALESCE(c.cargo, '')) LIKE '%VICE%' THEN 12 \
+            ELSE 13 END) ASC, c.ano_eleicao DESC, p.id ASC"
     };
 
     let sql_dados = format!(
         "SELECT p.id, p.sq_candidato, p.cpf_mascarado, p.nome_completo, p.nome_urna,
-                COALESCE(c.sigla_partido, ca.orgao, 'S/P'),
-                COALESCE(c.uf, ca.uf, 'BR'),
+        COALESCE(c.sigla_partido, ca.orgao, 'S/P'),
+        COALESCE(c.uf, ca.uf, 'BR'),
                 COALESCE(ca.cargo, c.cargo, 'PARLAMENTAR'),
                 c.municipio,
                 COALESCE(c.total_bens_declarados, 0.0),
