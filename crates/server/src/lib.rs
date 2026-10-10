@@ -52,12 +52,13 @@ pub use investigar::{
 pub use politico::{
     buscar_foto_tse_handler, carregar_dossie, listar_politicos_handler, obter_foto_handler,
     politico_despesas_geo_handler, politico_detalhe_handler, politico_dossie_handler,
-    politico_evolucao_patrimonial_handler, remover_foto_handler, salvar_foto_manual_handler,
-    sincronizar_fotos_camara_handler, AlertaAuxilioItem, BemItem, BuscarFotoResponse,
-    CandidaturaItem, DespesaCeapResumoItem, DoadorItem, DossiePolitico, GastoCategoriaItem,
-    ItemPoliticoListagem, ListarPoliticosQueryParams, ListarPoliticosResponse,
-    PoliticoDespesasGeoResponse, PoliticoDetalheResponse, PontoDespesaGeo,
-    PontoEvolucaoPatrimonial, ResumoFinanceiroPolitico, SalvarFotoManualRequest,
+    politico_emendas_handler, politico_evolucao_patrimonial_handler, remover_foto_handler,
+    salvar_foto_manual_handler, sincronizar_fotos_camara_handler, AlertaAuxilioItem, BemItem,
+    BuscarFotoResponse, CandidaturaItem, DespesaCeapResumoItem, DoadorItem, DossiePolitico,
+    EmendaItem, GastoCategoriaItem, ItemPoliticoListagem, ListarPoliticosQueryParams,
+    ListarPoliticosResponse, PoliticoDespesasGeoResponse, PoliticoDetalheResponse,
+    PoliticoEmendasResponse, PontoDespesaGeo, PontoEvolucaoPatrimonial, ResumoFinanceiroPolitico,
+    SalvarFotoManualRequest,
 };
 
 use std::path::Path;
@@ -109,6 +110,8 @@ pub fn criar_router(pool: DbPool) -> Router {
         .route("/api/v1/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
         .route("/api/politicos/:id/evolucao-patrimonial", get(politico_evolucao_patrimonial_handler))
         .route("/api/v1/politicos/:id/evolucao-patrimonial", get(politico_evolucao_patrimonial_handler))
+        .route("/api/politicos/:id/emendas", get(politico_emendas_handler))
+        .route("/api/v1/politicos/:id/emendas", get(politico_emendas_handler))
         .route("/api/politico/:id", get(politico_detalhe_handler))
         .route("/api/v1/politico/:id", get(politico_detalhe_handler))
         .route("/api/dossie/cnpj/:cnpj", get(dossie::dossie_cnpj_handler))

@@ -4,7 +4,7 @@ use axum::response::Json;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use storage::rusqlite::Connection;
+use storage::rusqlite::{params, Connection};
 use storage::DbPool;
 
 use crate::geo::resolver_coordenadas_despesa;
@@ -83,6 +83,29 @@ pub struct CargoAutoridadeItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmendaItem {
+    pub id: i64,
+    pub ano: i32,
+    pub numero_emenda: String,
+    pub tipo_emenda: String,
+    pub localidade_destino: String,
+    pub uf: String,
+    pub beneficiario: String,
+    pub valor_empenhado: f64,
+    pub valor_pago: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PoliticoEmendasResponse {
+    pub politico_id: i64,
+    pub autor_nome: String,
+    pub total_empenhado: f64,
+    pub total_pago: f64,
+    pub total_emendas: usize,
+    pub emendas: Vec<EmendaItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DossiePolitico {
     pub id: i64,
     pub sq_candidato: Option<String>,
@@ -97,6 +120,12 @@ pub struct DossiePolitico {
     pub foto_url: Option<String>,
     #[serde(default)]
     pub tipo_agente: Option<String>,
+    #[serde(default)]
+    pub score_integridade: u32,
+    #[serde(default)]
+    pub nivel_risco: String,
+    #[serde(default)]
+    pub cor_risco_hex: String,
     pub candidaturas: Vec<CandidaturaItem>,
     pub historico_bens: Vec<BemItem>,
     pub doadores: Vec<DoadorItem>,
@@ -108,6 +137,10 @@ pub struct DossiePolitico {
     pub alertas_evolucao_patrimonial: Vec<auditor::AlertaEvolucaoPatrimonial>,
     #[serde(default)]
     pub cargos_autoridades: Vec<CargoAutoridadeItem>,
+    #[serde(default)]
+    pub alertas_parentesco: Vec<auditor::AlertaPossivelParentesco>,
+    #[serde(default)]
+    pub emendas: Vec<EmendaItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -177,6 +210,16 @@ pub struct PoliticoDetalheResponse {
     pub tipo_agente: Option<String>,
     #[serde(default)]
     pub cargos_autoridades: Vec<CargoAutoridadeItem>,
+    #[serde(default)]
+    pub score_integridade: u32,
+    #[serde(default)]
+    pub nivel_risco: String,
+    #[serde(default)]
+    pub cor_risco_hex: String,
+    #[serde(default)]
+    pub alertas_parentesco: Vec<auditor::AlertaPossivelParentesco>,
+    #[serde(default)]
+    pub emendas: Vec<EmendaItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -250,6 +293,10 @@ pub struct ItemPoliticoListagem {
     pub ano_eleicao: Option<i32>,
     #[serde(default)]
     pub tipo_agente: Option<String>,
+    #[serde(default)]
+    pub score_integridade: u32,
+    #[serde(default)]
+    pub nivel_risco: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -476,6 +523,9 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
                 foto_mime: row.get(9)?,
                 foto_url: row.get(10)?,
                 tipo_agente: row.get(11).ok(),
+                score_integridade: 100,
+                nivel_risco: "MÍNIMO".to_string(),
+                cor_risco_hex: "#10b981".to_string(),
                 candidaturas: Vec::new(),
                 historico_bens: Vec::new(),
                 doadores: Vec::new(),
@@ -483,6 +533,8 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
                 evolucao_patrimonial: Vec::new(),
                 alertas_evolucao_patrimonial: Vec::new(),
                 cargos_autoridades: Vec::new(),
+                alertas_parentesco: Vec::new(),
+                emendas: Vec::new(),
             })
         })
         .ok();
@@ -700,7 +752,165 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
         }
     }
 
+    // Emendas Parlamentares
+    {
+        if let Ok(mut stmt_emendas) = conn.prepare(
+            "SELECT id, ano, numero_emenda, tipo_emenda, localidade_destino, uf,
+                    beneficiario, valor_empenhado, valor_pago
+             FROM emendas_parlamentares
+             WHERE politico_id = ?1 OR UPPER(autor_nome) = UPPER(?2) OR UPPER(autor_nome) = UPPER(?3)
+             ORDER BY ano DESC, valor_empenhado DESC",
+        ) {
+            if let Ok(rows) = stmt_emendas.query_map(
+                params![politico_id, dossie.nome_urna, dossie.nome_completo],
+                |row| {
+                    Ok(EmendaItem {
+                        id: row.get(0)?,
+                        ano: row.get(1)?,
+                        numero_emenda: row.get(2)?,
+                        tipo_emenda: row.get(3)?,
+                        localidade_destino: row.get(4)?,
+                        uf: row.get(5)?,
+                        beneficiario: row.get(6)?,
+                        valor_empenhado: row.get(7)?,
+                        valor_pago: row.get(8)?,
+                    })
+                },
+            ) {
+                for r in rows.flatten() {
+                    dossie.emendas.push(r);
+                }
+            }
+        }
+    }
+
+    // Auditoria de Possível Parentesco (Sobrenomes Raros)
+    {
+        let mut alvos_parentesco = Vec::new();
+
+        // 1. Sócios das empresas fornecedoras que receberam CEAP deste parlamentar
+        if let Ok(mut stmt_socios) = conn.prepare(
+            "SELECT DISTINCT q.socio_nome, q.cnpj, COALESCE(q.uf, ?2)
+             FROM empresas_qsa q
+             JOIN despesas_parlamentares dp ON dp.fornecedor_cnpj_cpf = q.cnpj
+             WHERE (dp.parlamentar_nome = ?1 OR dp.parlamentar_nome = ?3)
+               AND q.socio_nome IS NOT NULL AND length(q.socio_nome) > 4
+             LIMIT 100",
+        ) {
+            let uf_base = dossie.candidaturas.first().map(|c| c.uf.as_str()).unwrap_or("BR");
+            if let Ok(rows) = stmt_socios.query_map(
+                params![dossie.nome_urna, uf_base, dossie.nome_completo],
+                |r| Ok(auditor::AlvoAuditoriaParentesco {
+                    nome: r.get(0)?,
+                    cnpj_cpf: r.get(1)?,
+                    uf: r.get(2)?,
+                    tipo_vinculo: "SOCIO_FORNECEDOR_CEAP".to_string(),
+                }),
+            ) {
+                for item in rows.flatten() {
+                    alvos_parentesco.push(item);
+                }
+            }
+        }
+
+        // 2. Doadores de campanha
+        let uf_base_doador = dossie.candidaturas.first().map(|c| c.uf.clone()).unwrap_or_else(|| "BR".to_string());
+        for d in &dossie.doadores {
+            if d.doador_nome.len() > 4 {
+                alvos_parentesco.push(auditor::AlvoAuditoriaParentesco {
+                    nome: d.doador_nome.clone(),
+                    cnpj_cpf: d.doador_cpf_cnpj.clone(),
+                    uf: uf_base_doador.clone(),
+                    tipo_vinculo: "DOADOR_CAMPANHA".to_string(),
+                });
+            }
+        }
+
+        let uf_pol = dossie.candidaturas.first().map(|c| c.uf.as_str()).unwrap_or("BR");
+        dossie.alertas_parentesco = auditor::auditar_possivel_parentesco(&dossie.nome_completo, uf_pol, &alvos_parentesco);
+    }
+
+    // Score de Integridade Cívica
+    {
+        let qtd_criticos = dossie.alertas_auxilio.len();
+        let qtd_graves = dossie.alertas_parentesco.len();
+        let qtd_medios = dossie.alertas_evolucao_patrimonial.len();
+        let qtd_leves = 0;
+
+        let resumo_score = auditor::calcular_score_integridade(
+            qtd_criticos,
+            qtd_graves,
+            qtd_medios,
+            qtd_leves,
+            &[],
+        );
+
+        dossie.score_integridade = resumo_score.score;
+        dossie.nivel_risco = resumo_score.nivel_risco;
+        dossie.cor_risco_hex = resumo_score.cor_hex;
+    }
+
     Ok(Some(dossie))
+}
+
+/// GET /api/politicos/:id/emendas e /api/v1/politicos/:id/emendas
+pub async fn politico_emendas_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<Json<PoliticoEmendasResponse>, StatusCode> {
+    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (nome_completo, nome_urna): (String, String) = conn
+        .query_row(
+            "SELECT nome_completo, nome_urna FROM politicos WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, ano, numero_emenda, tipo_emenda, localidade_destino, uf,
+                beneficiario, valor_empenhado, valor_pago
+         FROM emendas_parlamentares
+         WHERE politico_id = ?1 OR UPPER(autor_nome) = UPPER(?2) OR UPPER(autor_nome) = UPPER(?3)
+         ORDER BY ano DESC, valor_empenhado DESC",
+    ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let rows = stmt.query_map(
+        params![id, nome_urna, nome_completo],
+        |row| {
+            Ok(EmendaItem {
+                id: row.get(0)?,
+                ano: row.get(1)?,
+                numero_emenda: row.get(2)?,
+                tipo_emenda: row.get(3)?,
+                localidade_destino: row.get(4)?,
+                uf: row.get(5)?,
+                beneficiario: row.get(6)?,
+                valor_empenhado: row.get(7)?,
+                valor_pago: row.get(8)?,
+            })
+        },
+    ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut emendas = Vec::new();
+    let mut total_empenhado = 0.0;
+    let mut total_pago = 0.0;
+
+    for r in rows.flatten() {
+        total_empenhado += r.valor_empenhado;
+        total_pago += r.valor_pago;
+        emendas.push(r);
+    }
+
+    Ok(Json(PoliticoEmendasResponse {
+        politico_id: id,
+        autor_nome: nome_urna,
+        total_empenhado,
+        total_pago,
+        total_emendas: emendas.len(),
+        emendas,
+    }))
 }
 
 /// Handler legado para dossiê básico de político
@@ -1054,6 +1264,8 @@ pub async fn listar_politicos_handler(
                 mandatos,
                 ano_eleicao,
                 tipo_agente,
+                score_integridade: 100,
+                nivel_risco: "MÍNIMO".to_string(),
             })
         })
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -1076,6 +1288,10 @@ pub async fn listar_politicos_handler(
             pol.total_despesas_ceap = tot;
             pol.total_itens_ceap = qtd;
             pol.tem_alertas = tot > 350000.0;
+            if pol.tem_alertas {
+                pol.score_integridade = 65;
+                pol.nivel_risco = "MODERADO".to_string();
+            }
         }
     }
 
@@ -1311,6 +1527,9 @@ pub async fn politico_detalhe_handler(
             foto_mime: foto_mime.clone(),
             foto_url: foto_url.clone(),
             tipo_agente: tipo_agente.clone(),
+            score_integridade: 100,
+            nivel_risco: "Mínimo".to_string(),
+            cor_risco_hex: "#10b981".to_string(),
             candidaturas: Vec::new(),
             historico_bens: Vec::new(),
             doadores: Vec::new(),
@@ -1318,6 +1537,8 @@ pub async fn politico_detalhe_handler(
             evolucao_patrimonial: Vec::new(),
             alertas_evolucao_patrimonial: Vec::new(),
             cargos_autoridades: Vec::new(),
+            alertas_parentesco: Vec::new(),
+            emendas: Vec::new(),
         });
 
     Ok(Json(PoliticoDetalheResponse {
@@ -1347,6 +1568,11 @@ pub async fn politico_detalhe_handler(
         alertas_evolucao_patrimonial: dossie_base.alertas_evolucao_patrimonial,
         tipo_agente,
         cargos_autoridades: dossie_base.cargos_autoridades,
+        score_integridade: dossie_base.score_integridade,
+        nivel_risco: dossie_base.nivel_risco,
+        cor_risco_hex: dossie_base.cor_risco_hex,
+        alertas_parentesco: dossie_base.alertas_parentesco,
+        emendas: dossie_base.emendas,
     }))
 }
 
@@ -2359,4 +2585,89 @@ mod tests {
         assert_eq!(resp_det.cargos_autoridades[0].orgao, "Supremo Tribunal Federal");
         assert!(resp_det.cargos_autoridades[0].cargo.to_uppercase().contains("MINISTR"));
     }
+
+    #[tokio::test]
+    async fn test_emendas_e_score_integridade_e_nepotismo() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado)
+             VALUES ('DEPUTADO TESTE DA SILVA', 'DEP TESTE', '***.222.333-**')",
+            [],
+        ).unwrap();
+        let pol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, total_bens_declarados)
+             VALUES (?1, 2022, 'DEPUTADO FEDERAL', 'UNIÃO', 'DF', 500000.0)",
+            [pol_id],
+        ).unwrap();
+
+        // Inserir emenda parlamentar
+        let emendas = vec![
+            storage::NovaEmendaParlamentar {
+                politico_id: Some(pol_id),
+                ano: 2024,
+                numero_emenda: "202400010001".to_string(),
+                autor_nome: "DEP TESTE".to_string(),
+                tipo_emenda: "INDIVIDUAL_ESPECIAL".to_string(),
+                localidade_destino: "Brasília".to_string(),
+                uf: "DF".to_string(),
+                beneficiario: "MUNICIPIO DE TESTE".to_string(),
+                valor_empenhado: 1500000.0,
+                valor_pago: 1200000.0,
+            }
+        ];
+        storage::batch_insert_emendas_parlamentares(&mut conn, &emendas).unwrap();
+
+        let app = Router::new()
+            .route("/api/politicos", get(listar_politicos_handler))
+            .route("/api/politicos/:id", get(politico_detalhe_handler))
+            .route("/api/politicos/:id/emendas", get(politico_emendas_handler))
+            .with_state(pool.clone());
+
+        // Testar endpoint de emendas
+        let req_emenda = Request::builder()
+            .uri(format!("/api/politicos/{pol_id}/emendas"))
+            .body(Body::empty())
+            .unwrap();
+        let res_emenda = app.clone().oneshot(req_emenda).await.unwrap();
+        assert_eq!(res_emenda.status(), StatusCode::OK);
+        let bytes_emenda = axum::body::to_bytes(res_emenda.into_body(), usize::MAX).await.unwrap();
+        let resp_emenda: PoliticoEmendasResponse = serde_json::from_slice(&bytes_emenda).unwrap();
+        assert_eq!(resp_emenda.total_emendas, 1);
+        assert_eq!(resp_emenda.total_empenhado, 1500000.0);
+        assert_eq!(resp_emenda.total_pago, 1200000.0);
+        assert_eq!(resp_emenda.emendas[0].numero_emenda, "202400010001");
+
+        // Testar detalhe do político contendo score e emendas
+        let req_det = Request::builder()
+            .uri(format!("/api/politicos/{pol_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let res_det = app.clone().oneshot(req_det).await.unwrap();
+        assert_eq!(res_det.status(), StatusCode::OK);
+        let bytes_det = axum::body::to_bytes(res_det.into_body(), usize::MAX).await.unwrap();
+        let resp_det: PoliticoDetalheResponse = serde_json::from_slice(&bytes_det).unwrap();
+        assert_eq!(resp_det.score_integridade, 100);
+        assert_eq!(resp_det.nivel_risco, "MÍNIMO");
+        assert_eq!(resp_det.emendas.len(), 1);
+
+        // Testar listagem contendo score de integridade
+        let req_list = Request::builder()
+            .uri("/api/politicos")
+            .body(Body::empty())
+            .unwrap();
+        let res_list = app.clone().oneshot(req_list).await.unwrap();
+        assert_eq!(res_list.status(), StatusCode::OK);
+        let bytes_list = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        let resp_list: ListarPoliticosResponse = serde_json::from_slice(&bytes_list).unwrap();
+        assert!(!resp_list.politicos.is_empty());
+        let item = resp_list.politicos.iter().find(|p| p.id == pol_id).unwrap();
+        assert_eq!(item.score_integridade, 100);
+        assert_eq!(item.nivel_risco, "MÍNIMO");
+    }
 }
+
