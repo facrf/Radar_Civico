@@ -13,6 +13,7 @@
 		empresas_qsa?: number;
 		registros_profissionais?: number;
 		cargos_autoridades?: number;
+		emendas_parlamentares?: number;
 	}
 
 	interface ConfigStatus {
@@ -252,6 +253,7 @@
 		{ id: 'despesas_campanha', nome: 'Despesas de Campanha' },
 		{ id: 'despesas_parlamentares', nome: 'Despesas CEAP (Câmara)' },
 		{ id: 'contratos_publicos', nome: 'Contratos Públicos (PNCP)' },
+		{ id: 'emendas_parlamentares', nome: 'Emendas Parlamentares (SIOP/Transparência)' },
 		{ id: 'alertas_auditoria', nome: 'Alertas de Auditoria' },
 		{ id: 'empresas_qsa', nome: 'Quadro Societário (QSA)' },
 		{ id: 'registros_profissionais', nome: 'Registros Profissionais (OAB)' },
@@ -1026,7 +1028,7 @@
 						{/if}
 					</p>
 					<p class="text-xs text-slate-400">
-						{(status?.total_registros.contratos_publicos ?? 0).toLocaleString('pt-BR')} contratos PNCP
+						{(status?.total_registros.contratos_publicos ?? 0).toLocaleString('pt-BR')} contratos PNCP • {(status?.total_registros.emendas_parlamentares ?? 0).toLocaleString('pt-BR')} emendas
 					</p>
 				</div>
 			</div>
@@ -2233,6 +2235,7 @@
 						<option value="TSE_RECEITAS">TSE - Prestação de Contas (Receitas de Campanha)</option>
 						<option value="TSE_DESPESAS">TSE - Prestação de Contas (Despesas de Campanha)</option>
 						<option value="TSE_CANDIDATOS">TSE - Candidatos (consulta_cand)</option>
+						<option value="EMENDAS">Emendas Parlamentares (SIOP / Portal da Transparência)</option>
 						<option value="AUXILIO_EMERGENCIAL">Auxílio Emergencial / Benefícios (CGU / Brasil.IO)</option>
 					</select>
 				</div>
@@ -2295,6 +2298,12 @@
 								<span class="font-semibold text-blue-400 block">Querido Diário / Nomeações:</span>
 								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">DOADOR_CPF_CNPJ</code>, <code class="text-slate-300">TERMO_PESQUISADO</code>, <code class="text-slate-300">MUNICIPIO_UF</code></p>
 								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">cache_consultas_diario</span></p>
+							</div>
+
+							<div class="p-3 bg-slate-950/60 rounded border border-slate-800/80 space-y-1">
+								<span class="font-semibold text-emerald-300 block">Emendas Parlamentares (SIOP / Transparência):</span>
+								<p class="text-slate-400 text-[11px]">Colunas aceitas: <code class="text-slate-300">NUMERO_EMENDA</code>, <code class="text-slate-300">AUTOR_NOME</code>, <code class="text-slate-300">ANO</code>, <code class="text-slate-300">TIPO_EMENDA</code>, <code class="text-slate-300">VALOR_EMPENHADO</code>, <code class="text-slate-300">BENEFICIARIO_NOME</code>, <code class="text-slate-300">BENEFICIARIO_CNPJ</code></p>
+								<p class="text-[10px] text-slate-500">Tabela de destino: <span class="font-mono text-indigo-300">emendas_parlamentares</span></p>
 							</div>
 						</div>
 					</div>
