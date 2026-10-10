@@ -10,7 +10,10 @@
 	let erro: string | null = null;
 	let politico: PoliticoDetalheResponse | null = null;
 	let geoData: PoliticoDespesasGeoResponse | null = null;
-	let abaAtiva: 'mapa' | 'categorias' | 'despesas' | 'eleitoral' | 'evolucao' = 'mapa';
+	let abaAtiva: 'mapa' | 'categorias' | 'despesas' | 'eleitoral' | 'evolucao' | 'emendas' = 'mapa';
+
+	$: totalEmendasEmpenhado = politico?.emendas ? politico.emendas.reduce((acc, e) => acc + (e.valor_empenhado || 0), 0) : 0;
+	$: totalEmendasPago = politico?.emendas ? politico.emendas.reduce((acc, e) => acc + (e.valor_pago || 0), 0) : 0;
 
 	$: maxPatrimonio = politico?.evolucao_patrimonial && politico.evolucao_patrimonial.length > 0
 		? Math.max(...politico.evolucao_patrimonial.map((p) => p.valor_total), 1)
@@ -316,6 +319,7 @@
 				<div class="text-right text-[10px] text-slate-700 font-mono space-y-0.5">
 					<div><strong>DOSSIÊ ANALÍTICO OFICIAL</strong></div>
 					<div>Emissão: {new Date().toLocaleDateString('pt-BR')} às {new Date().toLocaleTimeString('pt-BR')}</div>
+					<div>Score Integridade: <strong>{politico.score_integridade ?? 100}/100</strong> • Risco <strong>{politico.nivel_risco ?? 'MÍNIMO'}</strong></div>
 					<div>Registro: #{politico.id} • Chave Criptográfica SHA-256 Verificada</div>
 				</div>
 			</div>
@@ -445,15 +449,35 @@
 					</div>
 				</div>
 
-				<!-- Indicador Rápido de Localização do Mandato -->
-				<div class="flex flex-col sm:items-end justify-center bg-slate-950/70 border border-slate-800 rounded-2xl p-4 min-w-[200px]">
-					<span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Base Parlamentar</span>
-					<div class="text-lg font-bold text-white mt-0.5">
-						{politico.uf} - Brasil
-					</div>
-					<div class="text-xs text-slate-400 mt-1 flex items-center gap-1">
-						<span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-						<span>Gabinete em Exercício</span>
+				<!-- Score de Integridade & Base Parlamentar -->
+				<div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+					{#if politico.score_integridade !== undefined}
+						<div
+							class="flex flex-col items-center justify-center rounded-2xl p-3.5 min-w-[140px] border shadow-lg text-center backdrop-blur-sm"
+							style="background-color: {politico.cor_risco_hex || '#10b981'}15; border-color: {politico.cor_risco_hex || '#10b981'}40;"
+						>
+							<span class="text-[10px] uppercase tracking-wider font-bold text-slate-300">Score Integridade</span>
+							<div class="text-3xl font-black font-mono my-0.5" style="color: {politico.cor_risco_hex || '#10b981'};">
+								{politico.score_integridade}<span class="text-xs font-normal text-slate-400">/100</span>
+							</div>
+							<span
+								class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider font-mono"
+								style="background-color: {politico.cor_risco_hex || '#10b981'}30; color: {politico.cor_risco_hex || '#10b981'};"
+							>
+								Risco {politico.nivel_risco || 'MÍNIMO'}
+							</span>
+						</div>
+					{/if}
+
+					<div class="flex flex-col sm:items-end justify-center bg-slate-950/70 border border-slate-800 rounded-2xl p-4 min-w-[170px]">
+						<span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Base Territorial</span>
+						<div class="text-lg font-bold text-white mt-0.5">
+							{politico.uf} - Brasil
+						</div>
+						<div class="text-xs text-slate-400 mt-1 flex items-center gap-1">
+							<span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+							<span>Registro Ativo</span>
+						</div>
 					</div>
 				</div>
 			</div>
@@ -579,6 +603,58 @@
 			</div>
 		</section>
 
+		<!-- Alerta de Auditoria de Possível Parentesco & Nepotismo Cruzado -->
+		{#if politico.alertas_parentesco && politico.alertas_parentesco.length > 0}
+			<section class="bg-rose-950/30 border border-rose-500/40 rounded-2xl p-5 shadow-xl space-y-3">
+				<div class="flex items-center justify-between">
+					<div class="flex items-center gap-2">
+						<span class="text-xl">⚠️</span>
+						<div>
+							<h3 class="text-sm font-bold text-rose-300">Auditoria de Possível Parentesco & Nepotismo Cruzado</h3>
+							<p class="text-xs text-rose-400/80">Sobrenomes raros compartilhados com sócios de fornecedores CEAP ou doadores na mesma UF ({politico.uf})</p>
+						</div>
+					</div>
+					<span class="px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+						{politico.alertas_parentesco.length} {politico.alertas_parentesco.length === 1 ? 'suspeita' : 'suspeitas'}
+					</span>
+				</div>
+
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+					{#each politico.alertas_parentesco as ap}
+						<div class="p-3.5 bg-slate-950/80 border border-rose-500/30 rounded-xl space-y-2 text-xs">
+							<div class="flex items-start justify-between gap-2">
+								<div>
+									<strong class="text-white text-sm block">{ap.alvo_nome}</strong>
+									<span class="text-slate-400 font-mono text-[11px]">
+										{ap.alvo_documento ? formatarCnpjCpf(ap.alvo_documento) : 'Documento protegido'} • {ap.uf}
+									</span>
+								</div>
+								<span class="px-2 py-0.5 rounded text-[10px] font-bold font-mono {ap.nivel_suspeicao === 'ALTO' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'}">
+									{ap.nivel_suspeicao}
+								</span>
+							</div>
+
+							<p class="text-slate-300 text-[11px] leading-relaxed">
+								{ap.descricao}
+							</p>
+
+							<div class="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-800">
+								<span class="text-[10px] text-slate-400">Sobrenomes coincidentes:</span>
+								{#each ap.sobrenomes_compartilhados as sobrenome}
+									<span class="px-1.5 py-0.5 rounded bg-slate-800 text-amber-300 font-mono text-[10px] font-bold border border-slate-700">
+										{sobrenome}
+									</span>
+								{/each}
+								<span class="text-[10px] text-slate-500 ml-auto font-mono">
+									Vínculo: {ap.tipo_vinculo}
+								</span>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
 		<!-- Abas de Navegação do Módulo -->
 		<div class="border-b border-slate-800 flex items-center gap-2 overflow-x-auto text-xs font-medium">
 			<button
@@ -635,6 +711,15 @@
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
 				</svg>
 				<span>Evolução Patrimonial ({politico.evolucao_patrimonial?.length || 0})</span>
+			</button>
+
+			<button
+				type="button"
+				on:click={() => (abaAtiva = 'emendas')}
+				class="pb-3 px-3 transition-colors flex items-center gap-2 border-b-2 font-bold whitespace-nowrap {abaAtiva === 'emendas' ? 'border-emerald-400 text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}"
+			>
+				<span class="text-sm">💰</span>
+				<span>Emendas Parlamentares ({politico.emendas?.length || 0})</span>
 			</button>
 		</div>
 
@@ -1056,6 +1141,107 @@
 					{/if}
 				</section>
 			</div>
+		{:else if abaAtiva === 'emendas'}
+			<!-- Módulo de Auditoria de Emendas Parlamentares (Emendas Pix e Especiais) -->
+			<section class="space-y-4">
+				<div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+					<div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl shadow-md">
+						<span class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Total Empenhado</span>
+						<div class="text-xl font-black text-emerald-400 font-mono mt-1">
+							{formatarMoeda(totalEmendasEmpenhado)}
+						</div>
+						<span class="text-[10px] text-slate-500">Recursos orçamentários alocados</span>
+					</div>
+
+					<div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl shadow-md">
+						<span class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Total Pago / Liquidado</span>
+						<div class="text-xl font-black text-cyan-400 font-mono mt-1">
+							{formatarMoeda(totalEmendasPago)}
+						</div>
+						<span class="text-[10px] text-slate-500">Recursos efetivamente transferidos</span>
+					</div>
+
+					<div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl shadow-md">
+						<span class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Volume de Emendas</span>
+						<div class="text-xl font-black text-white font-mono mt-1">
+							{politico.emendas?.length || 0}
+						</div>
+						<span class="text-[10px] text-slate-500">Registros parlamentares identificados</span>
+					</div>
+
+					<div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl shadow-md">
+						<span class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Taxa de Execução</span>
+						<div class="text-xl font-black text-amber-300 font-mono mt-1">
+							{totalEmendasEmpenhado > 0 ? `${((totalEmendasPago / totalEmendasEmpenhado) * 100).toFixed(1)}%` : '0%'}
+						</div>
+						<span class="text-[10px] text-slate-500">Execução financeira sobre empenhado</span>
+					</div>
+				</div>
+
+				{#if politico.emendas && politico.emendas.length > 0}
+					<div class="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/90 shadow-xl">
+						<table class="w-full text-left text-xs text-slate-300">
+							<thead class="bg-slate-950/80 text-[11px] uppercase font-bold text-slate-400 border-b border-slate-800 tracking-wider">
+								<tr>
+									<th class="py-3 px-3 w-16 text-center">Ano</th>
+									<th class="py-3 px-3 min-w-[130px]">Número da Emenda</th>
+									<th class="py-3 px-3 min-w-[160px]">Modalidade / Tipo</th>
+									<th class="py-3 px-3 min-w-[150px]">Destino / UF</th>
+									<th class="py-3 px-4 min-w-[200px]">Beneficiário</th>
+									<th class="py-3 px-3 text-right min-w-[120px]">Valor Empenhado</th>
+									<th class="py-3 px-3 text-right min-w-[120px]">Valor Pago</th>
+								</tr>
+							</thead>
+							<tbody class="divide-y divide-slate-800/60">
+								{#each politico.emendas as emenda}
+									<tr class="hover:bg-slate-800/40 transition-colors">
+										<td class="py-3 px-3 text-center font-mono font-bold text-slate-400">
+											{emenda.ano}
+										</td>
+										<td class="py-3 px-3 font-mono font-semibold text-white">
+											{emenda.numero_emenda}
+										</td>
+										<td class="py-3 px-3">
+											{#if emenda.tipo_emenda.includes('ESPECIAL') || emenda.tipo_emenda.includes('PIX')}
+												<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">
+													⚡ Transf. Especial (Emenda Pix)
+												</span>
+											{:else}
+												<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700 whitespace-nowrap">
+													{emenda.tipo_emenda}
+												</span>
+											{/if}
+										</td>
+										<td class="py-3 px-3 text-slate-300">
+											<span class="font-medium">{emenda.localidade_destino}</span>
+											<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-emerald-400 border border-slate-700 font-mono ml-1">
+												{emenda.uf}
+											</span>
+										</td>
+										<td class="py-3 px-4 text-slate-300 font-medium">
+											{emenda.beneficiario}
+										</td>
+										<td class="py-3 px-3 text-right font-mono font-bold text-emerald-400 whitespace-nowrap">
+											{formatarMoeda(emenda.valor_empenhado)}
+										</td>
+										<td class="py-3 px-3 text-right font-mono font-bold text-cyan-400 whitespace-nowrap">
+											{formatarMoeda(emenda.valor_pago)}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{:else}
+					<div class="p-10 text-center bg-slate-900 border border-slate-800 rounded-2xl space-y-2">
+						<span class="text-3xl block">🏛️</span>
+						<h3 class="text-base font-semibold text-white">Nenhuma emenda parlamentar vinculada</h3>
+						<p class="text-xs text-slate-400 max-w-md mx-auto">
+							Não foram encontradas emendas individuais ou transferências especiais associadas a este parlamentar na base do Siop/Transparência.
+						</p>
+					</div>
+				{/if}
+			</section>
 		{/if}
 	{/if}
 </div>

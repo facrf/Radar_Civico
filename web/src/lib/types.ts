@@ -108,6 +108,11 @@ export interface DossiePolitico {
 	evolucao_patrimonial?: PontoEvolucaoPatrimonial[];
 	alertas_evolucao_patrimonial?: AlertaEvolucaoPatrimonial[];
 	cargos_autoridades?: CargoAutoridadeItem[];
+	score_integridade?: number;
+	nivel_risco?: string;
+	cor_risco_hex?: string;
+	alertas_parentesco?: AlertaPossivelParentesco[];
+	emendas?: EmendaItem[];
 }
 
 export interface AlertaItem {
@@ -354,6 +359,37 @@ export interface DossieCpf {
 	contratos_pncp_empresas: ContratoPncpItem[];
 }
 
+export interface EmendaItem {
+	id: number;
+	ano: number;
+	numero_emenda: string;
+	tipo_emenda: string;
+	localidade_destino: string;
+	uf: string;
+	beneficiario: string;
+	valor_empenhado: number;
+	valor_pago: number;
+}
+
+export interface PoliticoEmendasResponse {
+	politico_id: number;
+	autor_nome: string;
+	total_empenhado: number;
+	total_pago: number;
+	total_emendas: number;
+	emendas: EmendaItem[];
+}
+
+export interface AlertaPossivelParentesco {
+	alvo_nome: string;
+	alvo_documento: string;
+	uf: string;
+	tipo_vinculo: string;
+	sobrenomes_compartilhados: string[];
+	nivel_suspeicao: string;
+	descricao: string;
+}
+
 export interface ItemPoliticoListagem {
 	id: number;
 	sq_candidato: string | null;
@@ -374,6 +410,9 @@ export interface ItemPoliticoListagem {
 	mandatos?: string[];
 	ano_eleicao?: number | null;
 	tipo_agente?: string | null;
+	score_integridade?: number;
+	nivel_risco?: string;
+	cor_risco_hex?: string;
 }
 
 export interface BuscarFotoResponse {
@@ -461,6 +500,11 @@ export interface PoliticoDetalheResponse {
 	alertas_evolucao_patrimonial?: AlertaEvolucaoPatrimonial[];
 	tipo_agente?: string | null;
 	cargos_autoridades?: CargoAutoridadeItem[];
+	score_integridade?: number;
+	nivel_risco?: string;
+	cor_risco_hex?: string;
+	alertas_parentesco?: AlertaPossivelParentesco[];
+	emendas?: EmendaItem[];
 }
 
 export interface BackupItemInfo {
