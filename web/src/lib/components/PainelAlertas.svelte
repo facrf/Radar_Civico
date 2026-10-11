@@ -1,9 +1,12 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import type { AlertaItem } from '$lib/types';
 
 	let alertas: AlertaItem[] = [];
 	let loading = true;
+	let executandoAuditoria = false;
+	let erroAuditoria: string | null = null;
+	let request: AbortController | null = null;
 	let total = 0;
 	let alertaSelecionado: AlertaItem | null = null;
 
@@ -15,6 +18,9 @@
 	let debounceMunicipio: ReturnType<typeof setTimeout>;
 
 	export async function carregarAlertas() {
+		request?.abort();
+		const current = new AbortController();
+		request = current;
 		loading = true;
 		try {
 			const params = new URLSearchParams();
@@ -23,9 +29,10 @@
 			if (filtroSeveridade) params.append('severidade', filtroSeveridade);
 			if (filtroTipo) params.append('tipo', filtroTipo);
 
-			const res = await fetch(`/api/v1/auditoria/alertas?${params.toString()}`);
+			const res = await fetch(`/api/v1/auditoria/alertas?${params.toString()}`, { signal: current.signal });
 			if (res.ok) {
 				const data = await res.json();
+				if (request !== current) return;
 				alertas = data.alertas || [];
 				total = data.total || 0;
 				// Notifica layout para atualizar badge no menu superior
@@ -34,10 +41,36 @@
 				}
 			}
 		} catch (err) {
-			console.error('Erro ao buscar alertas:', err);
+			if (!current.signal.aborted) console.error('Erro ao buscar alertas:', err);
 		} finally {
-			loading = false;
+			if (request === current) loading = false;
 		}
+	}
+
+	async function executarAuditoria() {
+		if (executandoAuditoria) return;
+		executandoAuditoria = true;
+		erroAuditoria = null;
+		try {
+			const res = await fetch('/api/v1/auditoria/sincronizar', { method: 'POST' });
+			if (!res.ok) {
+				const data = await res.json();
+				throw new Error(data.mensagem || 'Falha ao executar auditoria');
+			}
+			await carregarAlertas();
+		} catch (e) {
+			erroAuditoria = e instanceof Error ? e.message : 'Falha ao executar auditoria';
+		} finally {
+			executandoAuditoria = false;
+		}
+	}
+
+	function linkSeguro(value: unknown): string | null {
+		if (typeof value !== 'string') return null;
+		try {
+			const url = new URL(value);
+			return ['http:', 'https:'].includes(url.protocol) ? url.href : null;
+		} catch { return null; }
 	}
 
 	function handleMunicipioInput() {
@@ -73,9 +106,17 @@
 	onMount(() => {
 		carregarAlertas();
 	});
+	onDestroy(() => { request?.abort(); clearTimeout(debounceMunicipio); });
 </script>
 
 <div class="space-y-6">
+	<div class="flex flex-wrap items-center gap-3">
+		<button type="button" on:click={executarAuditoria} disabled={executandoAuditoria} class="px-4 py-2 rounded-lg bg-emerald-600 text-sm text-white disabled:opacity-50">
+			{executandoAuditoria ? 'Executando auditoria…' : 'Executar auditoria'}
+		</button>
+		<p class="text-xs text-slate-400">Consultar ou filtrar a lista não executa uma nova auditoria.</p>
+	</div>
+	{#if erroAuditoria}<p role="alert" class="text-sm text-rose-400">{erroAuditoria}</p>{/if}
 	<!-- Barra de Filtros -->
 	<div class="bg-slate-800/80 border border-slate-700/80 rounded-xl p-5 shadow-lg">
 		<div class="flex items-center justify-between mb-4">
@@ -222,6 +263,13 @@
 							{alerta.titulo}
 						</h3>
 						<p class="text-sm text-slate-300 mt-1 leading-relaxed">{alerta.descricao}</p>
+						{#if alerta.detalhes?.volume_estimado === true}
+							<p class="mt-2 text-xs text-amber-300 font-medium">Volume estimado • conferir nota fiscal</p>
+						{/if}
+						<div class="mt-2 flex gap-4 text-xs text-emerald-400">
+							{#if linkSeguro(alerta.detalhes?.fonte_primaria_url)}<a href={linkSeguro(alerta.detalhes?.fonte_primaria_url) || undefined} target="_blank" rel="noopener noreferrer" on:click|stopPropagation>Nota fiscal na fonte pública</a>{/if}
+							{#if linkSeguro(alerta.detalhes?.referencia_url)}<a href={linkSeguro(alerta.detalhes?.referencia_url) || undefined} target="_blank" rel="noopener noreferrer" on:click|stopPropagation>Fonte do preço de referência</a>{/if}
+						</div>
 
 						<div class="mt-4 pt-3 border-t border-slate-700/50 flex flex-wrap items-center justify-between text-xs text-slate-400 gap-2">
 							<div>
@@ -256,13 +304,14 @@
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
 					</svg>
 				</div>
-				<h3 class="text-base font-semibold text-slate-200">Nenhuma irregularidade ativa detectada</h3>
+				<h3 class="text-base font-semibold text-slate-200">Nenhum alerta encontrado para estes filtros</h3>
 				<p class="text-slate-400 text-xs sm:text-sm max-w-md mx-auto leading-relaxed">
 					O motor de auditoria analisa notas da CEAP (volume de combustível ajustável nas Configurações), cruzamentos com doadores de campanha, contratos do PNCP, auxílio emergencial e incompatibilidade com a advocacia (Art. 28 OAB).
 				</p>
 				<button
 					type="button"
-					on:click={carregarAlertas}
+					on:click={executarAuditoria}
+					disabled={executandoAuditoria}
 					class="mt-2 px-4 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg transition-colors inline-flex items-center gap-1.5"
 				>
 					<svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">

@@ -279,7 +279,7 @@
 									<div class="text-right">
 										<span class="font-mono text-emerald-400 font-bold block">{formatarMoeda(nf.valor_liquido)}</span>
 										{#if nf.flag_anomalia}
-											<span class="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">Anomalia</span>
+											<span class="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">{nf.volume_estimado ? 'Volume estimado elevado' : 'Volume declarado elevado'}</span>
 										{/if}
 									</div>
 								</div>

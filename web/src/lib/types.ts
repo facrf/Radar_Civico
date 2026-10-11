@@ -202,6 +202,8 @@ export interface NotaFiscalCeapItem {
 	numero_documento: string | null;
 	url_nota_fiscal: string | null;
 	flag_anomalia: boolean;
+	volume_estimado?: boolean;
+	volume_litros?: number | null;
 	politico_id: number | null;
 }
 

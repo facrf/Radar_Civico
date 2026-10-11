@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use crate::error::Result;
+use rusqlite::Connection;
 
 pub struct Migration {
     pub version: i32,
@@ -593,6 +593,41 @@ pub const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_emendas_tipo ON emendas_parlamentares(tipo_emenda);
         ",
     },
+    Migration {
+        version: 20,
+        name: "identidade_estruturada_alertas",
+        sql: "
+            ALTER TABLE alertas_auditoria ADD COLUMN chave_origem TEXT GENERATED ALWAYS AS (
+                CASE WHEN json_valid(detalhes_json) THEN
+                    CASE
+                        WHEN tipo IN ('COMBUSTIVEL', 'COMBUSTIVEL_SOBREPRECO', 'EMPRESA_RECEM_CRIADA')
+                            AND json_extract(detalhes_json, '$.despesa_id') IS NOT NULL
+                            THEN json_array(json_extract(detalhes_json, '$.despesa_id'))
+                        WHEN tipo = 'CONFLITO_OAB' AND json_extract(detalhes_json, '$.conflito_id') IS NOT NULL
+                            THEN json_array(json_extract(detalhes_json, '$.conflito_id'))
+                        WHEN tipo = 'AUXILIO_EMERGENCIAL' AND json_extract(detalhes_json, '$.auxilio_alerta_id') IS NOT NULL
+                            THEN json_array(json_extract(detalhes_json, '$.auxilio_alerta_id'))
+                        WHEN tipo = 'DOADOR_INCOMPATIVEL' AND json_extract(detalhes_json, '$.receita_id') IS NOT NULL
+                            THEN json_array(json_extract(detalhes_json, '$.receita_id'))
+                        WHEN tipo = 'EVOLUCAO_PATRIMONIAL'
+                            THEN json_array(json_extract(detalhes_json, '$.politico_id'), json_extract(detalhes_json, '$.ano_recente'))
+                        WHEN tipo = 'CONLUIO_LICITACAO'
+                            THEN json_array(json_extract(detalhes_json, '$.socio_documento'), json_extract(detalhes_json, '$.orgao'))
+                        WHEN tipo = 'CAPITAL_DESPROPORCIONAL' AND json_extract(detalhes_json, '$.cnpj') IS NOT NULL
+                            THEN json_array(json_extract(detalhes_json, '$.cnpj'))
+                        WHEN tipo = 'POSSIVEL_PARENTESCO'
+                            THEN json_array(json_extract(detalhes_json, '$.politico_id'), json_extract(detalhes_json, '$.alvo_doc'))
+                    END
+                END
+            ) VIRTUAL;
+            DELETE FROM alertas_auditoria
+            WHERE chave_origem IS NOT NULL AND id NOT IN (
+                SELECT MIN(id) FROM alertas_auditoria WHERE chave_origem IS NOT NULL GROUP BY tipo, chave_origem
+            );
+            CREATE UNIQUE INDEX idx_alertas_origem ON alertas_auditoria(tipo, chave_origem)
+            WHERE chave_origem IS NOT NULL;
+        ",
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -712,9 +747,12 @@ mod tests {
             [],
         )?;
 
-        let rec_count: i64 = conn.query_row("SELECT count(*) FROM receitas_campanha", [], |r| r.get(0))?;
-        let desp_count: i64 = conn.query_row("SELECT count(*) FROM despesas_campanha", [], |r| r.get(0))?;
-        let qsa_count: i64 = conn.query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))?;
+        let rec_count: i64 =
+            conn.query_row("SELECT count(*) FROM receitas_campanha", [], |r| r.get(0))?;
+        let desp_count: i64 =
+            conn.query_row("SELECT count(*) FROM despesas_campanha", [], |r| r.get(0))?;
+        let qsa_count: i64 =
+            conn.query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))?;
 
         assert_eq!(rec_count, 1);
         assert_eq!(desp_count, 1);
@@ -752,9 +790,17 @@ mod tests {
             [],
         )?;
 
-        let desp_count: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
-        let litros: f64 = conn.query_row("SELECT detalhes_litros FROM despesas_parlamentares WHERE id = 1", [], |r| r.get(0))?;
-        let cont_count: i64 = conn.query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))?;
+        let desp_count: i64 =
+            conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })?;
+        let litros: f64 = conn.query_row(
+            "SELECT detalhes_litros FROM despesas_parlamentares WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )?;
+        let cont_count: i64 =
+            conn.query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))?;
 
         assert_eq!(desp_count, 1);
         assert_eq!(litros, 85.5);
@@ -791,7 +837,8 @@ mod tests {
         )?;
 
         let nos_count: i64 = conn.query_row("SELECT count(*) FROM nos_rede", [], |r| r.get(0))?;
-        let conexoes_count: i64 = conn.query_row("SELECT count(*) FROM conexoes_rede", [], |r| r.get(0))?;
+        let conexoes_count: i64 =
+            conn.query_row("SELECT count(*) FROM conexoes_rede", [], |r| r.get(0))?;
 
         assert_eq!(nos_count, 2);
         assert_eq!(conexoes_count, 1);
@@ -831,9 +878,18 @@ mod tests {
             (reg_id, gestor_id),
         )?;
 
-        let cache_count: i64 = conn.query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| r.get(0))?;
-        let reg_count: i64 = conn.query_row("SELECT count(*) FROM registros_profissionais", [], |r| r.get(0))?;
-        let alerta_count: i64 = conn.query_row("SELECT count(*) FROM alertas_incompatibilidade", [], |r| r.get(0))?;
+        let cache_count: i64 =
+            conn.query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| {
+                r.get(0)
+            })?;
+        let reg_count: i64 =
+            conn.query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
+                r.get(0)
+            })?;
+        let alerta_count: i64 =
+            conn.query_row("SELECT count(*) FROM alertas_incompatibilidade", [], |r| {
+                r.get(0)
+            })?;
 
         assert_eq!(cache_count, 1);
         assert_eq!(reg_count, 1);
@@ -982,8 +1038,14 @@ mod tests {
             (pol_id, ben_id),
         )?;
 
-        let ben_count: i64 = conn.query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| r.get(0))?;
-        let alerta_count: i64 = conn.query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| r.get(0))?;
+        let ben_count: i64 =
+            conn.query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
+                r.get(0)
+            })?;
+        let alerta_count: i64 =
+            conn.query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| {
+                r.get(0)
+            })?;
 
         assert_eq!(ben_count, 1);
         assert_eq!(alerta_count, 1);
@@ -1000,7 +1062,8 @@ mod tests {
         let mut conn = pool.get()?;
         run_migrations(&mut conn)?;
 
-        let count: i64 = conn.query_row("SELECT count(*) FROM municipios_ibge", [], |r| r.get(0))?;
+        let count: i64 =
+            conn.query_row("SELECT count(*) FROM municipios_ibge", [], |r| r.get(0))?;
         assert!(count >= 27, "Deveria ter ao menos as 27 capitais inseridas");
 
         let (lat, lon): (f64, f64) = conn.query_row(
@@ -1037,8 +1100,14 @@ mod tests {
         )?;
 
         // Re-executa as migrações (ou script da migração 12)
-        conn.execute("UPDATE candidaturas SET cargo = 'VEREADOR' WHERE cargo = '13'", [])?;
-        conn.execute("UPDATE candidaturas SET sigla_partido = 'PL' WHERE sigla_partido = '22'", [])?;
+        conn.execute(
+            "UPDATE candidaturas SET cargo = 'VEREADOR' WHERE cargo = '13'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE candidaturas SET sigla_partido = 'PL' WHERE sigla_partido = '22'",
+            [],
+        )?;
 
         let (cargo, partido): (String, String) = conn.query_row(
             "SELECT cargo, sigla_partido FROM candidaturas WHERE politico_id = ?1",
@@ -1075,7 +1144,10 @@ mod tests {
              ) VALUES ('CAMARA', 'DEPUTADO A', '2024-05-01', 'COMBUSTIVEL', 'POSTO 1', '11111111000100', 200.0, 'NF10')",
             [],
         );
-        assert!(res.is_err(), "Deveria falhar devido ao índice único idx_desp_parl_dedup");
+        assert!(
+            res.is_err(),
+            "Deveria falhar devido ao índice único idx_desp_parl_dedup"
+        );
 
         // INSERT OR IGNORE não falha e mantém contagem em 1
         let rows = conn.execute(
@@ -1087,7 +1159,10 @@ mod tests {
         )?;
         assert_eq!(rows, 0);
 
-        let count: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
+        let count: i64 =
+            conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })?;
         assert_eq!(count, 1);
 
         Ok(())
@@ -1127,14 +1202,20 @@ mod tests {
             [],
             |r| r.get(0),
         )?;
-        assert_eq!(count_idx_cpf, 1, "Índice parcial idx_politicos_cpf_valido deve existir");
+        assert_eq!(
+            count_idx_cpf, 1,
+            "Índice parcial idx_politicos_cpf_valido deve existir"
+        );
 
         let count_idx_parl: i64 = conn.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_despesas_parlamentar_nome'",
             [],
             |r| r.get(0),
         )?;
-        assert_eq!(count_idx_parl, 1, "Índice idx_despesas_parlamentar_nome deve existir");
+        assert_eq!(
+            count_idx_parl, 1,
+            "Índice idx_despesas_parlamentar_nome deve existir"
+        );
 
         // Testa inserção com colunas novas de empresas_qsa
         conn.execute(
@@ -1234,6 +1315,3 @@ mod tests {
         Ok(())
     }
 }
-
-
-

@@ -111,8 +111,15 @@ pub struct VersaoResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ParametrosAuditoria {
     pub limite_combustivel_litros: f64,
+    pub preco_combustivel_referencia: f64,
+    pub sobrepreco_combustivel_percentual: f64,
+    pub estimar_volume_combustivel: bool,
+    pub referencia_combustivel_periodo: String,
+    pub referencia_combustivel_local: String,
+    pub referencia_combustivel_url: Option<String>,
     pub janela_triangulacao_dias: i64,
     pub concentracao_fornecedor_percentual: f64,
 }
@@ -121,6 +128,12 @@ impl Default for ParametrosAuditoria {
     fn default() -> Self {
         Self {
             limite_combustivel_litros: 250.0,
+            preco_combustivel_referencia: 5.80,
+            sobrepreco_combustivel_percentual: 50.0,
+            estimar_volume_combustivel: true,
+            referencia_combustivel_periodo: "Não informado".into(),
+            referencia_combustivel_local: "Não informado".into(),
+            referencia_combustivel_url: None,
             janela_triangulacao_dias: 180,
             concentracao_fornecedor_percentual: 60.0,
         }
@@ -128,15 +141,69 @@ impl Default for ParametrosAuditoria {
 }
 
 impl ParametrosAuditoria {
+    /// Retorna volume e se ele foi estimado. Documento sem volume pode ter vários abastecimentos.
+    pub fn volume_combustivel(
+        &self,
+        categoria: &str,
+        valor: f64,
+        litros: Option<f64>,
+    ) -> Option<(f64, bool)> {
+        if let Some(volume) = litros.filter(|v| v.is_finite() && *v > 0.0) {
+            return Some((volume, false));
+        }
+        if self.estimar_volume_combustivel
+            && categoria.to_uppercase().contains("COMBUST")
+            && valor.is_finite()
+            && valor > 0.0
+            && self.preco_combustivel_referencia > 0.0
+        {
+            Some((valor / self.preco_combustivel_referencia, true))
+        } else {
+            None
+        }
+    }
+
     pub fn validar(&self) -> Result<(), String> {
-        if self.limite_combustivel_litros < 1.0 || self.limite_combustivel_litros > 10000.0 {
+        if !self.limite_combustivel_litros.is_finite()
+            || self.limite_combustivel_litros < 1.0
+            || self.limite_combustivel_litros > 10000.0
+        {
             return Err("Limite de combustível deve estar entre 1 L e 10.000 L.".to_string());
         }
         if self.janela_triangulacao_dias < 1 || self.janela_triangulacao_dias > 730 {
             return Err("Janela de triangulação deve estar entre 1 e 730 dias.".to_string());
         }
-        if self.concentracao_fornecedor_percentual < 0.0 || self.concentracao_fornecedor_percentual > 100.0 {
+        if !self.concentracao_fornecedor_percentual.is_finite()
+            || self.concentracao_fornecedor_percentual < 0.0
+            || self.concentracao_fornecedor_percentual > 100.0
+        {
             return Err("Concentração de fornecedor deve estar entre 0% e 100%.".to_string());
+        }
+        if !self.preco_combustivel_referencia.is_finite()
+            || !(0.01..=100.0).contains(&self.preco_combustivel_referencia)
+        {
+            return Err(
+                "Preço de referência deve estar entre R$ 0,01 e R$ 100,00 por litro.".into(),
+            );
+        }
+        if !self.sobrepreco_combustivel_percentual.is_finite()
+            || !(0.0..=1000.0).contains(&self.sobrepreco_combustivel_percentual)
+        {
+            return Err("Margem de sobrepreço deve estar entre 0% e 1.000%.".into());
+        }
+        if self.referencia_combustivel_periodo.len() > 120
+            || self.referencia_combustivel_local.len() > 120
+        {
+            return Err("Período e local de referência devem ter até 120 caracteres.".into());
+        }
+        if let Some(url) = &self.referencia_combustivel_url {
+            if url.len() > 2048
+                || reqwest::Url::parse(url)
+                    .map(|u| !matches!(u.scheme(), "http" | "https"))
+                    .unwrap_or(true)
+            {
+                return Err("Fonte da referência deve ser uma URL HTTP ou HTTPS válida.".into());
+            }
         }
         Ok(())
     }
@@ -200,6 +267,7 @@ pub fn carregar_parametros_auditoria(conn: &rusqlite::Connection) -> ParametrosA
         limite_combustivel_litros: limite_combustivel,
         janela_triangulacao_dias: janela_triangulacao,
         concentracao_fornecedor_percentual: concentracao_fornecedor,
+        ..ParametrosAuditoria::default()
     }
 }
 
@@ -277,31 +345,31 @@ pub async fn salvar_audit_rules_handler(
         ));
     }
 
-    let conn = pool.get().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "erro", "mensagem": format!("Erro ao obter conexão: {e}")})),
-        )
+    let parametros = payload.clone();
+    let (obsoletos, recalculados) = pool.run_blocking(move |conn| {
+        let tx = storage::transaction_immediate(conn)?;
+        salvar_parametros_auditoria(&tx, &parametros)?;
+        let anteriores = {
+            let mut stmt = tx.prepare("SELECT id FROM alertas_auditoria WHERE tipo IN ('COMBUSTIVEL', 'COMBUSTIVEL_SOBREPRECO')")?;
+            let ids = stmt.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
+            ids
+        };
+        crate::alertas::sincronizar_alertas_combustivel(&tx, &parametros)?;
+        let depois: usize = tx.query_row("SELECT COUNT(*) FROM alertas_auditoria WHERE tipo IN ('COMBUSTIVEL', 'COMBUSTIVEL_SOBREPRECO')", [], |r| r.get(0))?;
+        let mut obsoletos = 0;
+        for id in anteriores {
+            let existe: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM alertas_auditoria WHERE id = ?1)", [id], |r| r.get(0))?;
+            if !existe { obsoletos += 1; }
+        }
+        tx.commit()?;
+        Ok((obsoletos, depois))
+    }).await.map_err(|e| {
+        tracing::error!("Falha ao salvar regras e recalcular alertas: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": "erro", "mensagem": format!("Falha ao salvar regras e recalcular alertas: {e}")})))
     })?;
-
-    if let Err(e) = salvar_parametros_auditoria(&conn, &payload) {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "erro", "mensagem": format!("Falha ao salvar parâmetros: {e}")})),
-        ));
-    }
-
-    // Expurgar alertas de combustível obsoletos que agora estão abaixo do novo limite
-    let obsoletos = crate::alertas::expurgar_alertas_combustivel_obsoletos(&conn, payload.limite_combustivel_litros)
-        .unwrap_or(0);
-
-    // Recalcular alertas do sistema com base nas novas réguas
-    let recalculados = crate::alertas::sincronizar_alertas_sistema_com_parametros(&conn, &payload)
-        .unwrap_or(0);
-
     Ok(Json(SalvarAuditRulesResponse {
-        status: "sucesso".to_string(),
-        mensagem: "Parâmetros do motor de auditoria atualizados e persistidos com sucesso.".to_string(),
+        status: "sucesso".into(),
+        mensagem: "Parâmetros salvos e alertas recalculados com sucesso.".into(),
         parametros: payload,
         alertas_recalculados: recalculados,
         alertas_obsoletos_expurgados: obsoletos,
@@ -423,14 +491,10 @@ pub async fn status_handler(
         })
         .unwrap_or(0);
     let contratos_publicos: i64 = conn
-        .query_row("SELECT count(*) FROM contratos_publicos", [], |r| {
-            r.get(0)
-        })
+        .query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))
         .unwrap_or(0);
     let alertas_auditoria: i64 = conn
-        .query_row("SELECT count(*) FROM alertas_auditoria", [], |r| {
-            r.get(0)
-        })
+        .query_row("SELECT count(*) FROM alertas_auditoria", [], |r| r.get(0))
         .unwrap_or(0);
     let empresas_qsa: i64 = conn
         .query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))
@@ -451,9 +515,7 @@ pub async fn status_handler(
         })
         .unwrap_or(0);
     let cargos_autoridades: i64 = conn
-        .query_row("SELECT count(*) FROM cargos_autoridades", [], |r| {
-            r.get(0)
-        })
+        .query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0))
         .unwrap_or(0);
     let emendas_parlamentares: i64 = conn
         .query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
@@ -501,7 +563,9 @@ pub async fn status_handler(
             emendas_parlamentares,
         },
         ultimo_evento_sincronizacao,
-        versao_sistema: option_env!("APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string(),
+        versao_sistema: option_env!("APP_VERSION")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .to_string(),
         git_commit: option_env!("APP_GIT_COMMIT").map(|s| s.to_string()),
         commit_count: option_env!("APP_COMMIT_COUNT").and_then(|s| s.parse().ok()),
     }))
@@ -510,7 +574,9 @@ pub async fn status_handler(
 pub async fn versao_handler() -> Json<VersaoResponse> {
     Json(VersaoResponse {
         versao: option_env!("APP_VERSION").unwrap_or("v0.001").to_string(),
-        commit: option_env!("APP_GIT_COMMIT").unwrap_or("unknown").to_string(),
+        commit: option_env!("APP_GIT_COMMIT")
+            .unwrap_or("unknown")
+            .to_string(),
         count: option_env!("APP_COMMIT_COUNT")
             .and_then(|s| s.parse().ok())
             .unwrap_or(1),
@@ -551,53 +617,107 @@ async fn executar_rotina_fonte(
 ) -> Result<String, String> {
     match fonte {
         "TSE" => {
-            atualizar_job(job_id, 35, &format!("Consultando repositório eleitoral TSE ano {ano}...")).await;
+            atualizar_job(
+                job_id,
+                35,
+                &format!("Consultando repositório eleitoral TSE ano {ano}..."),
+            )
+            .await;
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-            atualizar_job(job_id, 70, "Processando registros eleitorais e prestação de contas...").await;
+            atualizar_job(
+                job_id,
+                70,
+                "Processando registros eleitorais e prestação de contas...",
+            )
+            .await;
 
             let conn = pool.get().map_err(|e| e.to_string())?;
             // Sincroniza nós e conexões de rede se houver
             let total_cand: i64 = conn
-                .query_row("SELECT count(*) FROM candidaturas WHERE ano_eleicao = ?1", [ano], |r| r.get(0))
+                .query_row(
+                    "SELECT count(*) FROM candidaturas WHERE ano_eleicao = ?1",
+                    [ano],
+                    |r| r.get(0),
+                )
                 .unwrap_or(0);
 
-            Ok(format!("Sincronização TSE {ano} concluída. {total_cand} candidaturas ativas no banco."))
+            Ok(format!(
+                "Sincronização TSE {ano} concluída. {total_cand} candidaturas ativas no banco."
+            ))
         }
         "CEAP" => {
-            atualizar_job(job_id, 35, &format!("Conectando à API de Dados Abertos da Câmara ({ano})...")).await;
+            atualizar_job(
+                job_id,
+                35,
+                &format!("Conectando à API de Dados Abertos da Câmara ({ano})..."),
+            )
+            .await;
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-            atualizar_job(job_id, 70, "Importando cotas parlamentares e notas fiscais...").await;
+            atualizar_job(
+                job_id,
+                70,
+                "Importando cotas parlamentares e notas fiscais...",
+            )
+            .await;
 
             let conn = pool.get().map_err(|e| e.to_string())?;
             let total_ceap: i64 = conn
-                .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))
+                .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                    r.get(0)
+                })
                 .unwrap_or(0);
 
-            Ok(format!("Ingestão CEAP {ano} concluída. Total de {total_ceap} despesas catalogadas."))
+            Ok(format!(
+                "Ingestão CEAP {ano} concluída. Total de {total_ceap} despesas catalogadas."
+            ))
         }
         "RECEITA_QSA" => {
-            atualizar_job(job_id, 35, "Consultando base de CNPJs e Sócios da Receita Federal...").await;
+            atualizar_job(
+                job_id,
+                35,
+                "Consultando base de CNPJs e Sócios da Receita Federal...",
+            )
+            .await;
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-            atualizar_job(job_id, 70, "Vinculando administradores e filiais aos nós de rede...").await;
+            atualizar_job(
+                job_id,
+                70,
+                "Vinculando administradores e filiais aos nós de rede...",
+            )
+            .await;
 
             let conn = pool.get().map_err(|e| e.to_string())?;
             let total_qsa: i64 = conn
                 .query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))
                 .unwrap_or(0);
 
-            Ok(format!("Ingestão QSA concluída. {total_qsa} vínculos societários ativos."))
+            Ok(format!(
+                "Ingestão QSA concluída. {total_qsa} vínculos societários ativos."
+            ))
         }
         "PNCP" => {
-            atualizar_job(job_id, 35, &format!("Acessando Portal Nacional de Contratações Públicas ({ano})...")).await;
+            atualizar_job(
+                job_id,
+                35,
+                &format!("Acessando Portal Nacional de Contratações Públicas ({ano})..."),
+            )
+            .await;
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-            atualizar_job(job_id, 70, "Consolidando contratos e termos de licitação...").await;
+            atualizar_job(
+                job_id,
+                70,
+                "Consolidando contratos e termos de licitação...",
+            )
+            .await;
 
             let conn = pool.get().map_err(|e| e.to_string())?;
             let total_pncp: i64 = conn
                 .query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))
                 .unwrap_or(0);
 
-            Ok(format!("Ingestão PNCP {ano} concluída. {total_pncp} contratos registrados."))
+            Ok(format!(
+                "Ingestão PNCP {ano} concluída. {total_pncp} contratos registrados."
+            ))
         }
         _ => Err(format!("Fonte desconhecida: {fonte}")),
     }
@@ -638,7 +758,9 @@ pub async fn executar_ingestao_handler(
         status: "PROCESSANDO".to_string(),
         progresso: 10,
         mensagem: format!("Job iniciado para fonte {fonte_upper} ({ano})"),
-        logs: vec![format!("[{now}] Ingestão solicitada para {fonte_upper} ({ano})")],
+        logs: vec![format!(
+            "[{now}] Ingestão solicitada para {fonte_upper} ({ano})"
+        )],
         criado_em: now,
         concluido_em: None,
     };
@@ -654,7 +776,12 @@ pub async fn executar_ingestao_handler(
     let pool_spawn = pool.clone();
 
     tokio::spawn(async move {
-        atualizar_job(&job_id_spawn, 25, "Iniciando processamento em segundo plano...").await;
+        atualizar_job(
+            &job_id_spawn,
+            25,
+            "Iniciando processamento em segundo plano...",
+        )
+        .await;
 
         let res = executar_rotina_fonte(&pool_spawn, &fonte_spawn, ano, &job_id_spawn).await;
         match res {
@@ -704,7 +831,11 @@ pub async fn verificar_tse_ano_handler(
         .unwrap_or_default();
 
     let disponivel = match client.head(&url).send().await {
-        Ok(resp) => resp.status().is_success() || resp.status().as_u16() == 403 || resp.status().as_u16() == 200,
+        Ok(resp) => {
+            resp.status().is_success()
+                || resp.status().as_u16() == 403
+                || resp.status().as_u16() == 200
+        }
         Err(_) => true,
     };
 
@@ -742,8 +873,12 @@ pub async fn sincronizar_tse_handler(
             ano: Some(ano),
             status: "PROCESSANDO".to_string(),
             progresso: 10,
-            mensagem: format!("Iniciando descoberta e sincronização TSE via CKAN para o ano {ano}..."),
-            logs: vec![format!("[{now}] Sincronização TSE com descoberta automática via CKAN ({ano})")],
+            mensagem: format!(
+                "Iniciando descoberta e sincronização TSE via CKAN para o ano {ano}..."
+            ),
+            logs: vec![format!(
+                "[{now}] Sincronização TSE com descoberta automática via CKAN ({ano})"
+            )],
             criado_em: now,
             concluido_em: None,
         };
@@ -762,10 +897,19 @@ pub async fn sincronizar_tse_handler(
             let start_instant = std::time::Instant::now();
             ingestion::progress::reset_import_progress(0);
 
-            atualizar_job(&job_id_spawn, 25, "Consultando catálogo de dados abertos no portal CKAN do TSE...").await;
+            atualizar_job(
+                &job_id_spawn,
+                25,
+                "Consultando catálogo de dados abertos no portal CKAN do TSE...",
+            )
+            .await;
 
             let datasets_ref: Vec<&str> = if datasets.is_empty() {
-                vec!["candidatos", "prestacao-contas-eleitorais-candidatos", "bens-candidatos"]
+                vec![
+                    "candidatos",
+                    "prestacao-contas-eleitorais-candidatos",
+                    "bens-candidatos",
+                ]
             } else {
                 datasets.iter().map(|s| s.as_str()).collect()
             };
@@ -783,140 +927,108 @@ pub async fn sincronizar_tse_handler(
                     )
                     .await;
 
-                    // Otimização de Postergação de Índices: desativa índices secundários antes do lote massivo
-                    let pool_idx_pre = pool_spawn.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        if let Ok(conn) = pool_idx_pre.get() {
-                            let _ = storage::desativar_indices_tse(&conn);
-                        }
-                    })
-                    .await;
-
+                    // Os índices permanecem ativos: importação não degrada as consultas em uso.
                     let client = reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(60))
-                        .user_agent("RadarCivico/1.0 (Auditoria TSE CKAN)")
-                        .build()
-                        .unwrap_or_default();
-
-                    // Pipeline Produtor-Consumidor: download assíncrono em paralelo à ingestão no SQLite
-                    struct PacoteDownload {
-                        idx: usize,
-                        nome_url: String,
-                        bytes: Vec<u8>,
-                    }
-
-                    let (tx, mut rx) = tokio::sync::mpsc::channel::<PacoteDownload>(2);
-                    let urls_producer = urls.clone();
-                    let client_producer = client.clone();
-                    let job_id_producer = job_id_spawn.clone();
-
-                    let producer_handle = tokio::spawn(async move {
-                        for (idx, url) in urls_producer.iter().enumerate() {
-                            let progresso_atual = 40 + ((idx * 50) / total_urls) as u8;
-                            let nome_url = url.split('/').next_back().unwrap_or("pacote.zip").to_string();
-                            atualizar_job(
-                                &job_id_producer,
-                                progresso_atual,
-                                &format!("Baixando pacote ({}/{}) {}...", idx + 1, total_urls, nome_url),
-                            )
-                            .await;
-
-                            match client_producer.get(url).send().await {
-                                Ok(resp) if resp.status().is_success() => {
-                                    match resp.bytes().await {
-                                        Ok(bytes) => {
-                                            let item = PacoteDownload {
-                                                idx,
-                                                nome_url,
-                                                bytes: bytes.to_vec(),
-                                            };
-                                            if tx.send(item).await.is_err() {
-                                                break;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("Erro ao ler bytes do pacote TSE {url}: {e}");
-                                        }
-                                    }
-                                }
-                                Ok(resp) => {
-                                    tracing::warn!("Download TSE {url} retornou status {}", resp.status());
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Falha de requisição no download TSE {url}: {e}");
-                                }
-                            }
+                        .timeout(std::time::Duration::from_secs(120))
+                        .build();
+                    let client = match client {
+                        Ok(client) => client,
+                        Err(e) => {
+                            ingestion::progress::set_import_error(&e.to_string(), start_instant);
+                            atualizar_job_concluido(&job_id_spawn, 100, "ERRO", &e.to_string())
+                                .await;
+                            return;
                         }
-                    });
-
+                    };
                     let mut total_inseridos = 0;
-                    while let Some(pacote) = rx.recv().await {
-                        let progresso_atual = 40 + ((pacote.idx * 50) / total_urls) as u8;
+                    let mut arquivos_ok = 0;
+                    let mut falhas = Vec::new();
+                    for (idx, url) in urls.iter().enumerate() {
+                        let nome = url.rsplit('/').next().unwrap_or("pacote.zip").to_string();
                         atualizar_job(
                             &job_id_spawn,
-                            progresso_atual + 5,
+                            40 + ((idx * 50) / total_urls) as u8,
                             &format!(
-                                "Processando ZIP ({}/{}) {} em background thread (batching 25.000)...",
-                                pacote.idx + 1,
+                                "Baixando e processando ({}/{}) {}...",
+                                idx + 1,
                                 total_urls,
-                                pacote.nome_url
+                                nome
                             ),
                         )
                         .await;
-
-                        let pool_batch = pool_spawn.clone();
-                        let nome_url_str = pacote.nome_url;
-                        let bytes_vec = pacote.bytes;
-                        let idx = pacote.idx;
-
-                        let batch_res = tokio::task::spawn_blocking(move || -> Result<usize, String> {
-                            let mut conn = pool_batch.get().map_err(|e| e.to_string())?;
-                            storage::aplicar_pragmas_ingestao(&conn).map_err(|e| e.to_string())?;
-
-                            let res = ingestion::tse_ckan::processar_zip_tse_bytes_com_progresso(
-                                &mut conn,
-                                &bytes_vec,
-                                &nome_url_str,
-                                idx,
-                                total_urls,
-                                start_instant,
-                            )
-                            .map_err(|e| e.to_string());
-
-                            let _ = storage::restaurar_pragmas_padrao(&conn);
-                            res
-                        })
-                        .await;
-
-                        if let Ok(Ok(inseridos)) = batch_res {
-                            total_inseridos += inseridos;
+                        let resultado =
+                            match ingestion::tse_ckan::baixar_pacote_tse(&client, url).await {
+                                Ok(temporary) => {
+                                    let pool = pool_spawn.clone();
+                                    let nome_callback = nome.clone();
+                                    tokio::task::spawn_blocking(move || -> Result<usize, String> {
+                                        let mut conn = pool.get().map_err(|e| e.to_string())?;
+                                        storage::aplicar_pragmas_ingestao(&conn)
+                                            .map_err(|e| e.to_string())?;
+                                        ingestion::tse_ckan::processar_zip_tse_reader(
+                                            &mut conn,
+                                            temporary.reopen().map_err(|e| e.to_string())?,
+                                            |arquivo, n| {
+                                                ingestion::progress::update_import_progress_batch(
+                                                    &format!("{nome_callback} -> {arquivo}"),
+                                                    idx,
+                                                    total_urls,
+                                                    n as u64,
+                                                    start_instant,
+                                                );
+                                            },
+                                        )
+                                        .map_err(|e| e.to_string())
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| Err(format!("Falha da tarefa: {e}")))
+                                }
+                                Err(e) => Err(e.to_string()),
+                            };
+                        match resultado {
+                            Ok(n) => {
+                                total_inseridos += n;
+                                arquivos_ok += 1;
+                            }
+                            Err(e) => {
+                                let erro = format!("{nome}: {e}");
+                                tracing::error!("Importação TSE: {erro}");
+                                atualizar_job(
+                                    &job_id_spawn,
+                                    40 + ((idx * 50) / total_urls) as u8,
+                                    &erro,
+                                )
+                                .await;
+                                falhas.push(erro);
+                            }
                         }
+                        ingestion::progress::update_import_progress_batch(
+                            &nome,
+                            idx + 1,
+                            total_urls,
+                            0,
+                            start_instant,
+                        );
                     }
-
-                    let _ = producer_handle.await;
-
-                    // Recria os índices secundários e restaura PRAGMAs após o término da carga massiva
-                    let pool_idx_post = pool_spawn.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        if let Ok(conn) = pool_idx_post.get() {
-                            let _ = storage::recriar_indices_tse(&conn);
-                            let _ = storage::restaurar_pragmas_padrao(&conn);
-                        }
-                    })
-                    .await;
-
-                    ingestion::progress::finish_import_progress(start_instant);
-
-                    let msg = format!(
-                        "Sincronização TSE via CKAN ({ano}) concluída com sucesso. {} registros gravados no banco.",
-                        total_inseridos
-                    );
-                    atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
+                    let status = if falhas.is_empty() {
+                        "CONCLUIDO"
+                    } else if arquivos_ok > 0 {
+                        "PARCIAL"
+                    } else {
+                        "ERRO"
+                    };
+                    let msg = format!("Sincronização TSE ({ano}): {arquivos_ok}/{total_urls} pacotes concluídos, {total_inseridos} registros nos pacotes concluídos, {} falhas. Lotes gravados antes de uma falha permanecem na base.", falhas.len());
+                    if falhas.is_empty() {
+                        ingestion::progress::finish_import_progress(start_instant);
+                    } else {
+                        ingestion::progress::set_import_error(&falhas.join("; "), start_instant);
+                    }
+                    atualizar_job_concluido(&job_id_spawn, 100, status, &msg).await;
                     if let Ok(conn) = pool_spawn.get() {
                         let _ = conn.execute(
                             "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                             VALUES ('TSE_CKAN', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
-                            rusqlite::params![msg],
+                             VALUES ('TSE_CKAN', ?2, ?1, CURRENT_TIMESTAMP)",
+                            rusqlite::params![msg, status],
                         );
                     }
                 }
@@ -954,7 +1066,9 @@ pub async fn sincronizar_tse_handler(
             Json(ExecutarIngestaoResponse {
                 job_id,
                 status: "PROCESSANDO".to_string(),
-                mensagem: format!("Job de sincronização TSE via CKAN despachado com sucesso ({ano})."),
+                mensagem: format!(
+                    "Job de sincronização TSE via CKAN despachado com sucesso ({ano})."
+                ),
             }),
         ))
     } else {
@@ -987,7 +1101,11 @@ pub async fn sincronizar_camara_handler(
     Json(payload): Json<SincronizarCamaraRequest>,
 ) -> Result<(StatusCode, Json<ExecutarIngestaoResponse>), (StatusCode, Json<serde_json::Value>)> {
     let ano = payload.ano.unwrap_or(2024);
-    let modo_input = payload.modo.unwrap_or_else(|| "BULK".to_string()).trim().to_uppercase();
+    let modo_input = payload
+        .modo
+        .unwrap_or_else(|| "BULK".to_string())
+        .trim()
+        .to_uppercase();
     let modo = if modo_input.contains("API") {
         "API".to_string()
     } else {
@@ -1003,8 +1121,13 @@ pub async fn sincronizar_camara_handler(
         ano: Some(ano),
         status: "PROCESSANDO".to_string(),
         progresso: 10,
-        mensagem: format!("Iniciando sincronização da Câmara no modo {} para o ano {}...", modo, ano),
-        logs: vec![format!("[{now}] Disparada sincronização da Câmara no modo {modo} ({ano})")],
+        mensagem: format!(
+            "Iniciando sincronização da Câmara no modo {} para o ano {}...",
+            modo, ano
+        ),
+        logs: vec![format!(
+            "[{now}] Disparada sincronização da Câmara no modo {modo} ({ano})"
+        )],
         criado_em: now,
         concluido_em: None,
     };
@@ -1022,7 +1145,12 @@ pub async fn sincronizar_camara_handler(
     let max_paginas = payload.max_paginas;
 
     tokio::spawn(async move {
-        atualizar_job(&job_id_spawn, 20, "Iniciando processamento assíncrono da Câmara...").await;
+        atualizar_job(
+            &job_id_spawn,
+            20,
+            "Iniciando processamento assíncrono da Câmara...",
+        )
+        .await;
 
         if modo_spawn == "BULK" {
             atualizar_job(
@@ -1045,23 +1173,43 @@ pub async fn sincronizar_camara_handler(
             if let Ok(resp) = download_res {
                 if resp.status().is_success() {
                     if let Ok(bytes) = resp.bytes().await {
-                        atualizar_job(&job_id_spawn, 60, "Descompactando e analisando dados da CEAP...").await;
-                        if let Ok(records) = ingestion::camara::processar_ceap_buffer_ou_zip(&bytes).await {
+                        atualizar_job(
+                            &job_id_spawn,
+                            60,
+                            "Descompactando e analisando dados da CEAP...",
+                        )
+                        .await;
+                        if let Ok(records) =
+                            ingestion::camara::processar_ceap_buffer_ou_zip(&bytes).await
+                        {
                             if !records.is_empty() {
                                 atualizar_job(
                                     &job_id_spawn,
                                     80,
-                                    &format!("Gravando {} despesas parlamentares no SQLite...", records.len()),
+                                    &format!(
+                                        "Gravando {} despesas parlamentares no SQLite...",
+                                        records.len()
+                                    ),
                                 )
                                 .await;
 
                                 if let Ok(mut conn) = pool_spawn.get() {
-                                    if let Ok(inseridos) = ingestion::camara::ingerir_ceap_bulk_em_lotes(&mut conn, &records, 500) {
+                                    if let Ok(inseridos) =
+                                        ingestion::camara::ingerir_ceap_bulk_em_lotes(
+                                            &mut conn, &records, 500,
+                                        )
+                                    {
                                         let msg = format!(
                                             "Sincronização CEAP {ano} (BULK) concluída com sucesso. {} despesas inseridas.",
                                             inseridos
                                         );
-                                        atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
+                                        atualizar_job_concluido(
+                                            &job_id_spawn,
+                                            100,
+                                            "CONCLUIDO",
+                                            &msg,
+                                        )
+                                        .await;
                                         let _ = conn.execute(
                                             "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
                                              VALUES ('CAMARA_BULK', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
@@ -1078,9 +1226,15 @@ pub async fn sincronizar_camara_handler(
 
             if !processou_remoto {
                 let conn = pool_spawn.get();
-                let total: i64 = conn.as_ref().map(|c| {
-                    c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0)).unwrap_or(0)
-                }).unwrap_or(0);
+                let total: i64 = conn
+                    .as_ref()
+                    .map(|c| {
+                        c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                            r.get(0)
+                        })
+                        .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
 
                 let msg = format!(
                     "Sincronização CEAP {ano} (BULK) processada. Base local com {total} registros de despesas catalogadas."
@@ -1095,7 +1249,12 @@ pub async fn sincronizar_camara_handler(
                 }
             }
         } else {
-            atualizar_job(&job_id_spawn, 30, "Conectando à API REST v2 da Câmara dos Deputados...").await;
+            atualizar_job(
+                &job_id_spawn,
+                30,
+                "Conectando à API REST v2 da Câmara dos Deputados...",
+            )
+            .await;
             let api_client = ingestion::camara::CamaraApiClient::new()
                 .with_rate_limit(std::time::Duration::from_millis(50));
 
@@ -1106,19 +1265,27 @@ pub async fn sincronizar_camara_handler(
                 atualizar_job(
                     &job_id_spawn,
                     50,
-                    &format!("Consultando despesas paginadas para {} deputados...", ids.len()),
+                    &format!(
+                        "Consultando despesas paginadas para {} deputados...",
+                        ids.len()
+                    ),
                 )
                 .await;
 
                 for id in ids {
-                    if let Ok(despesas) = api_client.buscar_despesas_deputado_hateoas(id, ano, max_paginas).await {
+                    if let Ok(despesas) = api_client
+                        .buscar_despesas_deputado_hateoas(id, ano, max_paginas)
+                        .await
+                    {
                         if let Ok(mut conn) = pool_spawn.get() {
-                            let inseridos = ingestion::camara::CamaraApiClient::salvar_despesas_api(
-                                &mut conn,
-                                &format!("DEPUTADO ID {id}"),
-                                None,
-                                &despesas,
-                            ).unwrap_or(0);
+                            let inseridos =
+                                ingestion::camara::CamaraApiClient::salvar_despesas_api(
+                                    &mut conn,
+                                    &format!("DEPUTADO ID {id}"),
+                                    None,
+                                    &despesas,
+                                )
+                                .unwrap_or(0);
                             total_inseridos += inseridos;
                         }
                     }
@@ -1126,9 +1293,15 @@ pub async fn sincronizar_camara_handler(
             }
 
             let conn = pool_spawn.get();
-            let total_db: i64 = conn.as_ref().map(|c| {
-                c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0)).unwrap_or(0)
-            }).unwrap_or(0);
+            let total_db: i64 = conn
+                .as_ref()
+                .map(|c| {
+                    c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap_or(0)
+                })
+                .unwrap_or(0);
 
             let msg = format!(
                 "Sincronização CEAP {ano} (API REST) concluída. {total_inseridos} novos itens importados. Total no banco: {total_db}."
@@ -1205,15 +1378,25 @@ pub async fn sincronizar_autoridades_handler(
         atualizar_job(
             &job_id_spawn,
             75,
-            &format!("Registros processados com idempotência ({} registros ingeridos)...", total),
+            &format!(
+                "Registros processados com idempotência ({} registros ingeridos)...",
+                total
+            ),
         )
         .await;
 
-        let total_cargos: i64 = pool_spawn.get().map(|c| {
-            c.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0)).unwrap_or(0)
-        }).unwrap_or(0);
+        let total_cargos: i64 = pool_spawn
+            .get()
+            .map(|c| {
+                c.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0))
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
 
-        let msg = format!("Sincronização de autoridades concluída: {} cargos registrados no sistema.", total_cargos);
+        let msg = format!(
+            "Sincronização de autoridades concluída: {} cargos registrados no sistema.",
+            total_cargos
+        );
         atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg).await;
 
         if let Ok(conn) = pool_spawn.get() {
@@ -1256,7 +1439,9 @@ pub async fn sincronizar_diarios_handler(
         ano: None,
         status: "PROCESSANDO".to_string(),
         progresso: 10,
-        mensagem: "Iniciando varredura e ingestão de Diários Oficiais Municipais (Querido Diário)...".to_string(),
+        mensagem:
+            "Iniciando varredura e ingestão de Diários Oficiais Municipais (Querido Diário)..."
+                .to_string(),
         logs: vec![format!("[{now}] Disparada sincronização do Querido Diário")],
         criado_em: now,
         concluido_em: None,
@@ -1356,15 +1541,24 @@ pub async fn sincronizar_diarios_handler(
             atualizar_job(
                 &job_id_spawn,
                 pct,
-                &format!("Consultando Querido Diário ({}/{}): '{}'...", idx + 1, total_termos, termo),
+                &format!(
+                    "Consultando Querido Diário ({}/{}): '{}'...",
+                    idx + 1,
+                    total_termos,
+                    termo
+                ),
             )
             .await;
 
             // Busca na API pública oficial do Querido Diário
-            match qd_client.buscar_nomeacoes(termo, muni.as_deref(), None).await {
+            match qd_client
+                .buscar_nomeacoes(termo, muni.as_deref(), None)
+                .await
+            {
                 Ok(resp) => {
                     let total_gazettes = resp.total_gazettes;
-                    let payload_json = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
+                    let payload_json =
+                        serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
                     let municipio_str = muni.clone().unwrap_or_else(|| "BRASIL".to_string());
 
                     if let Ok(mut conn) = pool_spawn.get() {
@@ -1387,7 +1581,8 @@ pub async fn sincronizar_diarios_handler(
                         "gazettes": [],
                         "status": "consulta_registrada",
                         "aviso": format!("API remota offline ou indisponível: {}", err)
-                    }).to_string();
+                    })
+                    .to_string();
 
                     if let Ok(mut conn) = pool_spawn.get() {
                         let _ = ingestion::QueridoDiarioClient::salvar_cache(
@@ -1407,9 +1602,15 @@ pub async fn sincronizar_diarios_handler(
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
 
-        let total_cache: i64 = pool_spawn.get().map(|c| {
-            c.query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| r.get(0)).unwrap_or(0)
-        }).unwrap_or(0);
+        let total_cache: i64 = pool_spawn
+            .get()
+            .map(|c| {
+                c.query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| {
+                    r.get(0)
+                })
+                .unwrap_or(0)
+            })
+            .unwrap_or(0);
 
         let msg = format!(
             "Sincronização com o Querido Diário concluída: {} consultas executadas ({} registros no cache).",
@@ -1431,7 +1632,8 @@ pub async fn sincronizar_diarios_handler(
         Json(ExecutarIngestaoResponse {
             job_id,
             status: "PROCESSANDO".to_string(),
-            mensagem: "Processo de ingestão do Querido Diário iniciado em segundo plano.".to_string(),
+            mensagem: "Processo de ingestão do Querido Diário iniciado em segundo plano."
+                .to_string(),
         }),
     ))
 }
@@ -1491,6 +1693,7 @@ pub async fn sincronizar_tudo_handler(
     let pool_spawn = pool.clone();
 
     tokio::spawn(async move {
+        let mut falhas = Vec::<String>::new();
         atualizar_job(
             &job_id_spawn,
             10,
@@ -1507,7 +1710,10 @@ pub async fn sincronizar_tudo_handler(
             atualizar_job(
                 &job_id_spawn,
                 20,
-                &format!("Sincronizando CEAP (Câmara) para o ano fiscal {}...", ano_fiscal),
+                &format!(
+                    "Sincronizando CEAP (Câmara) para o ano fiscal {}...",
+                    ano_fiscal
+                ),
             )
             .await;
 
@@ -1531,9 +1737,13 @@ pub async fn sincronizar_tudo_handler(
                         )
                         .await;
 
-                        if let Ok(records) = ingestion::camara::processar_ceap_buffer_ou_zip(&bytes).await {
+                        if let Ok(records) =
+                            ingestion::camara::processar_ceap_buffer_ou_zip(&bytes).await
+                        {
                             if let Ok(mut conn) = pool_spawn.get() {
-                                if let Ok(n) = ingestion::camara::ingerir_ceap_bulk_em_lotes(&mut conn, &records, 1000) {
+                                if let Ok(n) = ingestion::camara::ingerir_ceap_bulk_em_lotes(
+                                    &mut conn, &records, 1000,
+                                ) {
                                     ceap_inseridos = n;
                                     ceap_ok = true;
                                 }
@@ -1554,13 +1764,23 @@ pub async fn sincronizar_tudo_handler(
                 )
                 .await;
             } else {
-                let total_ceap = pool_spawn.get().map(|c| {
-                    c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get::<_, i64>(0)).unwrap_or(0)
-                }).unwrap_or(0);
+                falhas.push("CEAP: falha ao baixar ou processar os dados da Câmara".into());
+                let total_ceap = pool_spawn
+                    .get()
+                    .map(|c| {
+                        c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                            r.get::<_, i64>(0)
+                        })
+                        .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
                 atualizar_job(
                     &job_id_spawn,
                     45,
-                    &format!("CEAP: base local preservada e íntegra ({} notas catalogadas).", total_ceap),
+                    &format!(
+                        "CEAP: base local preservada e íntegra ({} notas catalogadas).",
+                        total_ceap
+                    ),
                 )
                 .await;
             }
@@ -1571,44 +1791,61 @@ pub async fn sincronizar_tudo_handler(
             atualizar_job(
                 &job_id_spawn,
                 50,
-                &format!("Consultando repositório eleitoral TSE para o ano {}...", ano_eleitoral),
+                &format!(
+                    "Consultando repositório eleitoral TSE para o ano {}...",
+                    ano_eleitoral
+                ),
             )
             .await;
 
             let datasets = ["candidatos", "bens-candidatos"];
-            if let Ok(urls) = ingestion::tse_ckan::descobrir_urls_tse(ano_eleitoral as u32, &datasets).await {
-                if !urls.is_empty() {
-                    let client = reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(30))
-                        .user_agent("RadarCivico/1.0 (Auditoria TSE)")
-                        .build()
-                        .unwrap_or_default();
-
-                    for url in urls.iter().take(2) {
-                        let nome_pacote = url.rsplit('/').next().unwrap_or("pacote.zip");
-                        atualizar_job(
-                            &job_id_spawn,
-                            60,
-                            &format!("Processando pacote eleitoral TSE ({nome_pacote})..."),
-                        )
-                        .await;
-
-                        if let Ok(resp) = client.get(url).send().await {
-                            if resp.status().is_success() {
-                                if let Ok(bytes) = resp.bytes().await {
-                                    if let Ok(mut conn) = pool_spawn.get() {
-                                        let _ = ingestion::tse_ckan::processar_zip_tse_bytes(&mut conn, &bytes);
-                                    }
+            match ingestion::tse_ckan::descobrir_urls_tse(ano_eleitoral as u32, &datasets).await {
+                Ok(urls) => {
+                    let client = reqwest::Client::new();
+                    for url in urls {
+                        let result =
+                            match ingestion::tse_ckan::baixar_pacote_tse(&client, &url).await {
+                                Ok(temporary) => {
+                                    let pool = pool_spawn.clone();
+                                    tokio::task::spawn_blocking(move || -> Result<usize, String> {
+                                        let mut conn = pool.get().map_err(|e| e.to_string())?;
+                                        ingestion::tse_ckan::processar_zip_tse_reader(
+                                            &mut conn,
+                                            temporary.reopen().map_err(|e| e.to_string())?,
+                                            |arquivo, n| {
+                                                tracing::trace!(
+                                                    arquivo,
+                                                    registros = n,
+                                                    "Lote TSE persistido"
+                                                )
+                                            },
+                                        )
+                                        .map_err(|e| e.to_string())
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| Err(e.to_string()))
                                 }
-                            }
+                                Err(e) => Err(e.to_string()),
+                            };
+                        if let Err(e) = result {
+                            falhas.push(format!("TSE {url}: {e}"));
                         }
                     }
                 }
+                Err(e) => falhas.push(format!("Descoberta TSE: {e}")),
             }
 
-            let total_cand = pool_spawn.get().map(|c| {
-                c.query_row("SELECT count(*) FROM candidaturas WHERE ano_eleicao = ?1", [ano_eleitoral], |r| r.get::<_, i64>(0)).unwrap_or(0)
-            }).unwrap_or(0);
+            let total_cand = pool_spawn
+                .get()
+                .map(|c| {
+                    c.query_row(
+                        "SELECT count(*) FROM candidaturas WHERE ano_eleicao = ?1",
+                        [ano_eleitoral],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap_or(0)
+                })
+                .unwrap_or(0);
 
             atualizar_job(
                 &job_id_spawn,
@@ -1626,20 +1863,32 @@ pub async fn sincronizar_tudo_handler(
             atualizar_job(
                 &job_id_spawn,
                 80,
-                "Sincronizando quadro societário (QSA) e registros profissionais (OAB)...",
+                "Consultando vínculos QSA e registros OAB já importados...",
             )
             .await;
 
-            let (qsa_count, oab_count) = pool_spawn.get().map(|c| {
-                let q: i64 = c.query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0)).unwrap_or(0);
-                let o: i64 = c.query_row("SELECT count(*) FROM registros_profissionais", [], |r| r.get(0)).unwrap_or(0);
-                (q, o)
-            }).unwrap_or((0, 0));
+            let (qsa_count, oab_count) = pool_spawn
+                .get()
+                .map(|c| {
+                    let q: i64 = c
+                        .query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))
+                        .unwrap_or(0);
+                    let o: i64 = c
+                        .query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
+                            r.get(0)
+                        })
+                        .unwrap_or(0);
+                    (q, o)
+                })
+                .unwrap_or((0, 0));
 
             atualizar_job(
                 &job_id_spawn,
                 85,
-                &format!("Vínculos consolidados: {} sócios/CNPJs e {} registros OAB.", qsa_count, oab_count),
+                &format!(
+                    "Vínculos consolidados: {} sócios/CNPJs e {} registros OAB.",
+                    qsa_count, oab_count
+                ),
             )
             .await;
         }
@@ -1657,14 +1906,23 @@ pub async fn sincronizar_tudo_handler(
                 let _ = ingestion::autoridades::sincronizar_autoridades_cupula(&mut conn);
             }
 
-            let total_auth = pool_spawn.get().map(|c| {
-                c.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get::<_, i64>(0)).unwrap_or(0)
-            }).unwrap_or(0);
+            let total_auth = pool_spawn
+                .get()
+                .map(|c| {
+                    c.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .unwrap_or(0)
+                })
+                .unwrap_or(0);
 
             atualizar_job(
                 &job_id_spawn,
                 90,
-                &format!("Autoridades de cúpula sincronizadas ({} cargos catalogados).", total_auth),
+                &format!(
+                    "Autoridades de cúpula sincronizadas ({} cargos catalogados).",
+                    total_auth
+                ),
             )
             .await;
         }
@@ -1678,33 +1936,51 @@ pub async fn sincronizar_tudo_handler(
             )
             .await;
 
-            let novos_alertas = if let Ok(conn) = pool_spawn.get() {
-                let params = carregar_parametros_auditoria(&conn);
-                crate::alertas::sincronizar_alertas_sistema_com_parametros(&conn, &params).unwrap_or(0)
-            } else {
-                0
+            let novos_alertas = match pool_spawn
+                .run_blocking(|conn| crate::alertas::sincronizar_alertas_sistema(conn))
+                .await
+            {
+                Ok(n) => n,
+                Err(e) => {
+                    falhas.push(format!("Auditoria: {e}"));
+                    0
+                }
             };
 
             atualizar_job(
                 &job_id_spawn,
                 95,
-                &format!("Auditoria analítica concluída: {} novos alertas detectados.", novos_alertas),
+                &format!(
+                    "Auditoria analítica concluída: {} novos alertas detectados.",
+                    novos_alertas
+                ),
             )
             .await;
         }
 
-        // 5. Finalização
-        let msg_conclusao = format!(
-            "Sincronização unificada concluída com sucesso! Fontes atualizadas de forma idempotente e auditoria recalculada."
-        );
-        atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg_conclusao).await;
-
+        let status = if falhas.is_empty() {
+            "CONCLUIDO"
+        } else {
+            "PARCIAL"
+        };
+        let msg_conclusao = if falhas.is_empty() {
+            "Sincronização concluída. Fontes solicitadas processadas; QSA/OAB utilizam os dados já importados.".to_string()
+        } else {
+            format!(
+                "Sincronização encerrada com {} falhas: {}",
+                falhas.len(),
+                falhas.join("; ")
+            )
+        };
+        atualizar_job_concluido(&job_id_spawn, 100, status, &msg_conclusao).await;
         if let Ok(conn) = pool_spawn.get() {
-            let _ = conn.execute(
-                "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                 VALUES ('SINCRONIZAR_TUDO', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
-                rusqlite::params![msg_conclusao],
-            );
+            if let Err(e) = conn.execute(
+                "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim)
+                 VALUES ('SINCRONIZAR_TUDO', ?2, ?1, CURRENT_TIMESTAMP)",
+                rusqlite::params![msg_conclusao, status],
+            ) {
+                tracing::error!("Falha ao registrar histórico: {e}");
+            }
         }
     });
 
@@ -1713,7 +1989,8 @@ pub async fn sincronizar_tudo_handler(
         Json(ExecutarIngestaoResponse {
             job_id,
             status: "PROCESSANDO".to_string(),
-            mensagem: "Processo de sincronização unificada iniciado com sucesso em segundo plano.".to_string(),
+            mensagem: "Processo de sincronização unificada iniciado com sucesso em segundo plano."
+                .to_string(),
         }),
     ))
 }
@@ -1736,7 +2013,10 @@ pub async fn job_status_handler(
 pub use ingestion::progress::ImportProgress;
 
 pub async fn import_status_handler() -> Json<ImportProgress> {
-    let progress = ingestion::progress::get_import_progress().read().unwrap().clone();
+    let progress = ingestion::progress::get_import_progress()
+        .read()
+        .unwrap()
+        .clone();
     Json(progress)
 }
 
@@ -1784,7 +2064,11 @@ fn parse_f64_valor(val: &str) -> f64 {
         return 0.0;
     }
     if cleaned.contains(',') && cleaned.contains('.') {
-        cleaned.replace('.', "").replace(',', ".").parse::<f64>().unwrap_or(0.0)
+        cleaned
+            .replace('.', "")
+            .replace(',', ".")
+            .parse::<f64>()
+            .unwrap_or(0.0)
     } else if cleaned.contains(',') {
         cleaned.replace(',', ".").parse::<f64>().unwrap_or(0.0)
     } else {
@@ -1793,7 +2077,12 @@ fn parse_f64_valor(val: &str) -> f64 {
 }
 
 fn detectar_tipo_por_cabecalho(headers: &csv::StringRecord) -> String {
-    let header_str = headers.iter().collect::<Vec<_>>().join(";").to_uppercase().replace(['"', '\''], "");
+    let header_str = headers
+        .iter()
+        .collect::<Vec<_>>()
+        .join(";")
+        .to_uppercase()
+        .replace(['"', '\''], "");
     if header_str.contains("NOME_SOCIO")
         || header_str.contains("SOCIO_NOME")
         || header_str.contains("QUALIFICACAO_SOCIO")
@@ -1801,26 +2090,65 @@ fn detectar_tipo_por_cabecalho(headers: &csv::StringRecord) -> String {
         || header_str.contains("CONTROLADORA")
         || header_str.contains("CONTROLADA")
         || header_str.contains("PARTICIPACAO")
-        || (header_str.contains("CNPJ") && (header_str.contains("SOCIO") || header_str.contains("RAZAO") || header_str.contains("EMPRESA")))
+        || (header_str.contains("CNPJ")
+            && (header_str.contains("SOCIO")
+                || header_str.contains("RAZAO")
+                || header_str.contains("EMPRESA")))
     {
         "RECEITA_QSA".to_string()
-    } else if header_str.contains("NUMERO_INSCRICAO") || header_str.contains("NUMERO_REGISTRO") || header_str.contains("SECCIONAL_UF") || header_str.contains("SITUACAO_REGISTRO") || header_str.contains("OAB") || header_str.contains("PESSOA_NOME") {
+    } else if header_str.contains("NUMERO_INSCRICAO")
+        || header_str.contains("NUMERO_REGISTRO")
+        || header_str.contains("SECCIONAL_UF")
+        || header_str.contains("SITUACAO_REGISTRO")
+        || header_str.contains("OAB")
+        || header_str.contains("PESSOA_NOME")
+    {
         "CONSELHOS_OAB".to_string()
-    } else if header_str.contains("NUMEROCONTRATO") || header_str.contains("VALORGLOBAL") || header_str.contains("ORGAO_CONTRATANTE") || header_str.contains("VALOR_CONTRATADO") {
+    } else if header_str.contains("NUMEROCONTRATO")
+        || header_str.contains("VALORGLOBAL")
+        || header_str.contains("ORGAO_CONTRATANTE")
+        || header_str.contains("VALOR_CONTRATADO")
+    {
         "PNCP_CONTRATOS".to_string()
-    } else if header_str.contains("VALORLIQUIDO") || header_str.contains("VLRLIQUIDO") || header_str.contains("TXNOMEPARLAMENTAR") || header_str.contains("NUMDOCUMENTO") {
+    } else if header_str.contains("VALORLIQUIDO")
+        || header_str.contains("VLRLIQUIDO")
+        || header_str.contains("TXNOMEPARLAMENTAR")
+        || header_str.contains("NUMDOCUMENTO")
+    {
         "CEAP_NOTAS".to_string()
-    } else if header_str.contains("VR_RECEITA") || header_str.contains("DS_RECEITA") || (header_str.contains("DOADOR") && header_str.contains("VALOR")) {
+    } else if header_str.contains("VR_RECEITA")
+        || header_str.contains("DS_RECEITA")
+        || (header_str.contains("DOADOR") && header_str.contains("VALOR"))
+    {
         "TSE_RECEITAS".to_string()
-    } else if header_str.contains("VR_DESPESA") || header_str.contains("DS_DESPESA") || (header_str.contains("FORNECEDOR") && header_str.contains("DESPESA")) {
+    } else if header_str.contains("VR_DESPESA")
+        || header_str.contains("DS_DESPESA")
+        || (header_str.contains("FORNECEDOR") && header_str.contains("DESPESA"))
+    {
         "TSE_DESPESAS".to_string()
-    } else if header_str.contains("SQ_CANDIDATO") || header_str.contains("NM_URNA_CANDIDATO") || header_str.contains("NR_CPF_CANDIDATO") || header_str.contains("NM_CANDIDATO") {
+    } else if header_str.contains("SQ_CANDIDATO")
+        || header_str.contains("NM_URNA_CANDIDATO")
+        || header_str.contains("NR_CPF_CANDIDATO")
+        || header_str.contains("NM_CANDIDATO")
+    {
         "TSE_CANDIDATOS".to_string()
-    } else if header_str.contains("TERMO_PESQUISADO") || header_str.contains("MUNICIPIO_UF") || header_str.contains("QUERIDO_DIARIO") {
+    } else if header_str.contains("TERMO_PESQUISADO")
+        || header_str.contains("MUNICIPIO_UF")
+        || header_str.contains("QUERIDO_DIARIO")
+    {
         "DIARIOS_OFICIAIS".to_string()
-    } else if header_str.contains("EMENDA") || header_str.contains("NUMERO_EMENDA") || (header_str.contains("AUTOR") && (header_str.contains("VALOR_EMPENHADO") || header_str.contains("EMPENHO") || header_str.contains("VALOR_PAGO"))) {
+    } else if header_str.contains("EMENDA")
+        || header_str.contains("NUMERO_EMENDA")
+        || (header_str.contains("AUTOR")
+            && (header_str.contains("VALOR_EMPENHADO")
+                || header_str.contains("EMPENHO")
+                || header_str.contains("VALOR_PAGO")))
+    {
         "EMENDAS_PARLAMENTARES".to_string()
-    } else if header_str.contains("BENEFICIARIO") || header_str.contains("BENEFICIO") || header_str.contains("AUXILIO") {
+    } else if header_str.contains("BENEFICIARIO")
+        || header_str.contains("BENEFICIO")
+        || header_str.contains("AUXILIO")
+    {
         "AUXILIO_EMERGENCIAL".to_string()
     } else {
         "CSV_GENERICO".to_string()
@@ -1924,8 +2252,12 @@ fn processar_csv_records<R: std::io::Read>(
                 ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
-                    let cnpj_raw = col_cnpj_basico.and_then(|i| record.get(i)).unwrap_or("00000000").trim();
-                    let cnpj_digits: String = cnpj_raw.chars().filter(|c| c.is_ascii_digit()).collect();
+                    let cnpj_raw = col_cnpj_basico
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("00000000")
+                        .trim();
+                    let cnpj_digits: String =
+                        cnpj_raw.chars().filter(|c| c.is_ascii_digit()).collect();
                     let cnpj_basico = if cnpj_digits.len() >= 8 {
                         &cnpj_digits[..8]
                     } else if !cnpj_digits.is_empty() {
@@ -1936,27 +2268,52 @@ fn processar_csv_records<R: std::io::Read>(
                     let cnpj_ordem = if cnpj_digits.len() >= 12 {
                         &cnpj_digits[8..12]
                     } else {
-                        col_cnpj_ordem.and_then(|i| record.get(i)).unwrap_or("0001").trim()
+                        col_cnpj_ordem
+                            .and_then(|i| record.get(i))
+                            .unwrap_or("0001")
+                            .trim()
                     };
                     let cnpj_dv = if cnpj_digits.len() >= 14 {
                         &cnpj_digits[12..14]
                     } else {
-                        col_cnpj_dv.and_then(|i| record.get(i)).unwrap_or("00").trim()
+                        col_cnpj_dv
+                            .and_then(|i| record.get(i))
+                            .unwrap_or("00")
+                            .trim()
                     };
 
-                    let razao = col_razao.and_then(|i| record.get(i)).unwrap_or("EMPRESA S/A").trim();
-                    let socio_nome = col_socio_nome.and_then(|i| record.get(i)).unwrap_or("HOLDING / SOCIO").trim();
-                    let socio_doc_raw = col_socio_doc.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let razao = col_razao
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("EMPRESA S/A")
+                        .trim();
+                    let socio_nome = col_socio_nome
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("HOLDING / SOCIO")
+                        .trim();
+                    let socio_doc_raw = col_socio_doc
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("")
+                        .trim();
                     let socio_doc = if !socio_doc_raw.is_empty() {
                         socio_doc_raw
                     } else {
                         "***.***.***-**"
                     };
-                    let qualif = col_qualif.and_then(|i| record.get(i)).unwrap_or("HOLDING / PARTICIPACAO").trim();
+                    let qualif = col_qualif
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("HOLDING / PARTICIPACAO")
+                        .trim();
 
-                    if !cnpj_basico.is_empty() && (!socio_nome.is_empty() || !socio_doc.is_empty()) {
+                    if !cnpj_basico.is_empty() && (!socio_nome.is_empty() || !socio_doc.is_empty())
+                    {
                         let _ = stmt.execute(rusqlite::params![
-                            cnpj_basico, cnpj_ordem, cnpj_dv, razao, socio_doc, socio_nome, qualif
+                            cnpj_basico,
+                            cnpj_ordem,
+                            cnpj_dv,
+                            razao,
+                            socio_doc,
+                            socio_nome,
+                            qualif
                         ]);
                         count += 1;
                     }
@@ -1965,12 +2322,31 @@ fn processar_csv_records<R: std::io::Read>(
             tx.commit().map_err(std::io::Error::other)?;
         }
         "CONSELHOS_OAB" | "REGISTROS_PROFISSIONAIS" | "OAB" => {
-            let col_nome = find_col(&headers, &["PESSOA_NOME", "NOME_ADVOGADO", "NOME", "ADVOGADO"]);
+            let col_nome = find_col(
+                &headers,
+                &["PESSOA_NOME", "NOME_ADVOGADO", "NOME", "ADVOGADO"],
+            );
             let col_cpf = find_col(&headers, &["CPF_MASCARADO", "CPF", "NR_CPF"]);
             let col_orgao = find_col(&headers, &["ORGAO_EMISSOR", "ORGAO"]);
-            let col_reg = find_col(&headers, &["NUMERO_REGISTRO", "NUMERO_INSCRICAO", "INSCRICAO", "REGISTRO"]);
+            let col_reg = find_col(
+                &headers,
+                &[
+                    "NUMERO_REGISTRO",
+                    "NUMERO_INSCRICAO",
+                    "INSCRICAO",
+                    "REGISTRO",
+                ],
+            );
             let col_uf = find_col(&headers, &["SECCIONAL_UF", "UF", "ESTADO"]);
-            let col_sit = find_col(&headers, &["SITUACAO_REGISTRO", "SITUACAO_REGULAR", "SITUACAO", "STATUS"]);
+            let col_sit = find_col(
+                &headers,
+                &[
+                    "SITUACAO_REGISTRO",
+                    "SITUACAO_REGULAR",
+                    "SITUACAO",
+                    "STATUS",
+                ],
+            );
             let col_tipo = find_col(&headers, &["TIPO_INSCRICAO", "TIPO"]);
 
             let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
@@ -1984,16 +2360,24 @@ fn processar_csv_records<R: std::io::Read>(
                 for record in reader.records().flatten() {
                     let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("").trim();
                     let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
-                    let orgao = col_orgao.and_then(|i| record.get(i)).unwrap_or("OAB").trim();
+                    let orgao = col_orgao
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("OAB")
+                        .trim();
                     let reg = col_reg.and_then(|i| record.get(i)).unwrap_or("").trim();
                     let uf = col_uf.and_then(|i| record.get(i)).unwrap_or("BR").trim();
-                    let sit = col_sit.and_then(|i| record.get(i)).unwrap_or("REGULAR").trim();
-                    let tipo_ins = col_tipo.and_then(|i| record.get(i)).unwrap_or("ADVOGADO").trim();
+                    let sit = col_sit
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("REGULAR")
+                        .trim();
+                    let tipo_ins = col_tipo
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("ADVOGADO")
+                        .trim();
 
                     if !nome.is_empty() && !reg.is_empty() {
-                        let _ = stmt.execute(rusqlite::params![
-                            nome, cpf, orgao, reg, uf, sit, tipo_ins
-                        ]);
+                        let _ = stmt
+                            .execute(rusqlite::params![nome, cpf, orgao, reg, uf, sit, tipo_ins]);
                         count += 1;
                     }
                 }
@@ -2001,11 +2385,23 @@ fn processar_csv_records<R: std::io::Read>(
             tx.commit().map_err(std::io::Error::other)?;
         }
         "PNCP_CONTRATOS" | "PNCP" => {
-            let col_orgao = find_col(&headers, &["ORGAO_CONTRATANTE", "ORGAO_NOME", "ORGAO", "CONTRATANTE"]);
-            let col_cnpj = find_col(&headers, &["FORNECEDOR_CNPJ", "CNPJ_CONTRATADO", "CNPJ", "CONTRATADO"]);
-            let col_valor = find_col(&headers, &["VALOR_CONTRATADO", "VALORGLOBAL", "VALOR", "VALOR_INICIAL"]);
+            let col_orgao = find_col(
+                &headers,
+                &["ORGAO_CONTRATANTE", "ORGAO_NOME", "ORGAO", "CONTRATANTE"],
+            );
+            let col_cnpj = find_col(
+                &headers,
+                &["FORNECEDOR_CNPJ", "CNPJ_CONTRATADO", "CNPJ", "CONTRATADO"],
+            );
+            let col_valor = find_col(
+                &headers,
+                &["VALOR_CONTRATADO", "VALORGLOBAL", "VALOR", "VALOR_INICIAL"],
+            );
             let col_objeto = find_col(&headers, &["OBJETO", "OBJETOCONTRATO", "DESCRICAO"]);
-            let col_dt_ass = find_col(&headers, &["DATA_ASSINATURA", "DATAASSINATURA", "DT_ASSINATURA"]);
+            let col_dt_ass = find_col(
+                &headers,
+                &["DATA_ASSINATURA", "DATAASSINATURA", "DT_ASSINATURA"],
+            );
             let col_dt_fim = find_col(&headers, &["DATA_TERMINO", "DATAVIGENCIAFIM", "DT_TERMINO"]);
 
             let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
@@ -2017,15 +2413,35 @@ fn processar_csv_records<R: std::io::Read>(
                 ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
-                    let orgao = col_orgao.and_then(|i| record.get(i)).unwrap_or("ORGAO PUBLICO").trim();
-                    let cnpj = col_cnpj.and_then(|i| record.get(i)).unwrap_or("00000000000100").trim();
-                    let valor = col_valor.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
-                    let objeto = col_objeto.and_then(|i| record.get(i)).unwrap_or("FORNECIMENTO").trim();
-                    let dt_ass = col_dt_ass.and_then(|i| record.get(i)).unwrap_or("2024-01-01").trim();
-                    let dt_fim = col_dt_fim.and_then(|i| record.get(i)).unwrap_or("2025-01-01").trim();
+                    let orgao = col_orgao
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("ORGAO PUBLICO")
+                        .trim();
+                    let cnpj = col_cnpj
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("00000000000100")
+                        .trim();
+                    let valor = col_valor
+                        .and_then(|i| record.get(i))
+                        .map(parse_f64_valor)
+                        .unwrap_or(0.0);
+                    let objeto = col_objeto
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("FORNECIMENTO")
+                        .trim();
+                    let dt_ass = col_dt_ass
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("2024-01-01")
+                        .trim();
+                    let dt_fim = col_dt_fim
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("2025-01-01")
+                        .trim();
 
                     if !cnpj.is_empty() {
-                        let _ = stmt.execute(rusqlite::params![orgao, cnpj, valor, objeto, dt_ass, dt_fim]);
+                        let _ = stmt.execute(rusqlite::params![
+                            orgao, cnpj, valor, objeto, dt_ass, dt_fim
+                        ]);
                         count += 1;
                     }
                 }
@@ -2033,13 +2449,33 @@ fn processar_csv_records<R: std::io::Read>(
             tx.commit().map_err(std::io::Error::other)?;
         }
         "CEAP_NOTAS" | "CEAP" => {
-            let col_parlamentar = find_col(&headers, &["TXNOMEPARLAMENTAR", "PARLAMENTAR_NOME", "NOME_PARLAMENTAR", "NOME"]);
-            let col_cpf = find_col(&headers, &["CPF", "PARLAMENTAR_CPF_MASCARADO", "CPF_PARLAMENTAR"]);
+            let col_parlamentar = find_col(
+                &headers,
+                &[
+                    "TXNOMEPARLAMENTAR",
+                    "PARLAMENTAR_NOME",
+                    "NOME_PARLAMENTAR",
+                    "NOME",
+                ],
+            );
+            let col_cpf = find_col(
+                &headers,
+                &["CPF", "PARLAMENTAR_CPF_MASCARADO", "CPF_PARLAMENTAR"],
+            );
             let col_data = find_col(&headers, &["DATANF", "DATA_EMISSAO", "DATA"]);
             let col_doc = find_col(&headers, &["NUMDOCUMENTO", "NUMERO_DOCUMENTO", "NUM_DOC"]);
-            let col_valor = find_col(&headers, &["VLRLIQUIDO", "VALORLIQUIDO", "VALOR_LIQUIDO", "VALOR"]);
-            let col_forn_nome = find_col(&headers, &["FORNECEDOR", "FORNECEDOR_NOME", "NOME_FORNECEDOR"]);
-            let col_forn_doc = find_col(&headers, &["CNPJCPF", "FORNECEDOR_CNPJ_CPF", "CNPJ_FORNECEDOR"]);
+            let col_valor = find_col(
+                &headers,
+                &["VLRLIQUIDO", "VALORLIQUIDO", "VALOR_LIQUIDO", "VALOR"],
+            );
+            let col_forn_nome = find_col(
+                &headers,
+                &["FORNECEDOR", "FORNECEDOR_NOME", "NOME_FORNECEDOR"],
+            );
+            let col_forn_doc = find_col(
+                &headers,
+                &["CNPJCPF", "FORNECEDOR_CNPJ_CPF", "CNPJ_FORNECEDOR"],
+            );
 
             let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
@@ -2051,16 +2487,33 @@ fn processar_csv_records<R: std::io::Read>(
                 ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
-                    let parl = col_parlamentar.and_then(|i| record.get(i)).unwrap_or("PARLAMENTAR").trim();
+                    let parl = col_parlamentar
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("PARLAMENTAR")
+                        .trim();
                     let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
-                    let dt = col_data.and_then(|i| record.get(i)).unwrap_or("2024-01-01").trim();
+                    let dt = col_data
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("2024-01-01")
+                        .trim();
                     let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("NF-0").trim();
-                    let valor = col_valor.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
-                    let forn_nome = col_forn_nome.and_then(|i| record.get(i)).unwrap_or("FORNECEDOR").trim();
-                    let forn_doc = col_forn_doc.and_then(|i| record.get(i)).unwrap_or("00000000000100").trim();
+                    let valor = col_valor
+                        .and_then(|i| record.get(i))
+                        .map(parse_f64_valor)
+                        .unwrap_or(0.0);
+                    let forn_nome = col_forn_nome
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("FORNECEDOR")
+                        .trim();
+                    let forn_doc = col_forn_doc
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("00000000000100")
+                        .trim();
 
                     if !forn_doc.is_empty() {
-                        let _ = stmt.execute(rusqlite::params![parl, cpf, dt, forn_nome, forn_doc, valor, doc]);
+                        let _ = stmt.execute(rusqlite::params![
+                            parl, cpf, dt, forn_nome, forn_doc, valor, doc
+                        ]);
                         count += 1;
                     }
                 }
@@ -2068,26 +2521,55 @@ fn processar_csv_records<R: std::io::Read>(
             tx.commit().map_err(std::io::Error::other)?;
         }
         "TSE_RECEITAS" => {
-            let col_doc = find_col(&headers, &["NR_CPF_CNPJ_DOADOR", "DOADOR_CPF_CNPJ", "CPF_CNPJ_DOADOR", "CPF_DOADOR", "CNPJ_DOADOR"]);
-            let col_nome = find_col(&headers, &["NM_DOADOR", "DOADOR_NOME", "NOME_DOADOR", "DOADOR"]);
+            let col_doc = find_col(
+                &headers,
+                &[
+                    "NR_CPF_CNPJ_DOADOR",
+                    "DOADOR_CPF_CNPJ",
+                    "CPF_CNPJ_DOADOR",
+                    "CPF_DOADOR",
+                    "CNPJ_DOADOR",
+                ],
+            );
+            let col_nome = find_col(
+                &headers,
+                &["NM_DOADOR", "DOADOR_NOME", "NOME_DOADOR", "DOADOR"],
+            );
             let col_valor = find_col(&headers, &["VR_RECEITA", "VALOR_RECEITA", "VALOR"]);
             let col_data = find_col(&headers, &["DT_RECEITA", "DATA_RECEITA", "DATA"]);
             let col_desc = find_col(&headers, &["DS_RECEITA", "DESCRICAO"]);
 
             let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT INTO receitas_campanha (
+                let mut stmt = tx
+                    .prepare_cached(
+                        "INSERT INTO receitas_campanha (
                         candidatura_id, doador_cpf_cnpj, doador_nome, valor, data_receita, descricao
-                     ) VALUES (NULL, ?1, ?2, ?3, ?4, ?5)"
-                ).map_err(std::io::Error::other)?;
+                     ) VALUES (NULL, ?1, ?2, ?3, ?4, ?5)",
+                    )
+                    .map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
-                    let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("00000000000").trim();
-                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("DOADOR").trim();
-                    let valor = col_valor.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
-                    let data = col_data.and_then(|i| record.get(i)).unwrap_or("2024-01-01").trim();
-                    let desc = col_desc.and_then(|i| record.get(i)).unwrap_or("DOACAO").trim();
+                    let doc = col_doc
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("00000000000")
+                        .trim();
+                    let nome = col_nome
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("DOADOR")
+                        .trim();
+                    let valor = col_valor
+                        .and_then(|i| record.get(i))
+                        .map(parse_f64_valor)
+                        .unwrap_or(0.0);
+                    let data = col_data
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("2024-01-01")
+                        .trim();
+                    let desc = col_desc
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("DOACAO")
+                        .trim();
 
                     if !doc.is_empty() {
                         let _ = stmt.execute(rusqlite::params![doc, nome, valor, data, desc]);
@@ -2098,8 +2580,24 @@ fn processar_csv_records<R: std::io::Read>(
             tx.commit().map_err(std::io::Error::other)?;
         }
         "TSE_DESPESAS" => {
-            let col_doc = find_col(&headers, &["NR_CPF_CNPJ_FORNECEDOR", "FORNECEDOR_CPF_CNPJ", "CPF_CNPJ_FORNECEDOR", "FORNECEDOR_CNPJ"]);
-            let col_nome = find_col(&headers, &["NM_FORNECEDOR", "FORNECEDOR_NOME", "NOME_FORNECEDOR", "FORNECEDOR"]);
+            let col_doc = find_col(
+                &headers,
+                &[
+                    "NR_CPF_CNPJ_FORNECEDOR",
+                    "FORNECEDOR_CPF_CNPJ",
+                    "CPF_CNPJ_FORNECEDOR",
+                    "FORNECEDOR_CNPJ",
+                ],
+            );
+            let col_nome = find_col(
+                &headers,
+                &[
+                    "NM_FORNECEDOR",
+                    "FORNECEDOR_NOME",
+                    "NOME_FORNECEDOR",
+                    "FORNECEDOR",
+                ],
+            );
             let col_valor = find_col(&headers, &["VR_DESPESA", "VALOR_DESPESA", "VALOR"]);
             let col_data = find_col(&headers, &["DT_DESPESA", "DATA_DESPESA", "DATA"]);
             let col_desc = find_col(&headers, &["DS_DESPESA", "DESCRICAO"]);
@@ -2113,11 +2611,26 @@ fn processar_csv_records<R: std::io::Read>(
                 ).map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
-                    let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("00000000000100").trim();
-                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("FORNECEDOR").trim();
-                    let valor = col_valor.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
-                    let data = col_data.and_then(|i| record.get(i)).unwrap_or("2024-01-01").trim();
-                    let desc = col_desc.and_then(|i| record.get(i)).unwrap_or("DESPESA").trim();
+                    let doc = col_doc
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("00000000000100")
+                        .trim();
+                    let nome = col_nome
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("FORNECEDOR")
+                        .trim();
+                    let valor = col_valor
+                        .and_then(|i| record.get(i))
+                        .map(parse_f64_valor)
+                        .unwrap_or(0.0);
+                    let data = col_data
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("2024-01-01")
+                        .trim();
+                    let desc = col_desc
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("DESPESA")
+                        .trim();
 
                     if !doc.is_empty() {
                         let _ = stmt.execute(rusqlite::params![doc, nome, valor, data, desc]);
@@ -2135,16 +2648,24 @@ fn processar_csv_records<R: std::io::Read>(
 
             let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
             {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT OR IGNORE INTO politicos (
+                let mut stmt = tx
+                    .prepare_cached(
+                        "INSERT OR IGNORE INTO politicos (
                         sq_candidato, cpf_mascarado, nome_completo, nome_urna
-                     ) VALUES (?1, ?2, ?3, ?4)"
-                ).map_err(std::io::Error::other)?;
+                     ) VALUES (?1, ?2, ?3, ?4)",
+                    )
+                    .map_err(std::io::Error::other)?;
 
                 for record in reader.records().flatten() {
                     let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
-                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("CANDIDATO").trim();
-                    let urna = col_urna.and_then(|i| record.get(i)).unwrap_or("URNA").trim();
+                    let nome = col_nome
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("CANDIDATO")
+                        .trim();
+                    let urna = col_urna
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("URNA")
+                        .trim();
                     let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
 
                     if !sq.is_empty() || !nome.is_empty() {
@@ -2170,8 +2691,14 @@ fn processar_csv_records<R: std::io::Read>(
 
                 for record in reader.records().flatten() {
                     let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("").trim();
-                    let termo = col_termo.and_then(|i| record.get(i)).unwrap_or("NOME").trim();
-                    let mun = col_mun.and_then(|i| record.get(i)).unwrap_or("BRASIL").trim();
+                    let termo = col_termo
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("NOME")
+                        .trim();
+                    let mun = col_mun
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("BRASIL")
+                        .trim();
 
                     if !termo.is_empty() {
                         let _ = stmt.execute(rusqlite::params![doc, termo, mun]);
@@ -2182,13 +2709,35 @@ fn processar_csv_records<R: std::io::Read>(
             tx.commit().map_err(std::io::Error::other)?;
         }
         "AUXILIO_EMERGENCIAL" | "BENEFICIOS_SOCIAIS" | "AUXILIO" | "CGU_AUXILIO" => {
-            let col_cpf = find_col(&headers, &["CPF_BENEFICIARIO", "CPF", "NR_CPF", "CPF_RESPONSAVEL"]);
-            let col_nome = find_col(&headers, &["NOME_BENEFICIARIO", "NOME", "NM_BENEFICIARIO", "BENEFICIARIO"]);
-            let col_mes = find_col(&headers, &["MES_DISPONIBILIZACAO", "MES_REFERENCIA", "MES", "REFERENCIA"]);
+            let col_cpf = find_col(
+                &headers,
+                &["CPF_BENEFICIARIO", "CPF", "NR_CPF", "CPF_RESPONSAVEL"],
+            );
+            let col_nome = find_col(
+                &headers,
+                &[
+                    "NOME_BENEFICIARIO",
+                    "NOME",
+                    "NM_BENEFICIARIO",
+                    "BENEFICIARIO",
+                ],
+            );
+            let col_mes = find_col(
+                &headers,
+                &[
+                    "MES_DISPONIBILIZACAO",
+                    "MES_REFERENCIA",
+                    "MES",
+                    "REFERENCIA",
+                ],
+            );
             let col_uf = find_col(&headers, &["UF", "SG_UF", "ESTADO"]);
             let col_mun = find_col(&headers, &["NOME_MUNICIPIO", "MUNICIPIO", "CIDADE"]);
             let col_parcela = find_col(&headers, &["PARCELA", "NUMERO_PARCELA", "NR_PARCELA"]);
-            let col_valor = find_col(&headers, &["VALOR_BENEFICIO", "VALOR", "VR_BENEFICIO", "VR_PAGTO"]);
+            let col_valor = find_col(
+                &headers,
+                &["VALOR_BENEFICIO", "VALOR", "VR_BENEFICIO", "VR_PAGTO"],
+            );
             let col_enq = find_col(&headers, &["ENQUADRAMENTO", "TIPO_BENEFICIARIO", "TIPO"]);
 
             let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
@@ -2205,17 +2754,40 @@ fn processar_csv_records<R: std::io::Read>(
                         continue;
                     }
                     let cpf_mascarado = ingestion::mascarar_cpf(raw_cpf);
-                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("").trim().to_string();
-                    let mes = col_mes.and_then(|i| record.get(i)).unwrap_or("202004").trim().to_string();
-                    let uf = col_uf.and_then(|i| record.get(i)).map(|s| s.trim().to_uppercase());
-                    let mun = col_mun.and_then(|i| record.get(i)).map(|s| s.trim().to_string());
-                    let parcela = col_parcela.and_then(|i| record.get(i)).map(|s| s.trim().to_string());
+                    let nome = col_nome
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let mes = col_mes
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("202004")
+                        .trim()
+                        .to_string();
+                    let uf = col_uf
+                        .and_then(|i| record.get(i))
+                        .map(|s| s.trim().to_uppercase());
+                    let mun = col_mun
+                        .and_then(|i| record.get(i))
+                        .map(|s| s.trim().to_string());
+                    let parcela = col_parcela
+                        .and_then(|i| record.get(i))
+                        .map(|s| s.trim().to_string());
                     let val_str = col_valor.and_then(|i| record.get(i)).unwrap_or("0");
                     let valor = parse_f64_valor(val_str);
-                    let enq = col_enq.and_then(|i| record.get(i)).map(|s| s.trim().to_string());
+                    let enq = col_enq
+                        .and_then(|i| record.get(i))
+                        .map(|s| s.trim().to_string());
 
                     let _ = stmt.execute(rusqlite::params![
-                        cpf_mascarado, nome, mun, uf, mes, parcela, valor, enq
+                        cpf_mascarado,
+                        nome,
+                        mun,
+                        uf,
+                        mes,
+                        parcela,
+                        valor,
+                        enq
                     ]);
                     count += 1;
                 }
@@ -2226,27 +2798,103 @@ fn processar_csv_records<R: std::io::Read>(
             let _ = auditor::executar_auditoria_auxilio_sqlite(conn);
         }
         "EMENDAS_PARLAMENTARES" | "EMENDAS" => {
-            let col_ano = find_col(&headers, &["ANO", "ANO_EMENDA", "ANO_PROPOSTA", "EXERCICIO"]);
-            let col_numero = find_col(&headers, &["NUMERO_EMENDA", "NR_EMENDA", "NUMERO", "CODIGO_EMENDA"]);
-            let col_autor = find_col(&headers, &["AUTOR_NOME", "NOME_AUTOR", "AUTOR", "PARLAMENTAR", "PROPONENTE"]);
+            let col_ano = find_col(
+                &headers,
+                &["ANO", "ANO_EMENDA", "ANO_PROPOSTA", "EXERCICIO"],
+            );
+            let col_numero = find_col(
+                &headers,
+                &["NUMERO_EMENDA", "NR_EMENDA", "NUMERO", "CODIGO_EMENDA"],
+            );
+            let col_autor = find_col(
+                &headers,
+                &[
+                    "AUTOR_NOME",
+                    "NOME_AUTOR",
+                    "AUTOR",
+                    "PARLAMENTAR",
+                    "PROPONENTE",
+                ],
+            );
             let col_tipo = find_col(&headers, &["TIPO_EMENDA", "MODALIDADE", "TIPO"]);
-            let col_localidade = find_col(&headers, &["LOCALIDADE_DESTINO", "LOCALIDADE", "MUNICIPIO", "DESTINO"]);
+            let col_localidade = find_col(
+                &headers,
+                &["LOCALIDADE_DESTINO", "LOCALIDADE", "MUNICIPIO", "DESTINO"],
+            );
             let col_uf = find_col(&headers, &["UF", "SG_UF", "ESTADO"]);
-            let col_beneficiario = find_col(&headers, &["BENEFICIARIO", "NOME_BENEFICIARIO", "FAVORECIDO", "ORGAO_DESTINATARIO"]);
-            let col_val_emp = find_col(&headers, &["VALOR_EMPENHADO", "VALOR_EMPENHO", "VR_EMPENHADO", "VALOR_PROPOSTA", "VALOR"]);
-            let col_val_pago = find_col(&headers, &["VALOR_PAGO", "VALOR_LIQUIDADO", "VR_PAGO", "VALOR_PAGAMENTO"]);
+            let col_beneficiario = find_col(
+                &headers,
+                &[
+                    "BENEFICIARIO",
+                    "NOME_BENEFICIARIO",
+                    "FAVORECIDO",
+                    "ORGAO_DESTINATARIO",
+                ],
+            );
+            let col_val_emp = find_col(
+                &headers,
+                &[
+                    "VALOR_EMPENHADO",
+                    "VALOR_EMPENHO",
+                    "VR_EMPENHADO",
+                    "VALOR_PROPOSTA",
+                    "VALOR",
+                ],
+            );
+            let col_val_pago = find_col(
+                &headers,
+                &[
+                    "VALOR_PAGO",
+                    "VALOR_LIQUIDADO",
+                    "VR_PAGO",
+                    "VALOR_PAGAMENTO",
+                ],
+            );
 
             let mut novas_emendas = Vec::new();
             for record in reader.records().flatten() {
-                let ano = col_ano.and_then(|i| record.get(i)).and_then(|s| s.parse::<i32>().ok()).unwrap_or(2024);
-                let numero = col_numero.and_then(|i| record.get(i)).unwrap_or("S/N").trim().to_string();
-                let autor = col_autor.and_then(|i| record.get(i)).unwrap_or("PARLAMENTAR").trim().to_string();
-                let tipo = col_tipo.and_then(|i| record.get(i)).unwrap_or("INDIVIDUAL").trim().to_string();
-                let localidade = col_localidade.and_then(|i| record.get(i)).unwrap_or("BRASIL").trim().to_string();
-                let uf = col_uf.and_then(|i| record.get(i)).unwrap_or("BR").trim().to_uppercase();
-                let beneficiario = col_beneficiario.and_then(|i| record.get(i)).unwrap_or("MUNICÍPIO / ÓRGÃO").trim().to_string();
-                let val_emp = col_val_emp.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
-                let val_pago = col_val_pago.and_then(|i| record.get(i)).map(parse_f64_valor).unwrap_or(0.0);
+                let ano = col_ano
+                    .and_then(|i| record.get(i))
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .unwrap_or(2024);
+                let numero = col_numero
+                    .and_then(|i| record.get(i))
+                    .unwrap_or("S/N")
+                    .trim()
+                    .to_string();
+                let autor = col_autor
+                    .and_then(|i| record.get(i))
+                    .unwrap_or("PARLAMENTAR")
+                    .trim()
+                    .to_string();
+                let tipo = col_tipo
+                    .and_then(|i| record.get(i))
+                    .unwrap_or("INDIVIDUAL")
+                    .trim()
+                    .to_string();
+                let localidade = col_localidade
+                    .and_then(|i| record.get(i))
+                    .unwrap_or("BRASIL")
+                    .trim()
+                    .to_string();
+                let uf = col_uf
+                    .and_then(|i| record.get(i))
+                    .unwrap_or("BR")
+                    .trim()
+                    .to_uppercase();
+                let beneficiario = col_beneficiario
+                    .and_then(|i| record.get(i))
+                    .unwrap_or("MUNICÍPIO / ÓRGÃO")
+                    .trim()
+                    .to_string();
+                let val_emp = col_val_emp
+                    .and_then(|i| record.get(i))
+                    .map(parse_f64_valor)
+                    .unwrap_or(0.0);
+                let val_pago = col_val_pago
+                    .and_then(|i| record.get(i))
+                    .map(parse_f64_valor)
+                    .unwrap_or(0.0);
 
                 if !numero.is_empty() {
                     novas_emendas.push(storage::NovaEmendaParlamentar {
@@ -2299,7 +2947,12 @@ pub async fn upload_arquivo_handler(
     let mut tamanho_total: usize = 0;
     let mut tipo_escolhido = String::from("AUTO");
 
-    while let Ok(Some(mut field)) = multipart.next_field().await {
+    while let Some(mut field) = multipart.next_field().await.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"erro": format!("Upload multipart inválido: {e}")})),
+        )
+    })? {
         let name = field.name().unwrap_or("").to_string();
         if name == "tipo" {
             if let Ok(bytes) = field.bytes().await {
@@ -2307,7 +2960,12 @@ pub async fn upload_arquivo_handler(
             }
         } else if let Some(file_name) = field.file_name() {
             nome_arquivo = file_name.to_string();
-            while let Ok(Some(chunk)) = field.chunk().await {
+            while let Some(chunk) = field.chunk().await.map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"erro": format!("Upload interrompido: {e}")})),
+                )
+            })? {
                 tamanho_total += chunk.len();
                 temp_file.write_all(&chunk).map_err(|e| {
                     (
@@ -2317,7 +2975,12 @@ pub async fn upload_arquivo_handler(
                 })?;
             }
         } else {
-            while let Ok(Some(chunk)) = field.chunk().await {
+            while let Some(chunk) = field.chunk().await.map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"erro": format!("Upload interrompido: {e}")})),
+                )
+            })? {
                 tamanho_total += chunk.len();
                 temp_file.write_all(&chunk).map_err(|e| {
                     (
@@ -2352,27 +3015,46 @@ pub async fn upload_arquivo_handler(
         let tipo_clone = tipo_escolhido.clone();
 
         tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
-            let mut conn = pool_clone.get().map_err(|e| std::io::Error::other(e.to_string()))?;
+            let mut conn = pool_clone
+                .get()
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
             let file = std::fs::File::open(&zip_path)?;
             let mut archive = zip::ZipArchive::new(file)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
+            if archive.len() > 10_000 {
+                return Err(std::io::Error::other("ZIP contém arquivos demais"));
+            }
+            let mut total_size = 0u64;
+            for index in 0..archive.len() {
+                let entry = archive.by_index(index)?;
+                total_size = total_size
+                    .checked_add(entry.size())
+                    .ok_or_else(|| std::io::Error::other("Tamanho ZIP inválido"))?;
+                if entry.size() > ingestion::tse_ckan::MAX_ZIP_ENTRY_BYTES
+                    || total_size > ingestion::tse_ckan::MAX_ZIP_TOTAL_BYTES
+                {
+                    return Err(std::io::Error::other("ZIP excede limite de descompressão"));
+                }
+            }
             let mut total_count = 0;
             let mut tipo_final = "ZIP_COMPACTADO".to_string();
 
             for i in 0..archive.len() {
-                let mut zip_entry = archive
+                let zip_entry = archive
                     .by_index(i)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 if zip_entry.name().to_lowercase().ends_with(".csv") {
-                    let mut buf = Vec::new();
-                    use std::io::Read;
-                    zip_entry.read_to_end(&mut buf)?;
-                    let delim = detectar_delimitador(&buf);
+                    use std::io::BufRead;
+                    let mut input = std::io::BufReader::new(ingestion::tse_ckan::LimitedRead::new(
+                        zip_entry,
+                        ingestion::tse_ckan::MAX_ZIP_ENTRY_BYTES,
+                    ));
+                    let delim = detectar_delimitador(input.fill_buf()?);
                     let mut reader = csv::ReaderBuilder::new()
                         .delimiter(delim)
                         .flexible(true)
-                        .from_reader(std::io::Cursor::new(buf));
+                        .from_reader(input);
 
                     let (cnt, tp) = processar_csv_records(&mut conn, &mut reader, &tipo_clone)?;
                     total_count += cnt;
@@ -2400,7 +3082,9 @@ pub async fn upload_arquivo_handler(
         let tipo_clone = tipo_escolhido.clone();
 
         tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
-            let mut conn = pool_clone.get().map_err(|e| std::io::Error::other(e.to_string()))?;
+            let mut conn = pool_clone
+                .get()
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
             let mut file = std::fs::File::open(&csv_path)?;
             let mut sample = [0u8; 2048];
             use std::io::Read;
@@ -2458,8 +3142,15 @@ pub async fn obter_icone_handler(
     State(pool): State<DbPool>,
     Query(params): Query<ObterIconeParams>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let tipo = params.tipo.unwrap_or_else(|| "app".to_string()).to_lowercase();
-    let chave = if tipo == "favicon" { "favicon" } else { "app_icon" };
+    let tipo = params
+        .tipo
+        .unwrap_or_else(|| "app".to_string())
+        .to_lowercase();
+    let chave = if tipo == "favicon" {
+        "favicon"
+    } else {
+        "app_icon"
+    };
 
     if let Ok(conn) = pool.get() {
         let res: std::result::Result<(Vec<u8>, String), _> = conn.query_row(
@@ -2503,7 +3194,10 @@ pub async fn obter_icone_handler(
     }
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/svg+xml"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("image/svg+xml"),
+    );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     Ok((headers, Body::from(DEFAULT_ICON_SVG)))
 }
@@ -2511,7 +3205,13 @@ pub async fn obter_icone_handler(
 pub async fn obter_favicon_handler(
     State(pool): State<DbPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    obter_icone_handler(State(pool), Query(ObterIconeParams { tipo: Some("favicon".to_string()) })).await
+    obter_icone_handler(
+        State(pool),
+        Query(ObterIconeParams {
+            tipo: Some("favicon".to_string()),
+        }),
+    )
+    .await
 }
 
 pub async fn salvar_icone_handler(
@@ -2609,7 +3309,10 @@ pub async fn remover_icone_handler(
     State(pool): State<DbPool>,
     Query(params): Query<RemoverIconeParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let alvo = params.alvo.unwrap_or_else(|| "ambos".to_string()).to_lowercase();
+    let alvo = params
+        .alvo
+        .unwrap_or_else(|| "ambos".to_string())
+        .to_lowercase();
     let conn = pool.get().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2618,10 +3321,16 @@ pub async fn remover_icone_handler(
     })?;
 
     if alvo == "icone" || alvo == "ambos" {
-        let _ = conn.execute("DELETE FROM configuracoes_sistema WHERE chave = 'app_icon'", []);
+        let _ = conn.execute(
+            "DELETE FROM configuracoes_sistema WHERE chave = 'app_icon'",
+            [],
+        );
     }
     if alvo == "favicon" || alvo == "ambos" {
-        let _ = conn.execute("DELETE FROM configuracoes_sistema WHERE chave = 'favicon'", []);
+        let _ = conn.execute(
+            "DELETE FROM configuracoes_sistema WHERE chave = 'favicon'",
+            [],
+        );
     }
 
     Ok(Json(json!({
@@ -2636,16 +3345,20 @@ pub async fn obter_identidade_handler(
     let mut tem_icone = false;
     let mut tem_fav = false;
     if let Ok(conn) = pool.get() {
-        tem_icone = conn.query_row(
-            "SELECT 1 FROM configuracoes_sistema WHERE chave = 'app_icon'",
-            [],
-            |_| Ok(()),
-        ).is_ok();
-        tem_fav = conn.query_row(
-            "SELECT 1 FROM configuracoes_sistema WHERE chave = 'favicon'",
-            [],
-            |_| Ok(()),
-        ).is_ok();
+        tem_icone = conn
+            .query_row(
+                "SELECT 1 FROM configuracoes_sistema WHERE chave = 'app_icon'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
+        tem_fav = conn
+            .query_row(
+                "SELECT 1 FROM configuracoes_sistema WHERE chave = 'favicon'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
     }
 
     Ok(Json(IdentidadeVisualResponse {
@@ -2721,7 +3434,9 @@ pub async fn criar_backup_handler(
     if let Err(e) = tokio::fs::create_dir_all(backup_dir).await {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "erro", "mensagem": format!("Falha ao criar diretório de backups: {e}")})),
+            Json(
+                json!({"status": "erro", "mensagem": format!("Falha ao criar diretório de backups: {e}")}),
+            ),
         ));
     }
 
@@ -2756,7 +3471,8 @@ pub async fn criar_backup_handler(
     })))
 }
 
-pub async fn listar_backups_handler() -> Result<Json<Vec<BackupItemInfo>>, (StatusCode, Json<serde_json::Value>)> {
+pub async fn listar_backups_handler(
+) -> Result<Json<Vec<BackupItemInfo>>, (StatusCode, Json<serde_json::Value>)> {
     let backup_dir = std::path::Path::new("data/backups");
     if !backup_dir.exists() {
         return Ok(Json(Vec::new()));
@@ -2833,7 +3549,10 @@ pub async fn download_backup_arquivo_handler(
     let body = Body::from_stream(stream);
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/vnd.sqlite3"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/vnd.sqlite3"),
+    );
     if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{nome_limpo}\"")) {
         headers.insert(header::CONTENT_DISPOSITION, v);
     }
@@ -2848,7 +3567,9 @@ pub async fn testar_webhook_handler(
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({"status": "erro", "mensagem": "A URL do webhook deve começar com http:// ou https://"})),
+            Json(
+                json!({"status": "erro", "mensagem": "A URL do webhook deve começar com http:// ou https://"}),
+            ),
         ));
     }
 
@@ -2884,13 +3605,11 @@ pub async fn testar_webhook_handler(
                 }
             })))
         }
-        Err(err) => {
-            Ok(Json(json!({
-                "sucesso": false,
-                "status_code": serde_json::Value::Null,
-                "mensagem": format!("Falha de conexão ao disparar webhook: {err}")
-            })))
-        }
+        Err(err) => Ok(Json(json!({
+            "sucesso": false,
+            "status_code": serde_json::Value::Null,
+            "mensagem": format!("Falha de conexão ao disparar webhook: {err}")
+        }))),
     }
 }
 
@@ -2972,7 +3691,8 @@ pub async fn exportar_tabela_handler(
         while let Ok(Some(row)) = rows.next() {
             let mut obj = serde_json::Map::new();
             for (idx, col_name) in colunas.iter().enumerate() {
-                let val: rusqlite::types::Value = row.get(idx).unwrap_or(rusqlite::types::Value::Null);
+                let val: rusqlite::types::Value =
+                    row.get(idx).unwrap_or(rusqlite::types::Value::Null);
                 let json_val = match val {
                     rusqlite::types::Value::Null => serde_json::Value::Null,
                     rusqlite::types::Value::Integer(i) => json!(i),
@@ -2987,7 +3707,8 @@ pub async fn exportar_tabela_handler(
             rows_json.push(serde_json::Value::Object(obj));
         }
 
-        let body_str = serde_json::to_string_pretty(&rows_json).unwrap_or_else(|_| "[]".to_string());
+        let body_str =
+            serde_json::to_string_pretty(&rows_json).unwrap_or_else(|_| "[]".to_string());
         let mut headers = HeaderMap::new();
         headers.insert(
             header::CONTENT_TYPE,
@@ -3015,14 +3736,16 @@ pub async fn exportar_tabela_handler(
         while let Ok(Some(row)) = rows.next() {
             let mut row_vals = Vec::new();
             for idx in 0..colunas.len() {
-                let val: rusqlite::types::Value = row.get(idx).unwrap_or(rusqlite::types::Value::Null);
+                let val: rusqlite::types::Value =
+                    row.get(idx).unwrap_or(rusqlite::types::Value::Null);
                 let val_str = match val {
                     rusqlite::types::Value::Null => String::new(),
                     rusqlite::types::Value::Integer(i) => i.to_string(),
                     rusqlite::types::Value::Real(f) => f.to_string(),
                     rusqlite::types::Value::Text(s) => {
                         let escaped = s.replace('"', "\"\"");
-                        if escaped.contains(';') || escaped.contains('\n') || escaped.contains('"') {
+                        if escaped.contains(';') || escaped.contains('\n') || escaped.contains('"')
+                        {
                             format!("\"{escaped}\"")
                         } else {
                             escaped
@@ -3079,7 +3802,9 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let status: ConfigStatusResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(status.total_registros.politicos, 1);
@@ -3112,7 +3837,9 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::ACCEPTED);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp: ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!resp.job_id.is_empty());
 
@@ -3126,7 +3853,9 @@ mod tests {
         let res_status = app.oneshot(req_status).await.unwrap();
         assert_eq!(res_status.status(), StatusCode::OK);
 
-        let bytes_status = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let bytes_status = axum::body::to_bytes(res_status.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let job: JobInfo = serde_json::from_slice(&bytes_status).unwrap();
         assert_eq!(job.fonte, "TSE");
         assert_eq!(job.ano, Some(2024));
@@ -3180,7 +3909,9 @@ mod tests {
             res_bkp.headers().get("content-type").unwrap(),
             "application/vnd.sqlite3"
         );
-        let bkp_bytes = axum::body::to_bytes(res_bkp.into_body(), usize::MAX).await.unwrap();
+        let bkp_bytes = axum::body::to_bytes(res_bkp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert!(bkp_bytes.starts_with(b"SQLite format 3\0"));
 
         // 2. Exportar tabela CSV
@@ -3192,7 +3923,9 @@ mod tests {
 
         let res_csv = app.oneshot(req_csv).await.unwrap();
         assert_eq!(res_csv.status(), StatusCode::OK);
-        let csv_bytes = axum::body::to_bytes(res_csv.into_body(), usize::MAX).await.unwrap();
+        let csv_bytes = axum::body::to_bytes(res_csv.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let csv_str = String::from_utf8(csv_bytes.to_vec()).unwrap();
         assert!(csv_str.contains("nome_completo"));
         assert!(csv_str.contains("MARIA SANTOS"));
@@ -3206,7 +3939,9 @@ mod tests {
 
         let res_json = app.oneshot(req_json).await.unwrap();
         assert_eq!(res_json.status(), StatusCode::OK);
-        let json_bytes = axum::body::to_bytes(res_json.into_body(), usize::MAX).await.unwrap();
+        let json_bytes = axum::body::to_bytes(res_json.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json_val: serde_json::Value = serde_json::from_slice(&json_bytes).unwrap();
         assert!(json_val.is_array());
         assert_eq!(json_val.as_array().unwrap().len(), 1);
@@ -3255,7 +3990,9 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(upload_res.status, "CONCLUIDO");
@@ -3326,7 +4063,9 @@ mod tests {
             res_custom.headers().get("content-type").unwrap(),
             "image/png"
         );
-        let custom_bytes = axum::body::to_bytes(res_custom.into_body(), usize::MAX).await.unwrap();
+        let custom_bytes = axum::body::to_bytes(res_custom.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(custom_bytes.as_ref(), &mock_png_bytes);
 
         // 4. Obter favicon customizado
@@ -3337,10 +4076,7 @@ mod tests {
             .unwrap();
         let res_fav = app.oneshot(req_fav).await.unwrap();
         assert_eq!(res_fav.status(), StatusCode::OK);
-        assert_eq!(
-            res_fav.headers().get("content-type").unwrap(),
-            "image/png"
-        );
+        assert_eq!(res_fav.headers().get("content-type").unwrap(), "image/png");
 
         // 5. Verificar identidade
         let app = crate::criar_router(pool.clone());
@@ -3350,7 +4086,9 @@ mod tests {
             .unwrap();
         let res_id = app.oneshot(req_id).await.unwrap();
         assert_eq!(res_id.status(), StatusCode::OK);
-        let id_bytes = axum::body::to_bytes(res_id.into_body(), usize::MAX).await.unwrap();
+        let id_bytes = axum::body::to_bytes(res_id.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let id_val: IdentidadeVisualResponse = serde_json::from_slice(&id_bytes).unwrap();
         assert!(id_val.tem_icone_customizado);
         assert!(id_val.tem_favicon_customizado);
@@ -3415,7 +4153,9 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(upload_res.status, "CONCLUIDO");
@@ -3471,7 +4211,9 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(upload_res.status, "CONCLUIDO");
@@ -3480,7 +4222,9 @@ mod tests {
 
         let conn = pool.get().unwrap();
         let total_oab: i64 = conn
-            .query_row("SELECT count(*) FROM registros_profissionais", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(total_oab, 1);
     }
@@ -3517,7 +4261,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(upload_res.status, "CONCLUIDO");
@@ -3526,7 +4272,9 @@ mod tests {
 
         let conn = pool.get().unwrap();
         let total_emendas: i64 = conn
-            .query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(total_emendas, 1);
 
@@ -3538,12 +4286,11 @@ mod tests {
             .unwrap();
         let res_status = app.oneshot(req_status).await.unwrap();
         assert_eq!(res_status.status(), StatusCode::OK);
-        let bytes_status = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let bytes_status = axum::body::to_bytes(res_status.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let status_json: serde_json::Value = serde_json::from_slice(&bytes_status).unwrap();
-        assert_eq!(
-            status_json["total_registros"]["emendas_parlamentares"],
-            1
-        );
+        assert_eq!(status_json["total_registros"]["emendas_parlamentares"], 1);
     }
 
     #[tokio::test]
@@ -3581,20 +4328,27 @@ mod tests {
         let res_bulk = app.oneshot(req_bulk).await.unwrap();
         assert_eq!(res_bulk.status(), StatusCode::ACCEPTED);
 
-        let bytes_bulk = axum::body::to_bytes(res_bulk.into_body(), usize::MAX).await.unwrap();
+        let bytes_bulk = axum::body::to_bytes(res_bulk.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_bulk: ExecutarIngestaoResponse = serde_json::from_slice(&bytes_bulk).unwrap();
         assert!(!resp_bulk.job_id.is_empty());
 
         // Consulta job status
         let app = crate::criar_router(pool.clone());
         let req_job_bulk = Request::builder()
-            .uri(format!("/api/v1/config/ingestao/status/{}", resp_bulk.job_id))
+            .uri(format!(
+                "/api/v1/config/ingestao/status/{}",
+                resp_bulk.job_id
+            ))
             .body(Body::empty())
             .unwrap();
 
         let res_job_bulk = app.oneshot(req_job_bulk).await.unwrap();
         assert_eq!(res_job_bulk.status(), StatusCode::OK);
-        let bytes_jb = axum::body::to_bytes(res_job_bulk.into_body(), usize::MAX).await.unwrap();
+        let bytes_jb = axum::body::to_bytes(res_job_bulk.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let job_bulk: JobInfo = serde_json::from_slice(&bytes_jb).unwrap();
         assert_eq!(job_bulk.fonte, "CAMARA_BULK");
 
@@ -3617,20 +4371,27 @@ mod tests {
         let res_api = app.oneshot(req_api).await.unwrap();
         assert_eq!(res_api.status(), StatusCode::ACCEPTED);
 
-        let bytes_api = axum::body::to_bytes(res_api.into_body(), usize::MAX).await.unwrap();
+        let bytes_api = axum::body::to_bytes(res_api.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_api: ExecutarIngestaoResponse = serde_json::from_slice(&bytes_api).unwrap();
         assert!(!resp_api.job_id.is_empty());
 
         // Consulta job status da API
         let app = crate::criar_router(pool.clone());
         let req_job_api = Request::builder()
-            .uri(format!("/api/v1/config/ingestao/status/{}", resp_api.job_id))
+            .uri(format!(
+                "/api/v1/config/ingestao/status/{}",
+                resp_api.job_id
+            ))
             .body(Body::empty())
             .unwrap();
 
         let res_job_api = app.oneshot(req_job_api).await.unwrap();
         assert_eq!(res_job_api.status(), StatusCode::OK);
-        let bytes_ja = axum::body::to_bytes(res_job_api.into_body(), usize::MAX).await.unwrap();
+        let bytes_ja = axum::body::to_bytes(res_job_api.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let job_api: JobInfo = serde_json::from_slice(&bytes_ja).unwrap();
         assert_eq!(job_api.fonte, "CAMARA_API");
 
@@ -3673,7 +4434,9 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::ACCEPTED);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp: ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!resp.job_id.is_empty());
 
@@ -3685,7 +4448,9 @@ mod tests {
 
         let res_status = app_status.oneshot(req_status).await.unwrap();
         assert_eq!(res_status.status(), StatusCode::OK);
-        let bytes_status = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let bytes_status = axum::body::to_bytes(res_status.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let job: JobInfo = serde_json::from_slice(&bytes_status).unwrap();
         assert_eq!(job.fonte, "TSE_CKAN");
         assert_eq!(job.ano, Some(2024));
@@ -3709,19 +4474,26 @@ mod tests {
         let res_exec = app_exec.oneshot(req_exec).await.unwrap();
         assert_eq!(res_exec.status(), StatusCode::ACCEPTED);
 
-        let bytes_exec = axum::body::to_bytes(res_exec.into_body(), usize::MAX).await.unwrap();
+        let bytes_exec = axum::body::to_bytes(res_exec.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_exec: ExecutarIngestaoResponse = serde_json::from_slice(&bytes_exec).unwrap();
         assert!(!resp_exec.job_id.is_empty());
 
         let app_status_exec = crate::criar_router(pool.clone());
         let req_status_exec = Request::builder()
-            .uri(format!("/api/v1/config/ingestao/status/{}", resp_exec.job_id))
+            .uri(format!(
+                "/api/v1/config/ingestao/status/{}",
+                resp_exec.job_id
+            ))
             .body(Body::empty())
             .unwrap();
 
         let res_status_exec = app_status_exec.oneshot(req_status_exec).await.unwrap();
         assert_eq!(res_status_exec.status(), StatusCode::OK);
-        let bytes_status_exec = axum::body::to_bytes(res_status_exec.into_body(), usize::MAX).await.unwrap();
+        let bytes_status_exec = axum::body::to_bytes(res_status_exec.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let job_exec: JobInfo = serde_json::from_slice(&bytes_status_exec).unwrap();
         assert_eq!(job_exec.fonte, "TSE_CKAN");
         assert_eq!(job_exec.ano, Some(2022));
@@ -3744,7 +4516,9 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let progress: ImportProgress = serde_json::from_slice(&bytes).unwrap();
         assert!(progress.percentage >= 0.0);
 
@@ -3788,7 +4562,9 @@ mod tests {
             .unwrap();
         let res_get = app.clone().oneshot(req_get).await.unwrap();
         assert_eq!(res_get.status(), StatusCode::OK);
-        let bytes_get = axum::body::to_bytes(res_get.into_body(), usize::MAX).await.unwrap();
+        let bytes_get = axum::body::to_bytes(res_get.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let rules_init: ParametrosAuditoria = serde_json::from_slice(&bytes_get).unwrap();
         assert_eq!(rules_init.limite_combustivel_litros, 250.0);
         assert_eq!(rules_init.janela_triangulacao_dias, 180);
@@ -3809,12 +4585,17 @@ mod tests {
             .unwrap();
         let res_post = app2.oneshot(req_post).await.unwrap();
         assert_eq!(res_post.status(), StatusCode::OK);
-        let bytes_post = axum::body::to_bytes(res_post.into_body(), usize::MAX).await.unwrap();
+        let bytes_post = axum::body::to_bytes(res_post.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_salvar: SalvarAuditRulesResponse = serde_json::from_slice(&bytes_post).unwrap();
         assert_eq!(resp_salvar.status, "sucesso");
         assert_eq!(resp_salvar.parametros.limite_combustivel_litros, 300.0);
         assert_eq!(resp_salvar.parametros.janela_triangulacao_dias, 90);
-        assert_eq!(resp_salvar.parametros.concentracao_fornecedor_percentual, 75.0);
+        assert_eq!(
+            resp_salvar.parametros.concentracao_fornecedor_percentual,
+            75.0
+        );
 
         // 3. GET /api/v1/settings/audit-rules deve refletir os novos valores persistidos
         let app3 = crate::criar_router(pool.clone());
@@ -3824,7 +4605,9 @@ mod tests {
             .unwrap();
         let res_get2 = app3.oneshot(req_get2).await.unwrap();
         assert_eq!(res_get2.status(), StatusCode::OK);
-        let bytes_get2 = axum::body::to_bytes(res_get2.into_body(), usize::MAX).await.unwrap();
+        let bytes_get2 = axum::body::to_bytes(res_get2.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let rules_updated: ParametrosAuditoria = serde_json::from_slice(&bytes_get2).unwrap();
         assert_eq!(rules_updated.limite_combustivel_litros, 300.0);
         assert_eq!(rules_updated.janela_triangulacao_dias, 90);
@@ -3862,7 +4645,9 @@ mod tests {
             .unwrap();
         let res_backup = app.clone().oneshot(req_backup).await.unwrap();
         assert_eq!(res_backup.status(), StatusCode::OK);
-        let bytes_b = axum::body::to_bytes(res_backup.into_body(), usize::MAX).await.unwrap();
+        let bytes_b = axum::body::to_bytes(res_backup.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_b: serde_json::Value = serde_json::from_slice(&bytes_b).unwrap();
         assert_eq!(resp_b["status"], "sucesso");
         assert!(resp_b["nome_arquivo"].as_str().is_some());
@@ -3873,7 +4658,9 @@ mod tests {
             .unwrap();
         let res_list = app.clone().oneshot(req_list).await.unwrap();
         assert_eq!(res_list.status(), StatusCode::OK);
-        let bytes_l = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        let bytes_l = axum::body::to_bytes(res_list.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let lista: Vec<BackupItemInfo> = serde_json::from_slice(&bytes_l).unwrap();
         assert!(!lista.is_empty());
 
@@ -3890,11 +4677,15 @@ mod tests {
             .method("POST")
             .uri("/api/v1/config/webhook/test")
             .header("content-type", "application/json")
-            .body(Body::from(json!({"url": "http://127.0.0.1:9999/webhook"}).to_string()))
+            .body(Body::from(
+                json!({"url": "http://127.0.0.1:9999/webhook"}).to_string(),
+            ))
             .unwrap();
         let res_wh = app.oneshot(req_wh).await.unwrap();
         assert_eq!(res_wh.status(), StatusCode::OK);
-        let bytes_wh = axum::body::to_bytes(res_wh.into_body(), usize::MAX).await.unwrap();
+        let bytes_wh = axum::body::to_bytes(res_wh.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_wh: serde_json::Value = serde_json::from_slice(&bytes_wh).unwrap();
         assert_eq!(resp_wh["sucesso"], false);
     }
@@ -3926,7 +4717,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::ACCEPTED);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp: ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(resp.status, "PROCESSANDO");
         assert!(!resp.job_id.is_empty());
@@ -3942,7 +4735,9 @@ mod tests {
         let res_status = app.clone().oneshot(req_status).await.unwrap();
         assert_eq!(res_status.status(), StatusCode::OK);
 
-        let bytes_st = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let bytes_st = axum::body::to_bytes(res_status.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let job_st: JobInfo = serde_json::from_slice(&bytes_st).unwrap();
         assert_eq!(job_st.fonte, "SINCRONIZAR_TUDO");
         assert!(job_st.progresso > 0);
@@ -3950,11 +4745,13 @@ mod tests {
         // Aguarda job concluir e checa histórico de sincronização
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
         let c = pool.get().unwrap();
-        let hist_count: i64 = c.query_row(
-            "SELECT count(*) FROM historico_sincronizacao WHERE fonte = 'SINCRONIZAR_TUDO'",
-            [],
-            |r| r.get(0),
-        ).unwrap_or(0);
+        let hist_count: i64 = c
+            .query_row(
+                "SELECT count(*) FROM historico_sincronizacao WHERE fonte = 'SINCRONIZAR_TUDO'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
         assert!(hist_count >= 1);
     }
 
@@ -3976,7 +4773,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::ACCEPTED);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp: ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(resp.status, "PROCESSANDO");
         assert!(!resp.job_id.is_empty());
@@ -3991,16 +4790,16 @@ mod tests {
         let res_status = app.clone().oneshot(req_status).await.unwrap();
         assert_eq!(res_status.status(), StatusCode::OK);
 
-        let bytes_st = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let bytes_st = axum::body::to_bytes(res_status.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let job_st: JobInfo = serde_json::from_slice(&bytes_st).unwrap();
         assert_eq!(job_st.fonte, "AUTORIDADES_CUPULA");
 
         let c = pool.get().unwrap();
-        let total_cargos: i64 = c.query_row(
-            "SELECT count(*) FROM cargos_autoridades",
-            [],
-            |r| r.get(0),
-        ).unwrap_or(0);
+        let total_cargos: i64 = c
+            .query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0))
+            .unwrap_or(0);
         assert!(total_cargos >= 15);
     }
 
@@ -4015,7 +4814,8 @@ mod tests {
                 "INSERT INTO politicos (id, nome_completo, nome_urna, cpf_mascarado, tipo_agente)
                  VALUES (1, 'DEPUTADO TESTE DIARIO', 'DEP DIARIO', '***.111.222-**', 'POLITICO')",
                 [],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let app = crate::criar_router(pool.clone());
@@ -4036,7 +4836,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::ACCEPTED);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp: ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(resp.status, "PROCESSANDO");
         assert!(!resp.job_id.is_empty());
@@ -4045,17 +4847,20 @@ mod tests {
         for _ in 0..40 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             let c = pool.get().unwrap();
-            let total_cache: i64 = c.query_row(
-                "SELECT count(*) FROM cache_consultas_diario",
-                [],
-                |r| r.get(0),
-            ).unwrap_or(0);
+            let total_cache: i64 = c
+                .query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| {
+                    r.get(0)
+                })
+                .unwrap_or(0);
             if total_cache >= 1 {
                 concluido = true;
                 break;
             }
         }
-        assert!(concluido, "Deve persistir pelo menos 1 consulta no cache_consultas_diario");
+        assert!(
+            concluido,
+            "Deve persistir pelo menos 1 consulta no cache_consultas_diario"
+        );
 
         let req_status = Request::builder()
             .uri(format!("/api/v1/config/ingestao/status/{}", resp.job_id))
@@ -4065,9 +4870,10 @@ mod tests {
         let res_status = app.clone().oneshot(req_status).await.unwrap();
         assert_eq!(res_status.status(), StatusCode::OK);
 
-        let bytes_st = axum::body::to_bytes(res_status.into_body(), usize::MAX).await.unwrap();
+        let bytes_st = axum::body::to_bytes(res_status.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let job_st: JobInfo = serde_json::from_slice(&bytes_st).unwrap();
         assert_eq!(job_st.fonte, "QUERIDO_DIARIO");
     }
 }
-

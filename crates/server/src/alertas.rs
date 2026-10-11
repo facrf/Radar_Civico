@@ -92,12 +92,22 @@ pub struct AuxilioIndevidoResponse {
     pub alertas: Vec<AlertaAuxilioResponseItem>,
 }
 
-pub fn registrar_alerta(conn: &Connection, alerta: &NovoAlerta) -> Result<i64, storage::StorageError> {
-    conn.execute(
+pub fn registrar_alerta(
+    conn: &Connection,
+    alerta: &NovoAlerta,
+) -> Result<i64, storage::StorageError> {
+    let id = conn.query_row(
         "INSERT INTO alertas_auditoria (
             tipo, severidade, titulo, descricao, alvo_nome, alvo_documento,
             municipio, uf, ano, valor_envolvido, fonte_dado, detalhes_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(tipo, chave_origem) WHERE chave_origem IS NOT NULL DO UPDATE SET
+            severidade = excluded.severidade, titulo = excluded.titulo,
+            descricao = excluded.descricao, alvo_nome = excluded.alvo_nome,
+            alvo_documento = excluded.alvo_documento, municipio = excluded.municipio,
+            uf = excluded.uf, ano = excluded.ano, valor_envolvido = excluded.valor_envolvido,
+            fonte_dado = excluded.fonte_dado, detalhes_json = excluded.detalhes_json
+         RETURNING id",
         params![
             alerta.tipo,
             alerta.severidade.to_uppercase(),
@@ -112,15 +122,23 @@ pub fn registrar_alerta(conn: &Connection, alerta: &NovoAlerta) -> Result<i64, s
             alerta.fonte_dado,
             alerta.detalhes_json
         ],
+        |row| row.get(0),
     )?;
-    Ok(conn.last_insert_rowid())
+    Ok(id)
 }
 
-pub fn expurgar_alertas_combustivel_obsoletos(conn: &Connection, novo_limite_litros: f64) -> Result<usize, storage::StorageError> {
-    let mut stmt = conn.prepare("SELECT id, detalhes_json FROM alertas_auditoria WHERE tipo = 'COMBUSTIVEL'")?;
+pub fn expurgar_alertas_combustivel_obsoletos(
+    conn: &Connection,
+    novo_limite_litros: f64,
+) -> Result<usize, storage::StorageError> {
+    let mut stmt =
+        conn.prepare("SELECT id, detalhes_json FROM alertas_auditoria WHERE tipo = 'COMBUSTIVEL'")?;
     let mut ids_para_remover = Vec::new();
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)))?;
-    for item in rows.flatten() {
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
+    for item in rows {
+        let item = item?;
         if let Some(json_str) = item.1 {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json_str) {
                 if let Some(litros) = v.get("litros").and_then(|l| l.as_f64()) {
@@ -139,79 +157,122 @@ pub fn expurgar_alertas_combustivel_obsoletos(conn: &Connection, novo_limite_lit
     Ok(total)
 }
 
-pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::StorageError> {
-    let params = crate::routes::config::carregar_parametros_auditoria(conn);
-    sincronizar_alertas_sistema_com_parametros(conn, &params)
-}
-
-pub fn sincronizar_alertas_sistema_com_parametros(
+/// Atualiza somente os alertas de combustível; salvar configurações não revarre QSA/TSE.
+pub fn sincronizar_alertas_combustivel(
     conn: &Connection,
     parametros: &crate::routes::config::ParametrosAuditoria,
 ) -> Result<usize, storage::StorageError> {
-    let mut novos_inseridos = 0;
+    if conn.is_autocommit() {
+        let tx = storage::rusqlite::Transaction::new_unchecked(
+            conn,
+            storage::rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let result = sincronizar_alertas_combustivel(&tx, parametros)?;
+        tx.commit()?;
+        return Ok(result);
+    }
+    let ids_antes: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(id), 0) FROM alertas_auditoria",
+        [],
+        |r| r.get(0),
+    )?;
+    let preco_referencia = parametros.preco_combustivel_referencia;
+    let fator_sobrepreco = 1.0 + parametros.sobrepreco_combustivel_percentual / 100.0;
+    // Remove somente alertas que deixaram de satisfazer a configuração atual.
+    conn.execute(
+        "DELETE FROM alertas_auditoria WHERE tipo = 'COMBUSTIVEL' AND
+         json_valid(detalhes_json) AND NOT EXISTS (
+            SELECT 1 FROM despesas_parlamentares d
+            WHERE d.id = json_extract(alertas_auditoria.detalhes_json, '$.despesa_id')
+              AND (CASE WHEN d.detalhes_litros > 0 THEN d.detalhes_litros
+                   WHEN ?2 AND UPPER(d.categoria_despesa) LIKE '%COMBUST%' THEN d.valor_liquido / ?3
+                   ELSE 0 END) > ?1)",
+        params![
+            parametros.limite_combustivel_litros,
+            parametros.estimar_volume_combustivel,
+            preco_referencia
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM alertas_auditoria WHERE tipo = 'COMBUSTIVEL_SOBREPRECO' AND
+         json_valid(detalhes_json) AND NOT EXISTS (
+            SELECT 1 FROM despesas_parlamentares d
+            WHERE d.id = json_extract(alertas_auditoria.detalhes_json, '$.despesa_id')
+              AND d.detalhes_litros > 0 AND UPPER(d.categoria_despesa) LIKE '%COMBUST%'
+              AND d.valor_liquido / d.detalhes_litros > ?1)",
+        [preco_referencia * fator_sobrepreco],
+    )?;
 
     // 1. Sincroniza anomalias de combustível da CEAP com base no limite dinâmico configurado
     {
         let limite_litros = parametros.limite_combustivel_litros;
-        let valor_ref = limite_litros * 5.80;
+        let valor_ref = limite_litros * preco_referencia;
         let mut stmt = conn.prepare(
             "SELECT id, parlamentar_nome, parlamentar_cpf_mascarado, fornecedor_nome,
-                    data_emissao, valor_liquido, detalhes_litros, flag_anomalia, categoria_despesa
+                    data_emissao, valor_liquido, detalhes_litros, flag_anomalia, categoria_despesa, url_nota_fiscal
              FROM despesas_parlamentares
              WHERE detalhes_litros > ?1
-                OR (UPPER(categoria_despesa) LIKE '%COMBUST%' AND valor_liquido > ?2)",
+                OR (?3 AND COALESCE(detalhes_litros, 0) <= 0 AND UPPER(categoria_despesa) LIKE '%COMBUST%' AND valor_liquido > ?2)",
         )?;
 
-        let despesas = stmt.query_map(params![limite_litros, valor_ref], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, f64>(5)?,
-                row.get::<_, Option<f64>>(6)?,
-                row.get::<_, bool>(7)?,
-                row.get::<_, String>(8)?,
-            ))
-        })?;
+        let despesas = stmt.query_map(
+            params![
+                limite_litros,
+                valor_ref,
+                parametros.estimar_volume_combustivel
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, Option<f64>>(6)?,
+                    row.get::<_, bool>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            },
+        )?;
 
         for d in despesas {
-            let (id, parl, cpf, forn, dt, val, litros, _flag, cat) = d?;
-            let litros_val = litros.unwrap_or_else(|| {
-                if cat.to_uppercase().contains("COMBUST") {
-                    (val / 5.80 * 10.0).round() / 10.0
-                } else {
-                    0.0
-                }
-            });
+            let (id, parl, cpf, forn, dt, val, litros, _flag, _cat, url_nota) = d?;
+            let Some((litros_val, estimado)) = parametros.volume_combustivel(&_cat, val, litros)
+            else {
+                continue;
+            };
 
             if litros_val <= limite_litros {
                 continue;
             }
 
             // Verifica se já foi sincronizado
-            let chave_detalhes = format!("\"despesa_id\":{}", id);
-            let ja_existe: bool = conn
-                .query_row(
-                    "SELECT 1 FROM alertas_auditoria WHERE tipo = 'COMBUSTIVEL' AND detalhes_json LIKE ?1 LIMIT 1",
-                    [format!("%{}%", chave_detalhes)],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false);
-
-            if !ja_existe {
+            {
                 let ano = dt.get(0..4).and_then(|y| y.parse::<i32>().ok());
-                let severidade = if litros_val > (limite_litros * 1.5) { "CRITICA" } else { "ALTA" };
+                let severidade = if estimado {
+                    "MEDIA"
+                } else if litros_val > (limite_litros * 1.5) {
+                    "CRITICA"
+                } else {
+                    "ALTA"
+                };
                 let detalhes = serde_json::json!({
                     "despesa_id": id,
                     "litros": litros_val,
                     "limite_configurado": limite_litros,
                     "fornecedor": forn,
                     "data": dt,
-                    "categoria": cat,
-                    "regra": format!("Volume faturado supera capacidade configurada (> {:.0}L)", limite_litros),
-                    "fundamentacao": "Instrução Normativa CEAP e parâmetro de auditoria configurado",
+                    "volume_estimado": estimado,
+                    "preco_referencia": preco_referencia,
+                    "referencia_periodo": parametros.referencia_combustivel_periodo,
+                    "referencia_local": parametros.referencia_combustivel_local,
+                    "referencia_url": parametros.referencia_combustivel_url,
+                    "fonte_primaria_url": url_nota,
+                    "confianca": if estimado { "ESTIMATIVA" } else { "VOLUME_DECLARADO" },
+                    "regra": format!("Volume declarado ou estimado supera o limite configurado (> {:.0} L)", limite_litros),
+                    "fundamentacao": "Triagem pelo parâmetro de auditoria configurado; requer conferência da nota fiscal",
                     "fonte_primaria": "Câmara dos Deputados (CEAP)"
                 });
 
@@ -220,10 +281,31 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                     &NovoAlerta {
                         tipo: "COMBUSTIVEL".to_string(),
                         severidade: severidade.to_string(),
-                        titulo: format!("Abastecimento Anômalo ({:.1}L) - {}", litros_val, parl),
+                        titulo: format!(
+                            "{} ({:.1}L) - {}",
+                            if estimado {
+                                "Estimativa de Volume Elevado"
+                            } else {
+                                "Volume Declarado Elevado"
+                            },
+                            litros_val,
+                            parl
+                        ),
                         descricao: format!(
-                            "Volume faturado de {:.1}L em {} supera o limite configurado de auditoria (> {:.0} litros).",
-                            litros_val, forn, limite_litros
+                            "{} de {:.1} L em {} supera o limite configurado de {:.0} L. {}",
+                            if estimado {
+                                "Volume estimado"
+                            } else {
+                                "Volume declarado"
+                            },
+                            litros_val,
+                            forn,
+                            limite_litros,
+                            if estimado {
+                                format!("Estimado pelo valor da despesa dividido por R$ {:.2}/L (referência configurada: {}, {}). A estimativa requer conferência da nota fiscal e não comprova um abastecimento único.", preco_referencia, parametros.referencia_combustivel_local, parametros.referencia_combustivel_periodo)
+                            } else {
+                                "O volume declarado requer conferência do veículo e da abrangência da nota fiscal.".to_string()
+                            }
                         ),
                         alvo_nome: parl,
                         alvo_documento: cpf,
@@ -235,10 +317,117 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         detalhes_json: Some(detalhes.to_string()),
                     },
                 )?;
-                novos_inseridos += 1;
             }
         }
     }
+
+    // 4. Sincroniza sobrepreço de combustível da CEAP
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, parlamentar_nome, parlamentar_cpf_mascarado, fornecedor_nome,
+                    data_emissao, valor_liquido, detalhes_litros, url_nota_fiscal
+             FROM despesas_parlamentares
+             WHERE detalhes_litros > 0 AND UPPER(categoria_despesa) LIKE '%COMBUST%'",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, Option<String>>(7)?,
+            ))
+        })?;
+
+        for item in rows {
+            let item = item?;
+            let (id, parl, cpf, forn, dt, val, litros, url_nota) = item;
+            let preco_litro = val / litros;
+            if preco_litro > preco_referencia * fator_sobrepreco {
+                {
+                    let ano = dt.get(0..4).and_then(|y| y.parse::<i32>().ok());
+                    let severidade = if preco_litro > preco_referencia * 2.0 {
+                        "CRITICA"
+                    } else {
+                        "ALTA"
+                    };
+                    let detalhes = serde_json::json!({
+                        "despesa_id": id,
+                        "preco_litro": preco_litro,
+                        "preco_referencia": preco_referencia,
+                        "sobrepreco_percentual": parametros.sobrepreco_combustivel_percentual,
+                        "referencia_periodo": parametros.referencia_combustivel_periodo,
+                        "referencia_local": parametros.referencia_combustivel_local,
+                        "referencia_url": parametros.referencia_combustivel_url,
+                        "volume_litros": litros,
+                        "fonte_primaria_url": url_nota,
+                        "valor_total": val,
+                        "fornecedor": forn,
+                        "data_emissao": dt,
+                        "regra": "Preço por litro supera a margem configurada sobre a referência informada"
+                    });
+
+                    registrar_alerta(
+                        conn,
+                        &NovoAlerta {
+                            tipo: "COMBUSTIVEL_SOBREPRECO".to_string(),
+                            severidade: severidade.to_string(),
+                            titulo: format!("Sobrepreço de Combustível (R$ {:.2}/L) - {}", preco_litro, parl),
+                            descricao: format!(
+                                "Preço de R$ {:.2}/L supera a margem configurada de {:.1}% sobre R$ {:.2}/L (referência informada: {}, {}). Total de R$ {:.2} ({:.1} L) em {}. Indício sujeito à conferência da nota fiscal.",
+                                preco_litro, parametros.sobrepreco_combustivel_percentual, preco_referencia,
+                                parametros.referencia_combustivel_local, parametros.referencia_combustivel_periodo, val, litros, forn
+                            ),
+                            alvo_nome: parl,
+                            alvo_documento: cpf,
+                            municipio: None,
+                            uf: None,
+                            ano,
+                            valor_envolvido: Some(val),
+                            fonte_dado: "CEAP/REFERENCIA_CONFIGURADA".to_string(),
+                            detalhes_json: Some(detalhes.to_string()),
+                        },
+                    )?;
+                }
+            }
+        }
+    }
+
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM alertas_auditoria WHERE id > ?1",
+        [ids_antes],
+        |r| r.get(0),
+    )?)
+}
+
+pub fn sincronizar_alertas_sistema(conn: &Connection) -> Result<usize, storage::StorageError> {
+    let params = crate::routes::config::carregar_parametros_auditoria(conn);
+    sincronizar_alertas_sistema_com_parametros(conn, &params)
+}
+
+pub fn sincronizar_alertas_sistema_com_parametros(
+    conn: &Connection,
+    parametros: &crate::routes::config::ParametrosAuditoria,
+) -> Result<usize, storage::StorageError> {
+    if conn.is_autocommit() {
+        let tx = storage::rusqlite::Transaction::new_unchecked(
+            conn,
+            storage::rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let result = sincronizar_alertas_sistema_com_parametros(&tx, parametros)?;
+        tx.commit()?;
+        return Ok(result);
+    }
+    let ids_antes: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(id), 0) FROM alertas_auditoria",
+        [],
+        |r| r.get(0),
+    )?;
+    sincronizar_alertas_combustivel(conn, parametros)?;
 
     // 2. Sincroniza conflitos OAB da tabela alertas_incompatibilidade
     {
@@ -264,16 +453,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
 
         for c in conflitos {
             let (id, nome, cpf, uf, cargo, orgao, dt, motivo) = c?;
-            let chave_detalhes = format!("\"conflito_id\":{}", id);
-            let ja_existe: bool = conn
-                .query_row(
-                    "SELECT 1 FROM alertas_auditoria WHERE tipo = 'CONFLITO_OAB' AND detalhes_json LIKE ?1 LIMIT 1",
-                    [format!("%{}%", chave_detalhes)],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false);
-
-            if !ja_existe {
+            {
                 let ano = dt.get(0..4).and_then(|y| y.parse::<i32>().ok());
                 let detalhes = serde_json::json!({
                     "conflito_id": id,
@@ -299,7 +479,6 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         detalhes_json: Some(detalhes.to_string()),
                     },
                 )?;
-                novos_inseridos += 1;
             }
         }
     }
@@ -331,17 +510,12 @@ pub fn sincronizar_alertas_sistema_com_parametros(
 
         for a in aux_alertas {
             let (id, nome, cpf, motivo, detalhes, valor, cargo, ano, uf, mun) = a?;
-            let chave_detalhes = format!("\"auxilio_alerta_id\":{}", id);
-            let ja_existe: bool = conn
-                .query_row(
-                    "SELECT 1 FROM alertas_auditoria WHERE tipo = 'AUXILIO_EMERGENCIAL' AND detalhes_json LIKE ?1 LIMIT 1",
-                    [format!("%{}%", chave_detalhes)],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false);
-
-            if !ja_existe {
-                let severidade = if motivo.contains("MANDATO") { "CRITICA" } else { "ALTA" };
+            {
+                let severidade = if motivo.contains("MANDATO") {
+                    "CRITICA"
+                } else {
+                    "ALTA"
+                };
                 let detalhes_obj = serde_json::json!({
                     "auxilio_alerta_id": id,
                     "motivo": motivo,
@@ -355,7 +529,9 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         tipo: "AUXILIO_EMERGENCIAL".to_string(),
                         severidade: severidade.to_string(),
                         titulo: format!("Auxílio Emergencial Indevido - {}", nome),
-                        descricao: detalhes.unwrap_or_else(|| format!("Recebimento irregular de benefício (motivo: {})", motivo)),
+                        descricao: detalhes.unwrap_or_else(|| {
+                            format!("Recebimento irregular de benefício (motivo: {})", motivo)
+                        }),
                         alvo_nome: nome,
                         alvo_documento: cpf,
                         municipio: mun,
@@ -366,81 +542,6 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         detalhes_json: Some(detalhes_obj.to_string()),
                     },
                 )?;
-                novos_inseridos += 1;
-            }
-        }
-    }
-
-    // 4. Sincroniza sobrepreço de combustível da CEAP
-    {
-        let mut stmt = conn.prepare(
-            "SELECT id, parlamentar_nome, parlamentar_cpf_mascarado, fornecedor_nome,
-                    data_emissao, valor_liquido, detalhes_litros
-             FROM despesas_parlamentares
-             WHERE detalhes_litros IS NOT NULL AND detalhes_litros > 5.0",
-        )?;
-
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, f64>(5)?,
-                row.get::<_, f64>(6)?,
-            ))
-        })?;
-
-        for item in rows.flatten() {
-            let (id, parl, cpf, forn, dt, val, litros) = item;
-            let preco_litro = (val / litros * 100.0).round() / 100.0;
-            if preco_litro > 8.70 {
-                let chave = format!("\"despesa_id\":{}", id);
-                let ja_existe: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM alertas_auditoria WHERE tipo = 'COMBUSTIVEL_SOBREPRECO' AND detalhes_json LIKE ?1 LIMIT 1",
-                        [format!("%{}%", chave)],
-                        |_| Ok(true),
-                    )
-                    .unwrap_or(false);
-
-                if !ja_existe {
-                    let ano = dt.get(0..4).and_then(|y| y.parse::<i32>().ok());
-                    let severidade = if preco_litro > 12.0 { "CRITICA" } else { "ALTA" };
-                    let detalhes = serde_json::json!({
-                        "despesa_id": id,
-                        "preco_litro": preco_litro,
-                        "preco_referencia_anp": 5.80,
-                        "volume_litros": litros,
-                        "valor_total": val,
-                        "fornecedor": forn,
-                        "data_emissao": dt,
-                        "regra": "Preço por litro faturado supera 150% do valor de referência de mercado ANP"
-                    });
-
-                    registrar_alerta(
-                        conn,
-                        &NovoAlerta {
-                            tipo: "COMBUSTIVEL_SOBREPRECO".to_string(),
-                            severidade: severidade.to_string(),
-                            titulo: format!("Sobrepreço de Combustível (R$ {:.2}/L) - {}", preco_litro, parl),
-                            descricao: format!(
-                                "Abastecimento faturado a R$ {:.2}/L excede em mais de 50% o valor de referência ANP (R$ 5.80/L). Total de R$ {:.2} ({:.1}L) em {}.",
-                                preco_litro, val, litros, forn
-                            ),
-                            alvo_nome: parl,
-                            alvo_documento: cpf,
-                            municipio: None,
-                            uf: None,
-                            ano,
-                            valor_envolvido: Some(val),
-                            fonte_dado: "CEAP/ANP".to_string(),
-                            detalhes_json: Some(detalhes.to_string()),
-                        },
-                    )?;
-                    novos_inseridos += 1;
-                }
             }
         }
     }
@@ -454,7 +555,14 @@ pub fn sincronizar_alertas_sistema_com_parametros(
              ORDER BY c.politico_id, c.ano_eleicao ASC",
         )?;
 
-        let mut politicos_decls: std::collections::BTreeMap<i64, (String, Option<String>, Vec<auditor::DeclaracaoPatrimonioAno>)> = std::collections::BTreeMap::new();
+        let mut politicos_decls: std::collections::BTreeMap<
+            i64,
+            (
+                String,
+                Option<String>,
+                Vec<auditor::DeclaracaoPatrimonioAno>,
+            ),
+        > = std::collections::BTreeMap::new();
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -466,9 +574,12 @@ pub fn sincronizar_alertas_sistema_com_parametros(
             ))
         })?;
 
-        for r in rows.flatten() {
+        for r in rows {
+            let r = r?;
             let (pol_id, nome, cpf, ano, cargo, total_bens) = r;
-            let entry = politicos_decls.entry(pol_id).or_insert_with(|| (nome, cpf, Vec::new()));
+            let entry = politicos_decls
+                .entry(pol_id)
+                .or_insert_with(|| (nome, cpf, Vec::new()));
             if let Some(last) = entry.2.last_mut() {
                 if last.ano == ano {
                     if total_bens > last.valor_total {
@@ -489,18 +600,10 @@ pub fn sincronizar_alertas_sistema_com_parametros(
             if decls.len() < 2 {
                 continue;
             }
-            let alertas = auditor::auditar_evolucao_patrimonial(pol_id, &nome, &decls, 300.0, 200_000.0);
+            let alertas =
+                auditor::auditar_evolucao_patrimonial(pol_id, &nome, &decls, 300.0, 200_000.0);
             for a in alertas {
-                let chave = format!("\"politico_id\":{},\"ano_recente\":{}", pol_id, a.ano_recente);
-                let ja_existe: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM alertas_auditoria WHERE tipo = 'EVOLUCAO_PATRIMONIAL' AND detalhes_json LIKE ?1 LIMIT 1",
-                        [format!("%{}%", chave)],
-                        |_| Ok(true),
-                    )
-                    .unwrap_or(false);
-
-                if !ja_existe {
+                {
                     let detalhes = serde_json::json!({
                         "politico_id": pol_id,
                         "ano_anterior": a.ano_anterior,
@@ -517,7 +620,10 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         &NovoAlerta {
                             tipo: "EVOLUCAO_PATRIMONIAL".to_string(),
                             severidade: a.gravidade,
-                            titulo: format!("Salto Patrimonial Desproporcional (+{:.0}%) - {}", a.variacao_percentual, a.politico_nome),
+                            titulo: format!(
+                                "Salto Patrimonial Desproporcional (+{:.0}%) - {}",
+                                a.variacao_percentual, a.politico_nome
+                            ),
                             descricao: a.motivo,
                             alvo_nome: a.politico_nome,
                             alvo_documento: cpf.clone(),
@@ -529,7 +635,6 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                             detalhes_json: Some(detalhes.to_string()),
                         },
                     )?;
-                    novos_inseridos += 1;
                 }
             }
         }
@@ -565,19 +670,26 @@ pub fn sincronizar_alertas_sistema_com_parametros(
             ))
         })?;
 
-        for r in rows.flatten() {
-            let (rec_id, doador_nome, doador_doc, val_doacao, ano, cand_nome, val_ben, tipo_ben, mun, uf) = r;
-            let chave = format!("\"receita_id\":{}", rec_id);
-            let ja_existe: bool = conn
-                .query_row(
-                    "SELECT 1 FROM alertas_auditoria WHERE tipo = 'DOADOR_INCOMPATIVEL' AND detalhes_json LIKE ?1 LIMIT 1",
-                    [format!("%{}%", chave)],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false);
-
-            if !ja_existe {
-                let severidade = if val_doacao >= 5000.0 { "CRITICA" } else { "ALTA" };
+        for r in rows {
+            let r = r?;
+            let (
+                rec_id,
+                doador_nome,
+                doador_doc,
+                val_doacao,
+                ano,
+                cand_nome,
+                val_ben,
+                tipo_ben,
+                mun,
+                uf,
+            ) = r;
+            {
+                let severidade = if val_doacao >= 5000.0 {
+                    "CRITICA"
+                } else {
+                    "ALTA"
+                };
                 let detalhes = serde_json::json!({
                     "receita_id": rec_id,
                     "beneficio_tipo": tipo_ben,
@@ -608,7 +720,6 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         detalhes_json: Some(detalhes.to_string()),
                     },
                 )?;
-                novos_inseridos += 1;
             }
         }
     }
@@ -635,20 +746,11 @@ pub fn sincronizar_alertas_sistema_com_parametros(
             })
         })?;
 
-        let contratos: Vec<auditor::ContratoEmpresaSocio> = rows.flatten().collect();
+        let contratos: Vec<auditor::ContratoEmpresaSocio> = rows.collect::<Result<Vec<_>, _>>()?;
         if !contratos.is_empty() {
             let alertas = auditor::auditar_socios_comuns_contratos(&contratos);
             for a in alertas {
-                let chave = format!("\"socio\":{:?},\"orgao\":{:?}", a.socio_nome, a.orgao_contratante);
-                let ja_existe: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM alertas_auditoria WHERE tipo = 'CONLUIO_LICITACAO' AND detalhes_json LIKE ?1 LIMIT 1",
-                        [format!("%{}%", chave)],
-                        |_| Ok(true),
-                    )
-                    .unwrap_or(false);
-
-                if !ja_existe {
+                {
                     let detalhes = serde_json::json!({
                         "socio": a.socio_nome,
                         "socio_documento": a.socio_cpf_mascarado,
@@ -665,7 +767,10 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         &NovoAlerta {
                             tipo: "CONLUIO_LICITACAO".to_string(),
                             severidade: a.gravidade,
-                            titulo: format!("Sócios Comuns em Contratos Públicos - {}", a.orgao_contratante),
+                            titulo: format!(
+                                "Sócios Comuns em Contratos Públicos - {}",
+                                a.orgao_contratante
+                            ),
                             descricao: a.motivo,
                             alvo_nome: a.socio_nome,
                             alvo_documento: Some(a.socio_cpf_mascarado),
@@ -677,7 +782,6 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                             detalhes_json: Some(detalhes.to_string()),
                         },
                     )?;
-                    novos_inseridos += 1;
                 }
             }
         }
@@ -709,7 +813,8 @@ pub fn sincronizar_alertas_sistema_com_parametros(
             })
         })?;
 
-        let fornecedores: Vec<auditor::FornecedorCapitalFaturamento> = rows.flatten().collect();
+        let fornecedores: Vec<auditor::FornecedorCapitalFaturamento> =
+            rows.collect::<Result<Vec<_>, _>>()?;
         if !fornecedores.is_empty() {
             let alertas = auditor::auditar_capital_desproporcional(
                 &fornecedores,
@@ -717,16 +822,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                 auditor::LIMITE_FATURAMENTO_PUBLICO_MIN,
             );
             for a in alertas {
-                let chave = format!("\"cnpj\":{:?}", a.cnpj);
-                let ja_existe: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM alertas_auditoria WHERE tipo = 'CAPITAL_DESPROPORCIONAL' AND detalhes_json LIKE ?1 LIMIT 1",
-                        [format!("%{}%", chave)],
-                        |_| Ok(true),
-                    )
-                    .unwrap_or(false);
-
-                if !ja_existe {
+                {
                     let detalhes = serde_json::json!({
                         "cnpj": a.cnpj,
                         "razao_social": a.razao_social,
@@ -741,7 +837,10 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         &NovoAlerta {
                             tipo: "CAPITAL_DESPROPORCIONAL".to_string(),
                             severidade: a.gravidade,
-                            titulo: format!("Capital Social Ínfimo vs Faturamento - {}", a.razao_social),
+                            titulo: format!(
+                                "Capital Social Ínfimo vs Faturamento - {}",
+                                a.razao_social
+                            ),
                             descricao: a.motivo,
                             alvo_nome: a.razao_social,
                             alvo_documento: Some(a.cnpj),
@@ -753,7 +852,6 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                             detalhes_json: Some(detalhes.to_string()),
                         },
                     )?;
-                    novos_inseridos += 1;
                 }
             }
         }
@@ -769,7 +867,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                     COALESCE(d.parlamentar_nome, 'PARLAMENTAR')
              FROM despesas_parlamentares d
              JOIN empresas_qsa q ON q.cnpj_basico = SUBSTR(REPLACE(REPLACE(REPLACE(d.fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', ''), 1, 8)
-             WHERE d.fornecedor_cnpj_cpf IS NOT NULL 
+             WHERE d.fornecedor_cnpj_cpf IS NOT NULL
                AND length(d.fornecedor_cnpj_cpf) >= 14
                AND q.data_inicio_atividade IS NOT NULL AND q.data_inicio_atividade != ''
                AND d.data_emissao IS NOT NULL AND d.data_emissao != ''
@@ -788,21 +886,21 @@ pub fn sincronizar_alertas_sistema_com_parametros(
             let dt_emissao: String = row.get(4)?;
             let valor: f64 = row.get(5)?;
             let parlamentar: String = row.get(6)?;
-            Ok((desp_id, cnpj, nome, dt_inicio, dt_emissao, valor, parlamentar))
+            Ok((
+                desp_id,
+                cnpj,
+                nome,
+                dt_inicio,
+                dt_emissao,
+                valor,
+                parlamentar,
+            ))
         })?;
 
-        for r in rows.flatten() {
+        for r in rows {
+            let r = r?;
             let (desp_id, cnpj, nome, dt_inicio, dt_emissao, valor, parlamentar) = r;
-            let chave = format!("\"despesa_id\":{}", desp_id);
-            let ja_existe: bool = conn
-                .query_row(
-                    "SELECT 1 FROM alertas_auditoria WHERE tipo = 'EMPRESA_RECEM_CRIADA' AND detalhes_json LIKE ?1 LIMIT 1",
-                    [format!("%{}%", chave)],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false);
-
-            if !ja_existe {
+            {
                 let dias_diff = chrono::NaiveDate::parse_from_str(&dt_emissao, "%Y-%m-%d")
                     .ok()
                     .and_then(|d_e| {
@@ -852,7 +950,6 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         detalhes_json: Some(detalhes.to_string()),
                     },
                 )?;
-                novos_inseridos += 1;
             }
         }
     }
@@ -898,7 +995,8 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                                 tipo_vinculo: "SOCIO_FORNECEDOR_CEAP".to_string(),
                             }),
                         ) {
-                            for item in rows.flatten() {
+                            for item in rows {
+            let item = item?;
                                 alvos.push(item);
                             }
                         }
@@ -907,16 +1005,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                     if !alvos.is_empty() {
                         let alertas_nep = auditor::auditar_possivel_parentesco(&nome_completo, &uf, &alvos);
                         for al in alertas_nep {
-                            let chave = format!("\"politico_id\":{},\"alvo_doc\":{:?}", pol_id, al.cnpj_cpf_alvo);
-                            let ja_existe: bool = conn
-                                .query_row(
-                                    "SELECT 1 FROM alertas_auditoria WHERE tipo = 'POSSIVEL_PARENTESCO' AND detalhes_json LIKE ?1 LIMIT 1",
-                                    [format!("%{}%", chave)],
-                                    |_| Ok(true),
-                                )
-                                .unwrap_or(false);
-
-                            if !ja_existe {
+                            {
                                 let severidade = "MEDIA";
                                 let detalhes = serde_json::json!({
                                     "politico_id": pol_id,
@@ -949,7 +1038,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                                         detalhes_json: Some(detalhes.to_string()),
                                     },
                                 )?;
-                                novos_inseridos += 1;
+
                             }
                         }
                     }
@@ -958,7 +1047,11 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         }
     }
 
-    Ok(novos_inseridos)
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM alertas_auditoria WHERE id > ?1",
+        [ids_antes],
+        |r| r.get(0),
+    )?)
 }
 
 pub fn carregar_alertas(
@@ -968,9 +1061,7 @@ pub fn carregar_alertas(
     let limit = filtros.limit.unwrap_or(50).min(200);
     let offset = filtros.offset.unwrap_or(0);
 
-    let mut sql_base = String::from(
-        "FROM alertas_auditoria WHERE 1=1"
-    );
+    let mut sql_base = String::from("FROM alertas_auditoria WHERE 1=1");
     let mut sql_params = Vec::<storage::rusqlite::types::Value>::new();
 
     if let Some(ref mun) = filtros.municipio {
@@ -1072,14 +1163,13 @@ pub async fn alertas_handler(
     State(pool): State<DbPool>,
     Query(filtros): Query<AlertasQueryParams>,
 ) -> Result<Json<AlertasResponse>, StatusCode> {
-    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    // Sincroniza se necessário
-    let _ = sincronizar_alertas_sistema(&conn);
-
-    let response = carregar_alertas(&conn, &filtros)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
+    let response = pool
+        .run_blocking(move |conn| carregar_alertas(conn, &filtros))
+        .await
+        .map_err(|e| {
+            tracing::error!("Erro ao consultar alertas: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(Json(response))
 }
 
@@ -1087,18 +1177,9 @@ pub async fn alertas_handler(
 pub async fn sincronizar_alertas_handler(
     State(pool): State<DbPool>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let conn = pool.get().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"status": "erro", "mensagem": format!("Falha de conexão com SQLite: {e}")})),
-        )
-    })?;
-
-    let novos = sincronizar_alertas_sistema(&conn).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"status": "erro", "mensagem": format!("Falha na sincronização de alertas: {e}")})),
-        )
+    let novos = pool.run_blocking(|conn| sincronizar_alertas_sistema(conn)).await.map_err(|e| {
+        tracing::error!("Falha na auditoria: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"status": "erro", "mensagem": format!("Falha na sincronização de alertas: {e}")})))
     })?;
 
     Ok(Json(serde_json::json!({
@@ -1116,11 +1197,15 @@ pub async fn auxilio_indevido_handler(
 
     // Se a tabela de alertas de auxilio estiver vazia, mas houver registros em beneficios, executa auditoria
     let count_alertas: i64 = conn
-        .query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| {
+            r.get(0)
+        })
         .unwrap_or(0);
     if count_alertas == 0 {
         let count_ben: i64 = conn
-            .query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
         if count_ben > 0 {
             let _ = auditor::executar_auditoria_auxilio_sqlite(&mut conn);
@@ -1128,7 +1213,7 @@ pub async fn auxilio_indevido_handler(
     }
 
     let mut sql = "
-        SELECT 
+        SELECT
             a.id,
             a.politico_id,
             p.nome_completo,
@@ -1148,7 +1233,8 @@ pub async fn auxilio_indevido_handler(
         JOIN politicos p ON a.politico_id = p.id
         LEFT JOIN beneficios_emergenciais b ON a.beneficio_id = b.id
         WHERE 1=1
-    ".to_string();
+    "
+    .to_string();
 
     let mut sql_params: Vec<Box<dyn ToSql>> = Vec::new();
 
@@ -1169,31 +1255,36 @@ pub async fn auxilio_indevido_handler(
 
     sql.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
 
-    let mut stmt = conn.prepare(&sql).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let param_refs: Vec<&dyn ToSql> = sql_params.iter().map(|p| p.as_ref()).collect();
 
-    let rows = stmt.query_map(param_refs.as_slice(), |row| {
-        Ok(AlertaAuxilioResponseItem {
-            id: row.get(0)?,
-            politico_id: row.get(1)?,
-            politico_nome: row.get(2)?,
-            cpf_mascarado: row.get(3)?,
-            beneficio_id: row.get(4)?,
-            motivo: row.get(5)?,
-            detalhes: row.get(6)?,
-            valor_recebido: row.get(7)?,
-            total_bens: row.get(8)?,
-            cargo_ou_mandato: row.get(9)?,
-            ano_exercicio: row.get(10)?,
-            status_analise: row.get(11)?,
-            mes_disponibilizacao: row.get(12)?,
-            parcela: row.get(13)?,
-            data_alerta: row.get(14)?,
+    let rows = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            Ok(AlertaAuxilioResponseItem {
+                id: row.get(0)?,
+                politico_id: row.get(1)?,
+                politico_nome: row.get(2)?,
+                cpf_mascarado: row.get(3)?,
+                beneficio_id: row.get(4)?,
+                motivo: row.get(5)?,
+                detalhes: row.get(6)?,
+                valor_recebido: row.get(7)?,
+                total_bens: row.get(8)?,
+                cargo_ou_mandato: row.get(9)?,
+                ano_exercicio: row.get(10)?,
+                status_analise: row.get(11)?,
+                mes_disponibilizacao: row.get(12)?,
+                parcela: row.get(13)?,
+                data_alerta: row.get(14)?,
+            })
         })
-    }).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut alertas = Vec::new();
-    for item in rows.flatten() {
+    for item in rows {
+        let item = item.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         alertas.push(item);
     }
 
@@ -1239,7 +1330,8 @@ mod tests {
                 fonte_dado: "PNCP".to_string(),
                 detalhes_json: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         registrar_alerta(
             &conn,
@@ -1257,7 +1349,8 @@ mod tests {
                 fonte_dado: "TSE".to_string(),
                 detalhes_json: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         registrar_alerta(
             &conn,
@@ -1275,7 +1368,8 @@ mod tests {
                 fonte_dado: "OAB/CNA".to_string(),
                 detalhes_json: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 1. Teste de ordenação por severidade (CRITICA -> ALTA -> MEDIA)
         let resp_todas = carregar_alertas(
@@ -1288,7 +1382,8 @@ mod tests {
                 limit: Some(10),
                 offset: Some(0),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(resp_todas.total, 3);
         assert_eq!(resp_todas.alertas[0].severidade, "CRITICA");
@@ -1306,7 +1401,8 @@ mod tests {
                 limit: None,
                 offset: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(resp_sp.total, 2);
         for a in &resp_sp.alertas {
@@ -1324,7 +1420,8 @@ mod tests {
                 limit: None,
                 offset: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(resp_2023.total, 1);
         assert_eq!(resp_2023.alertas[0].tipo, "CONFLITO_OAB");
@@ -1341,7 +1438,8 @@ mod tests {
                 1800.0, 300.0, 1
              )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let novos = sincronizar_alertas_sistema(&conn).unwrap();
         assert_eq!(novos, 1);
@@ -1356,7 +1454,8 @@ mod tests {
                 limit: None,
                 offset: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(resp_combustivel.total, 1);
         assert_eq!(resp_combustivel.alertas[0].alvo_nome, "DEPUTADO X");
@@ -1375,7 +1474,8 @@ mod tests {
                 tipo: "UBIQUIDADE".to_string(),
                 severidade: "ALTA".to_string(),
                 titulo: "Despesas simultâneas a 900 km de distância".to_string(),
-                descricao: "Notas fiscais emitidas no mesmo intervalo de 1h em cidades distantes.".to_string(),
+                descricao: "Notas fiscais emitidas no mesmo intervalo de 1h em cidades distantes."
+                    .to_string(),
                 alvo_nome: "PARLAMENTAR Y".to_string(),
                 alvo_documento: None,
                 municipio: Some("Curitiba".to_string()),
@@ -1385,7 +1485,8 @@ mod tests {
                 fonte_dado: "CEAP".to_string(),
                 detalhes_json: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let app = Router::new()
             .route("/api/v1/auditoria/alertas", get(alertas_handler))
@@ -1399,7 +1500,9 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
         let json: AlertasResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(json.total, 1);
         assert_eq!(json.alertas[0].tipo, "UBIQUIDADE");
@@ -1415,7 +1518,8 @@ mod tests {
             "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado)
              VALUES ('DEPUTADO BENEFICIARIO', 'BENEFICIARIO', '***.888.999-**')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let pol_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -1432,18 +1536,26 @@ mod tests {
         ).unwrap();
 
         let app = Router::new()
-            .route("/api/v1/auditoria/auxilio-indevido", get(auxilio_indevido_handler))
+            .route(
+                "/api/v1/auditoria/auxilio-indevido",
+                get(auxilio_indevido_handler),
+            )
             .with_state(pool);
 
         let req = Request::builder()
-            .uri(format!("/api/v1/auditoria/auxilio-indevido?politico_id={}", pol_id))
+            .uri(format!(
+                "/api/v1/auditoria/auxilio-indevido?politico_id={}",
+                pol_id
+            ))
             .body(Body::empty())
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
         let json: AuxilioIndevidoResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(json.total, 1);
         assert_eq!(json.alertas[0].politico_id, pol_id);
@@ -1472,7 +1584,8 @@ mod tests {
         conn.execute(
             "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('POLITICO SALTO', 'SALTO')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let pol_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -1510,20 +1623,25 @@ mod tests {
                 '2024-02-15', 'CONSULTORIA', 25000.0
              )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let params = crate::routes::config::ParametrosAuditoria::default();
         let novos = sincronizar_alertas_sistema_com_parametros(&conn, &params).unwrap();
         assert!(novos >= 4);
 
-        let alertas = carregar_alertas(&conn, &AlertasQueryParams {
-            municipio: None,
-            ano: None,
-            severidade: None,
-            tipo: None,
-            limit: Some(100),
-            offset: None,
-        }).unwrap();
+        let alertas = carregar_alertas(
+            &conn,
+            &AlertasQueryParams {
+                municipio: None,
+                ano: None,
+                severidade: None,
+                tipo: None,
+                limit: Some(100),
+                offset: None,
+            },
+        )
+        .unwrap();
 
         let tipos: Vec<String> = alertas.alertas.iter().map(|a| a.tipo.clone()).collect();
         assert!(tipos.contains(&"COMBUSTIVEL_SOBREPRECO".to_string()));
@@ -1532,7 +1650,10 @@ mod tests {
         assert!(tipos.contains(&"EMPRESA_RECEM_CRIADA".to_string()));
 
         let app = Router::new()
-            .route("/api/auditoria/sincronizar", post(sincronizar_alertas_handler))
+            .route(
+                "/api/auditoria/sincronizar",
+                post(sincronizar_alertas_handler),
+            )
             .with_state(pool);
 
         let req = Request::builder()
@@ -1543,5 +1664,158 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
+
+#[cfg(test)]
+mod fuel_regressions {
+    use super::*;
+    use crate::routes::config::ParametrosAuditoria;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn fixture() -> DbPool {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        storage::run_migrations(&mut conn).unwrap();
+        for (id, liters, value) in [
+            (10, None, 1800.0),
+            (1, Some(300.0), 1800.0),
+            (100, Some(50.0), 500.0),
+        ] {
+            conn.execute("INSERT INTO despesas_parlamentares (id, casa_legislativa, parlamentar_nome, data_emissao, categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, detalhes_litros, numero_documento) VALUES (?1, 'CAMARA', 'DEPUTADO', '2024-05-10', 'COMBUSTIVEL', 'POSTO', '11222333000144', ?2, ?3, ?4)", params![id, value, liters, id.to_string()]).unwrap();
+        }
+        drop(conn);
+        pool
+    }
+    #[tokio::test]
+    async fn consulta_nao_audita_e_configuracao_recalcula_volumes_precos_e_estimativas() {
+        let pool = fixture();
+        let app = crate::criar_router(pool.clone());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/auditoria/alertas")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM alertas_auditoria", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let mut rules = ParametrosAuditoria {
+            preco_combustivel_referencia: 6.0,
+            referencia_combustivel_periodo: "maio/2024".into(),
+            referencia_combustivel_local: "SP".into(),
+            ..ParametrosAuditoria::default()
+        };
+        async fn save(app: axum::Router, rules: &ParametrosAuditoria) {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/settings/audit-rules")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_string(rules).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        save(app.clone(), &rules).await;
+        let conn = pool.get().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM alertas_auditoria WHERE tipo='COMBUSTIVEL'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        let estimated: (i64, String, String) = conn.query_row("SELECT id, severidade, detalhes_json FROM alertas_auditoria WHERE tipo='COMBUSTIVEL' AND chave_origem='[10]'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(estimated.1, "MEDIA");
+        let details: serde_json::Value = serde_json::from_str(&estimated.2).unwrap();
+        assert_eq!(details["volume_estimado"], true);
+        assert_eq!(details["litros"], 300.0);
+        assert_eq!(details["referencia_local"], "SP");
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM alertas_auditoria WHERE tipo='COMBUSTIVEL_SOBREPRECO'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        drop(conn);
+        save(app.clone(), &rules).await;
+        let conn = pool.get().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT id FROM alertas_auditoria WHERE tipo='COMBUSTIVEL' AND chave_origem='[10]'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            estimated.0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM alertas_auditoria", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        drop(conn);
+        rules.estimar_volume_combustivel = false;
+        rules.preco_combustivel_referencia = 12.0;
+        save(app.clone(), &rules).await;
+        let conn = pool.get().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM alertas_auditoria", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT chave_origem FROM alertas_auditoria", [], |r| r
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            "[1]"
+        );
+        drop(conn);
+        rules.limite_combustivel_litros = 350.0;
+        save(app, &rules).await;
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM alertas_auditoria", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn regras_legadas_recebem_defaults_e_rejeitam_numeros_invalidos() {
+        let legacy = r#"{"limite_combustivel_litros":80,"janela_triangulacao_dias":180,"concentracao_fornecedor_percentual":60}"#;
+        let mut rules: ParametrosAuditoria = serde_json::from_str(legacy).unwrap();
+        assert_eq!(rules.preco_combustivel_referencia, 5.8);
+        rules.preco_combustivel_referencia = 0.0;
+        assert!(rules.validar().is_err());
+        rules.preco_combustivel_referencia = 6.0;
+        rules.limite_combustivel_litros = f64::NAN;
+        assert!(rules.validar().is_err());
     }
 }

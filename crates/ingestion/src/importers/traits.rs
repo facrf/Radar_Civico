@@ -1,7 +1,7 @@
-use std::sync::{Arc, RwLock};
-use std::time::Instant;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Result;
@@ -96,11 +96,7 @@ impl ImportContext {
     pub fn cancel(&self) {
         self.cancellation_token.cancel();
         if let Ok(mut p) = self.progress.write() {
-            p.stage = ImportStage::Cancelado;
-            p.is_running = false;
-            p.finished_at = Some(Utc::now().to_rfc3339());
-            p.message = "Cancelado pelo usuário".to_string();
-            p.elapsed_seconds = self.started_instant.elapsed().as_secs();
+            p.message = "Cancelamento solicitado; aguardando término do processamento atual".into();
         }
     }
 
@@ -109,7 +105,10 @@ impl ImportContext {
             p.stage = stage;
             p.message = message.into();
             p.elapsed_seconds = self.started_instant.elapsed().as_secs();
-            if stage == ImportStage::Concluido || stage == ImportStage::Cancelado || stage == ImportStage::Erro {
+            if stage == ImportStage::Concluido
+                || stage == ImportStage::Cancelado
+                || stage == ImportStage::Erro
+            {
                 p.is_running = false;
                 p.finished_at = Some(Utc::now().to_rfc3339());
             }

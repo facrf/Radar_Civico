@@ -1,4 +1,3 @@
-use storage::rusqlite::Connection;
 use storage::{
     aplicar_pragmas_ingestao, batch_insert_alertas_beneficio, batch_insert_beneficios,
     batch_insert_bens_candidato, batch_insert_candidatos_tse, batch_insert_despesas,
@@ -40,14 +39,17 @@ impl BatchSink {
 
     pub async fn execute_in_transaction<F, R>(&self, f: F) -> Result<R>
     where
-        F: FnOnce(&mut Connection) -> Result<R> + Send + 'static,
+        F: FnOnce(&storage::rusqlite::Transaction<'_>) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
         let pool = self.pool.clone();
         spawn_blocking(move || {
             let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
             aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
-            f(&mut conn)
+            let tx = storage::transaction_immediate(&mut conn)?;
+            let result = f(&tx)?;
+            tx.commit().map_err(storage::StorageError::from)?;
+            Ok(result)
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?
@@ -152,7 +154,8 @@ impl BatchSink {
         spawn_blocking(move || {
             let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
             aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
-            batch_insert_alertas_beneficio(&mut conn, &records).map_err(|e| IngestionError::Storage(e))
+            batch_insert_alertas_beneficio(&mut conn, &records)
+                .map_err(|e| IngestionError::Storage(e))
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?
@@ -194,7 +197,10 @@ pub mod tests {
             },
         ];
 
-        let inserted = sink.insert_receitas(receitas).await.expect("inserir receitas");
+        let inserted = sink
+            .insert_receitas(receitas)
+            .await
+            .expect("inserir receitas");
         assert_eq!(inserted, 2);
 
         let conn = pool.get().unwrap();
@@ -235,8 +241,45 @@ pub mod tests {
 
         let conn = pool.get().unwrap();
         let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM despesas_parlamentares", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(total, 1);
+    }
+}
+
+#[cfg(test)]
+mod transaction_regressions {
+    use super::*;
+    #[tokio::test]
+    async fn erro_do_lote_reverte_transacao_e_restaura_conexao() {
+        let pool = DbPool::open_in_memory_with_size(1).unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch("CREATE TABLE exemplo (id INTEGER)")
+            .unwrap();
+        let sink = BatchSink::new(pool.clone());
+        let result: Result<()> = sink
+            .execute_in_transaction(|tx| {
+                tx.execute("INSERT INTO exemplo VALUES (1)", [])
+                    .map_err(IngestionError::Sqlite)?;
+                Err(IngestionError::Custom(
+                    "Erro deliberado de processamento".into(),
+                ))
+            })
+            .await;
+        assert!(result.is_err());
+        let conn = pool.get().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM exemplo", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA cache_size", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            -64000
+        );
     }
 }

@@ -1,15 +1,17 @@
+use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::time::Duration;
 use storage::rusqlite::Connection;
 use storage::{
     batch_insert_bens_candidato, batch_insert_candidatos_tse, batch_insert_despesas,
     batch_insert_receitas, NovaDespesa, NovaReceita, NovoBemCandidato, NovoCandidatoTse,
 };
+use tokio::io::AsyncWriteExt;
 
 use crate::error::{IngestionError, Result};
-use crate::normalizer::{converter_latin1_para_utf8, limpar_cnpj, mascarar_cpf};
+use crate::normalizer::{limpar_cnpj, mascarar_cpf};
 
 pub const LOTE_BATCH_SIZE: usize = 25_000;
 
@@ -49,7 +51,11 @@ fn parse_float_br(val: &str) -> f64 {
         return 0.0;
     }
     if clean.contains(',') && clean.contains('.') {
-        clean.replace('.', "").replace(',', ".").parse::<f64>().unwrap_or(0.0)
+        clean
+            .replace('.', "")
+            .replace(',', ".")
+            .parse::<f64>()
+            .unwrap_or(0.0)
     } else if clean.contains(',') {
         clean.replace(',', ".").parse::<f64>().unwrap_or(0.0)
     } else {
@@ -158,7 +164,10 @@ pub async fn descobrir_urls_tse_com_base(
             if slug == "prestacao-contas-eleitorais-candidatos" {
                 let aliases = [
                     format!("prestacao-de-contas-eleitorais-{}", ano),
-                    format!("dadosabertos-tse-jus-br-dataset-prestacao-de-contas-eleitorais-{}", ano),
+                    format!(
+                        "dadosabertos-tse-jus-br-dataset-prestacao-de-contas-eleitorais-{}",
+                        ano
+                    ),
                 ];
                 for alias_id in &aliases {
                     let alias_url = format!(
@@ -199,8 +208,7 @@ pub async fn descobrir_urls_tse_com_base(
                 }
                 let fmt = res.format.trim().to_uppercase();
                 let u = res.url.trim();
-                if (fmt == "ZIP" || u.to_lowercase().ends_with(".zip"))
-                    && !urls.contains(&res.url)
+                if (fmt == "ZIP" || u.to_lowercase().ends_with(".zip")) && !urls.contains(&res.url)
                 {
                     urls.push(res.url);
                 }
@@ -293,6 +301,9 @@ fn buscar_candidatura_id(
             |r| r.get(0),
         )
         .ok();
+    if cache.len() >= 100_000 {
+        cache.clear();
+    }
     cache.insert(sq.to_string(), res);
     res
 }
@@ -302,23 +313,35 @@ pub fn processar_csv_tse_str(
     csv_str: &str,
     batch_size: usize,
 ) -> Result<usize> {
-    processar_csv_tse_str_com_progresso(conn, csv_str, batch_size, |_| {})
+    processar_csv_tse_str_com_progresso(conn, csv_str, batch_size, |n| {
+        tracing::trace!(registros = n, "Lote TSE persistido")
+    })
 }
 
 pub fn processar_csv_tse_str_com_progresso<F>(
     conn: &mut Connection,
     csv_str: &str,
     batch_size: usize,
-    mut on_batch: F,
+    on_batch: F,
 ) -> Result<usize>
 where
     F: FnMut(usize),
 {
+    processar_csv_tse_reader_com_progresso(conn, csv_str.as_bytes(), batch_size, on_batch)
+}
+
+pub fn processar_csv_tse_reader_com_progresso<R: Read, F: FnMut(usize)>(
+    conn: &mut Connection,
+    input: R,
+    batch_size: usize,
+    mut on_batch: F,
+) -> Result<usize> {
+    let batch_size = batch_size.clamp(1, LOTE_BATCH_SIZE);
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(b';')
         .has_headers(true)
         .flexible(true)
-        .from_reader(csv_str.as_bytes());
+        .from_reader(input);
 
     let headers = reader
         .headers()
@@ -330,18 +353,25 @@ where
     let mut total_inseridos = 0;
     let mut sq_cache = std::collections::HashMap::<String, Option<i64>>::new();
 
-    if (header_line.contains("VR_BEM") || header_line.contains("DS_TIPO_BEM") || header_line.contains("CD_TIPO_BEM"))
+    if (header_line.contains("VR_BEM")
+        || header_line.contains("DS_TIPO_BEM")
+        || header_line.contains("CD_TIPO_BEM"))
         && !header_line.contains("NM_CANDIDATO")
     {
         // 1. Bens de Candidatos
-        let col_tipo = find_col_idx(&headers, &["DS_TIPO_BEM_CANDIDATO", "CD_TIPO_BEM_CANDIDATO", "TIPO_BEM"]);
+        let col_tipo = find_col_idx(
+            &headers,
+            &["DS_TIPO_BEM_CANDIDATO", "CD_TIPO_BEM_CANDIDATO", "TIPO_BEM"],
+        );
         let col_desc = find_col_idx(&headers, &["DS_BEM_CANDIDATO", "DESCRICAO", "DETALHE_BEM"]);
         let col_valor = find_col_idx(&headers, &["VR_BEM_CANDIDATO", "VALOR_BEM", "VALOR"]);
         let col_sq = find_col_idx(&headers, &["SQ_CANDIDATO"]);
 
         let mut batch: Vec<NovoBemCandidato> = Vec::with_capacity(batch_size);
 
-        for record in reader.records().flatten() {
+        for record in reader.records() {
+            let record = record
+                .map_err(|e| IngestionError::Parse(format!("Registro CSV TSE inválido: {e}")))?;
             let tipo = col_tipo
                 .and_then(|i| record.get(i))
                 .unwrap_or("OUTROS BENS")
@@ -379,9 +409,14 @@ where
             total_inseridos += n;
             on_batch(n);
         }
-    } else if header_line.contains("VR_RECEITA") || (header_line.contains("DOADOR") && header_line.contains("VALOR")) {
+    } else if header_line.contains("VR_RECEITA")
+        || (header_line.contains("DOADOR") && header_line.contains("VALOR"))
+    {
         // 2. Receitas de Campanha
-        let col_doc = find_col_idx(&headers, &["NR_CPF_CNPJ_DOADOR", "DOADOR_CPF_CNPJ", "CPF_CNPJ_DOADOR"]);
+        let col_doc = find_col_idx(
+            &headers,
+            &["NR_CPF_CNPJ_DOADOR", "DOADOR_CPF_CNPJ", "CPF_CNPJ_DOADOR"],
+        );
         let col_nome = find_col_idx(&headers, &["NM_DOADOR", "DOADOR_NOME", "NOME_DOADOR"]);
         let col_valor = find_col_idx(&headers, &["VR_RECEITA", "VALOR_RECEITA", "VALOR"]);
         let col_data = find_col_idx(&headers, &["DT_RECEITA", "DATA_RECEITA", "DATA"]);
@@ -391,14 +426,35 @@ where
 
         let mut batch: Vec<NovaReceita> = Vec::with_capacity(batch_size);
 
-        for record in reader.records().flatten() {
-            let doc_raw = col_doc.and_then(|i| record.get(i)).unwrap_or("00000000000").trim();
+        for record in reader.records() {
+            let record = record
+                .map_err(|e| IngestionError::Parse(format!("Registro CSV TSE inválido: {e}")))?;
+            let doc_raw = col_doc
+                .and_then(|i| record.get(i))
+                .unwrap_or("00000000000")
+                .trim();
             let doc = limpar_cnpj(doc_raw);
-            let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("DOADOR").trim().to_string();
-            let valor = col_valor.and_then(|i| record.get(i)).map(parse_float_br).unwrap_or(0.0);
-            let data = col_data.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            let origem = col_origem.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            let desc = col_desc.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            let nome = col_nome
+                .and_then(|i| record.get(i))
+                .unwrap_or("DOADOR")
+                .trim()
+                .to_string();
+            let valor = col_valor
+                .and_then(|i| record.get(i))
+                .map(parse_float_br)
+                .unwrap_or(0.0);
+            let data = col_data
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let origem = col_origem
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let desc = col_desc
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
 
             let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
             let cand_id = buscar_candidatura_id(conn, &mut sq_cache, sq);
@@ -428,26 +484,62 @@ where
             total_inseridos += n;
             on_batch(n);
         }
-    } else if header_line.contains("VR_DESPESA") || (header_line.contains("FORNECEDOR") && header_line.contains("DESPESA")) {
+    } else if header_line.contains("VR_DESPESA")
+        || (header_line.contains("FORNECEDOR") && header_line.contains("DESPESA"))
+    {
         // 3. Despesas de Campanha
-        let col_doc = find_col_idx(&headers, &["NR_CPF_CNPJ_FORNECEDOR", "FORNECEDOR_CPF_CNPJ", "CPF_CNPJ_FORNECEDOR"]);
-        let col_nome = find_col_idx(&headers, &["NM_FORNECEDOR", "FORNECEDOR_NOME", "NOME_FORNECEDOR"]);
+        let col_doc = find_col_idx(
+            &headers,
+            &[
+                "NR_CPF_CNPJ_FORNECEDOR",
+                "FORNECEDOR_CPF_CNPJ",
+                "CPF_CNPJ_FORNECEDOR",
+            ],
+        );
+        let col_nome = find_col_idx(
+            &headers,
+            &["NM_FORNECEDOR", "FORNECEDOR_NOME", "NOME_FORNECEDOR"],
+        );
         let col_valor = find_col_idx(&headers, &["VR_DESPESA", "VALOR_DESPESA", "VALOR"]);
         let col_data = find_col_idx(&headers, &["DT_DESPESA", "DATA_DESPESA", "DATA"]);
-        let col_tipo = find_col_idx(&headers, &["DS_DESPESA", "TIPO_DESPESA", "DS_ORIGEM_DESPESA"]);
+        let col_tipo = find_col_idx(
+            &headers,
+            &["DS_DESPESA", "TIPO_DESPESA", "DS_ORIGEM_DESPESA"],
+        );
         let col_desc = find_col_idx(&headers, &["DS_DESPESA", "DESCRICAO"]);
         let col_sq = find_col_idx(&headers, &["SQ_CANDIDATO"]);
 
         let mut batch: Vec<NovaDespesa> = Vec::with_capacity(batch_size);
 
-        for record in reader.records().flatten() {
-            let doc_raw = col_doc.and_then(|i| record.get(i)).unwrap_or("00000000000100").trim();
+        for record in reader.records() {
+            let record = record
+                .map_err(|e| IngestionError::Parse(format!("Registro CSV TSE inválido: {e}")))?;
+            let doc_raw = col_doc
+                .and_then(|i| record.get(i))
+                .unwrap_or("00000000000100")
+                .trim();
             let doc = limpar_cnpj(doc_raw);
-            let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("FORNECEDOR").trim().to_string();
-            let valor = col_valor.and_then(|i| record.get(i)).map(parse_float_br).unwrap_or(0.0);
-            let data = col_data.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            let tipo = col_tipo.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            let desc = col_desc.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            let nome = col_nome
+                .and_then(|i| record.get(i))
+                .unwrap_or("FORNECEDOR")
+                .trim()
+                .to_string();
+            let valor = col_valor
+                .and_then(|i| record.get(i))
+                .map(parse_float_br)
+                .unwrap_or(0.0);
+            let data = col_data
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let tipo = col_tipo
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let desc = col_desc
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
 
             let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
             let cand_id = buscar_candidatura_id(conn, &mut sq_cache, sq);
@@ -498,7 +590,9 @@ where
 
         let mut batch: Vec<NovoCandidatoTse> = Vec::with_capacity(batch_size);
 
-        for record in reader.records().flatten() {
+        for record in reader.records() {
+            let record = record
+                .map_err(|e| IngestionError::Parse(format!("Registro CSV TSE inválido: {e}")))?;
             let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
             if sq.is_empty() || sq.eq_ignore_ascii_case("SQ_CANDIDATO") {
                 continue;
@@ -508,23 +602,56 @@ where
                 .and_then(|i| record.get(i))
                 .and_then(|s| s.trim().parse::<i32>().ok())
                 .unwrap_or(2024);
-            let uf = col_uf.and_then(|i| record.get(i)).unwrap_or("BR").trim().to_string();
+            let uf = col_uf
+                .and_then(|i| record.get(i))
+                .unwrap_or("BR")
+                .trim()
+                .to_string();
             let raw_cargo = col_cargo.and_then(|i| record.get(i)).unwrap_or("").trim();
             let cargo = normalizar_cargo(raw_cargo);
             if cargo == "INDEFINIDO" {
                 continue;
             }
-            let nr = col_nr.and_then(|i| record.get(i)).and_then(|s| s.trim().parse::<i32>().ok());
-            let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("CANDIDATO").trim().to_string();
-            let urna = col_urna.and_then(|i| record.get(i)).unwrap_or(&nome).trim().to_string();
+            let nr = col_nr
+                .and_then(|i| record.get(i))
+                .and_then(|s| s.trim().parse::<i32>().ok());
+            let nome = col_nome
+                .and_then(|i| record.get(i))
+                .unwrap_or("CANDIDATO")
+                .trim()
+                .to_string();
+            let urna = col_urna
+                .and_then(|i| record.get(i))
+                .unwrap_or(&nome)
+                .trim()
+                .to_string();
             let raw_cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
             let cpf = mascarar_cpf(raw_cpf);
-            let partido = col_partido.and_then(|i| record.get(i)).unwrap_or("PARTIDO").trim().to_string();
-            let municipio = col_municipio.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            let sit = col_sit.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            let ocup = col_ocup.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            let inst = col_inst.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            let nasc = col_nasc.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            let partido = col_partido
+                .and_then(|i| record.get(i))
+                .unwrap_or("PARTIDO")
+                .trim()
+                .to_string();
+            let municipio = col_municipio
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let sit = col_sit
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let ocup = col_ocup
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let inst = col_inst
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let nasc = col_nasc
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
 
             batch.push(NovoCandidatoTse {
                 sq_candidato: sq.to_string(),
@@ -563,41 +690,128 @@ where
     Ok(total_inseridos)
 }
 
-pub fn processar_zip_tse_bytes(conn: &mut Connection, zip_bytes: &[u8]) -> Result<usize> {
-    let cursor = std::io::Cursor::new(zip_bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
+/// Limites de disco/descompressão; memória permanece limitada ao buffer e ao lote.
+pub const MAX_DOWNLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub const MAX_ZIP_ENTRY_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub const MAX_ZIP_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+
+pub struct LimitedRead<R> {
+    inner: R,
+    remaining: u64,
+}
+impl<R: Read> LimitedRead<R> {
+    pub fn new(inner: R, maximum: u64) -> Self {
+        Self {
+            inner,
+            remaining: maximum,
+        }
+    }
+}
+impl<R: Read> Read for LimitedRead<R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            let mut probe = [0u8; 1];
+            if self.inner.read(&mut probe)? > 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Limite de descompressão excedido",
+                ));
+            }
+            return Ok(0);
+        }
+        let length = output
+            .len()
+            .min(self.remaining.min(usize::MAX as u64) as usize);
+        let read = self.inner.read(&mut output[..length])?;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+}
+
+/// Converte Windows-1252/Latin-1 em blocos, sem materializar o CSV inteiro.
+struct Latin1Reader<R> {
+    inner: R,
+    decoded: Vec<u8>,
+    position: usize,
+}
+impl<R: Read> Latin1Reader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            decoded: Vec::new(),
+            position: 0,
+        }
+    }
+}
+impl<R: Read> Read for Latin1Reader<R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if self.position == self.decoded.len() {
+            let mut input = [0u8; 8192];
+            let count = self.inner.read(&mut input)?;
+            if count == 0 {
+                return Ok(0);
+            }
+            let (text, _, _) = encoding_rs::WINDOWS_1252.decode(&input[..count]);
+            self.decoded.clear();
+            self.decoded.extend_from_slice(text.as_bytes());
+            self.position = 0;
+        }
+        let count = output.len().min(self.decoded.len() - self.position);
+        output[..count].copy_from_slice(&self.decoded[self.position..self.position + count]);
+        self.position += count;
+        Ok(count)
+    }
+}
+
+pub fn processar_zip_tse_reader<R: Read + Seek, F: FnMut(&str, usize)>(
+    conn: &mut Connection,
+    reader: R,
+    mut on_batch: F,
+) -> Result<usize> {
+    let mut archive = zip::ZipArchive::new(reader)
         .map_err(|e| IngestionError::Zip(format!("Erro ao abrir ZIP TSE: {e}")))?;
-
-    let mut file_names = Vec::new();
-    for i in 0..archive.len() {
-        if let Ok(file) = archive.by_index(i) {
-            file_names.push(file.name().to_string());
+    if archive.len() > 10_000 {
+        return Err(IngestionError::Zip("ZIP contém arquivos demais".into()));
+    }
+    let mut names = Vec::new();
+    let mut total_bytes = 0u64;
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|e| IngestionError::Zip(e.to_string()))?;
+        total_bytes = total_bytes
+            .checked_add(entry.size())
+            .ok_or_else(|| IngestionError::Zip("Tamanho ZIP inválido".into()))?;
+        if entry.size() > MAX_ZIP_ENTRY_BYTES || total_bytes > MAX_ZIP_TOTAL_BYTES {
+            return Err(IngestionError::Zip(
+                "ZIP excede limite de descompressão".into(),
+            ));
         }
+        names.push(entry.name().to_string());
     }
-
-    let selecionados = selecionar_arquivos_zip(&file_names);
-    if selecionados.is_empty() {
-        return Ok(0);
+    let mut total = 0;
+    for name in selecionar_arquivos_zip(&names) {
+        let entry = archive
+            .by_name(&name)
+            .map_err(|e| IngestionError::Zip(e.to_string()))?;
+        let input = Latin1Reader::new(LimitedRead::new(entry, MAX_ZIP_ENTRY_BYTES));
+        total += processar_csv_tse_reader_com_progresso(conn, input, LOTE_BATCH_SIZE, |n| {
+            on_batch(&name, n)
+        })?;
     }
+    Ok(total)
+}
 
-    let mut total_processado = 0;
-
-    for nome_arquivo in selecionados {
-        let mut raw_bytes = Vec::new();
-        {
-            let mut file = archive
-                .by_name(&nome_arquivo)
-                .map_err(|e| IngestionError::Zip(format!("Falha ao acessar {nome_arquivo}: {e}")))?;
-            file.read_to_end(&mut raw_bytes)
-                .map_err(IngestionError::Io)?;
-        }
-
-        let csv_utf8 = converter_latin1_para_utf8(&raw_bytes);
-        let inseridos = processar_csv_tse_str(conn, &csv_utf8, LOTE_BATCH_SIZE)?;
-        total_processado += inseridos;
-    }
-
-    Ok(total_processado)
+pub fn processar_zip_tse_bytes(conn: &mut Connection, zip_bytes: &[u8]) -> Result<usize> {
+    processar_zip_tse_reader(conn, std::io::Cursor::new(zip_bytes), |name, n| {
+        tracing::trace!(arquivo = name, registros = n, "Lote TSE persistido")
+    })
 }
 
 pub fn processar_zip_tse_bytes_com_progresso(
@@ -608,82 +822,58 @@ pub fn processar_zip_tse_bytes_com_progresso(
     total_pacotes: usize,
     start_time: std::time::Instant,
 ) -> Result<usize> {
-    let cursor = std::io::Cursor::new(zip_bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| IngestionError::Zip(format!("Erro ao abrir ZIP TSE: {e}")))?;
-
-    let mut file_names = Vec::new();
-    for i in 0..archive.len() {
-        if let Ok(file) = archive.by_index(i) {
-            file_names.push(file.name().to_string());
-        }
-    }
-
-    let selecionados = selecionar_arquivos_zip(&file_names);
-    if selecionados.is_empty() {
-        return Ok(0);
-    }
-
-    let mut total_processado = 0;
-
-    for nome_arquivo in &selecionados {
-        let display_name = format!("{nome_pacote} -> {nome_arquivo}");
+    processar_zip_tse_reader(conn, std::io::Cursor::new(zip_bytes), |name, n| {
         crate::progress::update_import_progress_batch(
-            &display_name,
+            &format!("{nome_pacote} -> {name}"),
             indice_pacote,
             total_pacotes,
-            0,
+            n as u64,
             start_time,
         );
+    })
+}
 
-        let mut raw_bytes = Vec::new();
-        {
-            let mut file = archive
-                .by_name(nome_arquivo)
-                .map_err(|e| IngestionError::Zip(format!("Falha ao acessar {nome_arquivo}: {e}")))?;
-            file.read_to_end(&mut raw_bytes)
-                .map_err(IngestionError::Io)?;
-        }
-
-        let csv_utf8 = converter_latin1_para_utf8(&raw_bytes);
-        let display_name_clone = display_name.clone();
-        let inseridos = processar_csv_tse_str_com_progresso(
-            conn,
-            &csv_utf8,
-            LOTE_BATCH_SIZE,
-            |lote_qtd| {
-                crate::progress::update_import_progress_batch(
-                    &display_name_clone,
-                    indice_pacote,
-                    total_pacotes,
-                    lote_qtd as u64,
-                    start_time,
-                );
-            },
-        )?;
-        total_processado += inseridos;
+pub async fn baixar_pacote_tse(client: &Client, url: &str) -> Result<tempfile::NamedTempFile> {
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await?
+        .error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_DOWNLOAD_BYTES)
+    {
+        return Err(IngestionError::Zip(
+            "Download TSE excede limite de tamanho".into(),
+        ));
     }
-
-    Ok(total_processado)
+    let temporary = tempfile::NamedTempFile::new()?;
+    let mut file = tokio::fs::File::from_std(temporary.reopen()?);
+    let mut stream = response.bytes_stream();
+    let mut total = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        total += chunk.len() as u64;
+        if total > MAX_DOWNLOAD_BYTES {
+            return Err(IngestionError::Zip(
+                "Download TSE excede limite de tamanho".into(),
+            ));
+        }
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(temporary)
 }
 
 pub async fn baixar_e_processar_pacote_tse(conn: &mut Connection, url: &str) -> Result<usize> {
     let client = Client::builder()
-        .user_agent("RadarCivico/1.0 (Auditoria TSE CKAN)")
-        .timeout(Duration::from_secs(60))
-        .build()
-        .unwrap_or_default();
-
-    let resp = client.get(url).send().await.map_err(IngestionError::Reqwest)?;
-    if !resp.status().is_success() {
-        return Err(IngestionError::Parse(format!(
-            "Falha ao baixar pacote TSE de {url}: status {}",
-            resp.status()
-        )));
-    }
-
-    let bytes = resp.bytes().await.map_err(IngestionError::Reqwest)?;
-    processar_zip_tse_bytes(conn, &bytes)
+        .timeout(Duration::from_secs(120))
+        .build()?;
+    let file = baixar_pacote_tse(&client, url).await?;
+    processar_zip_tse_reader(conn, file.reopen()?, |name, n| {
+        tracing::trace!(arquivo = name, registros = n, "Lote TSE persistido")
+    })
 }
 
 #[cfg(test)]
@@ -733,7 +923,10 @@ mod tests {
         ];
 
         let selecionados = selecionar_arquivos_zip(&arquivos_com_brasil);
-        assert_eq!(selecionados, vec!["consulta_cand_2024_BRASIL.csv".to_string()]);
+        assert_eq!(
+            selecionados,
+            vec!["consulta_cand_2024_BRASIL.csv".to_string()]
+        );
 
         let arquivos_sem_brasil = vec![
             "consulta_cand_2024_AC.csv".to_string(),
@@ -744,7 +937,10 @@ mod tests {
         let selecionados_estados = selecionar_arquivos_zip(&arquivos_sem_brasil);
         assert_eq!(
             selecionados_estados,
-            vec!["consulta_cand_2024_AC.csv".to_string(), "consulta_cand_2024_AL.csv".to_string()]
+            vec![
+                "consulta_cand_2024_AC.csv".to_string(),
+                "consulta_cand_2024_AL.csv".to_string()
+            ]
         );
     }
 
@@ -799,7 +995,9 @@ mod tests {
         });
 
         let base_url = format!("http://127.0.0.1:{}", port);
-        let urls = descobrir_urls_tse_com_base(&base_url, 2024, &["candidatos"]).await.unwrap();
+        let urls = descobrir_urls_tse_com_base(&base_url, 2024, &["candidatos"])
+            .await
+            .unwrap();
 
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://cdn.tse.jus.br/consulta_cand_2024.zip".to_string()));
@@ -828,10 +1026,14 @@ ANO_ELEICAO;SG_UF;DS_CARGO;SQ_CANDIDATO;NR_CANDIDATO;NM_CANDIDATO;NM_URNA_CANDID
             let options = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
 
-            zip_writer.start_file("consulta_cand_2024_SP.csv", options).unwrap();
+            zip_writer
+                .start_file("consulta_cand_2024_SP.csv", options)
+                .unwrap();
             zip_writer.write_all(b"IGNORADO").unwrap();
 
-            zip_writer.start_file("consulta_cand_2024_BRASIL.csv", options).unwrap();
+            zip_writer
+                .start_file("consulta_cand_2024_BRASIL.csv", options)
+                .unwrap();
             zip_writer.write_all(&bytes_latin1).unwrap();
 
             zip_writer.finish().unwrap();
@@ -885,7 +1087,9 @@ SQ_CANDIDATO;DS_TIPO_BEM_CANDIDATO;DS_BEM_CANDIDATO;VR_BEM_CANDIDATO\n\
             let options = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
 
-            zip_writer.start_file("bem_candidato_2024_BRASIL.csv", options).unwrap();
+            zip_writer
+                .start_file("bem_candidato_2024_BRASIL.csv", options)
+                .unwrap();
             zip_writer.write_all(&bytes_latin1).unwrap();
 
             zip_writer.finish().unwrap();
@@ -900,25 +1104,45 @@ SQ_CANDIDATO;DS_TIPO_BEM_CANDIDATO;DS_BEM_CANDIDATO;VR_BEM_CANDIDATO\n\
         assert_eq!(count_bens, 2);
 
         let valor_total: f64 = conn
-            .query_row("SELECT sum(valor_declarado) FROM bens_candidato", [], |r| r.get(0))
+            .query_row("SELECT sum(valor_declarado) FROM bens_candidato", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(valor_total, 570000.0);
     }
 
     #[test]
     fn test_tse_ckan_filtro_recursos_ckan_e_redes_sociais() {
-        assert!(deve_ignorar_recurso_ckan("Fotos dos Candidatos SP", "https://cdn.tse.jus.br/foto_cand2024_SP.zip"));
-        assert!(deve_ignorar_recurso_ckan("Proposta de Governo", "https://cdn.tse.jus.br/proposta_governo_2024.zip"));
-        assert!(deve_ignorar_recurso_ckan("Extrato Bancario", "https://cdn.tse.jus.br/extrato_bancario_2024.zip"));
-        assert!(deve_ignorar_recurso_ckan("FEFC", "https://cdn.tse.jus.br/fefc_2024.zip"));
-        assert!(!deve_ignorar_recurso_ckan("Consulta Cand Brasil", "https://cdn.tse.jus.br/consulta_cand_2024.zip"));
+        assert!(deve_ignorar_recurso_ckan(
+            "Fotos dos Candidatos SP",
+            "https://cdn.tse.jus.br/foto_cand2024_SP.zip"
+        ));
+        assert!(deve_ignorar_recurso_ckan(
+            "Proposta de Governo",
+            "https://cdn.tse.jus.br/proposta_governo_2024.zip"
+        ));
+        assert!(deve_ignorar_recurso_ckan(
+            "Extrato Bancario",
+            "https://cdn.tse.jus.br/extrato_bancario_2024.zip"
+        ));
+        assert!(deve_ignorar_recurso_ckan(
+            "FEFC",
+            "https://cdn.tse.jus.br/fefc_2024.zip"
+        ));
+        assert!(!deve_ignorar_recurso_ckan(
+            "Consulta Cand Brasil",
+            "https://cdn.tse.jus.br/consulta_cand_2024.zip"
+        ));
 
         let arquivos = vec![
             "rede_social_candidato_2024_BRASIL.csv".to_string(),
             "consulta_cand_2024_BRASIL.csv".to_string(),
         ];
         let selecionados = selecionar_arquivos_zip(&arquivos);
-        assert_eq!(selecionados, vec!["consulta_cand_2024_BRASIL.csv".to_string()]);
+        assert_eq!(
+            selecionados,
+            vec!["consulta_cand_2024_BRASIL.csv".to_string()]
+        );
     }
 
     #[test]
@@ -963,10 +1187,53 @@ ANO_ELEICAO;CD_TIPO_ELEICAO;NM_TIPO_ELEICAO;CD_ELEICAO;DS_ELEICAO;DT_ELEICAO;SG_
     #[test]
     fn test_find_col_idx_prioriza_exato_sobre_codigo() {
         let headers = csv::StringRecord::from(vec![
-            "CD_CARGO", "DS_CARGO", "CD_PARTIDO", "SG_PARTIDO", "CD_SIT_TOT_TURNO", "DS_SIT_TOT_TURNO"
+            "CD_CARGO",
+            "DS_CARGO",
+            "CD_PARTIDO",
+            "SG_PARTIDO",
+            "CD_SIT_TOT_TURNO",
+            "DS_SIT_TOT_TURNO",
         ]);
         assert_eq!(find_col_idx(&headers, &["DS_CARGO", "CARGO"]), Some(1));
         assert_eq!(find_col_idx(&headers, &["SG_PARTIDO", "PARTIDO"]), Some(3));
-        assert_eq!(find_col_idx(&headers, &["DS_SIT_TOT_TURNO", "SITUACAO_TOTALIZACAO"]), Some(5));
+        assert_eq!(
+            find_col_idx(&headers, &["DS_SIT_TOT_TURNO", "SITUACAO_TOTALIZACAO"]),
+            Some(5)
+        );
+    }
+}
+
+#[cfg(test)]
+mod streaming_regressions {
+    use super::*;
+    #[test]
+    fn leitor_limitado_rejeita_excesso_sem_truncar_silenciosamente() {
+        let mut reader = LimitedRead::new(std::io::Cursor::new(b"12345"), 4);
+        let mut output = [0u8; 32];
+        assert_eq!(reader.read(&mut output).unwrap(), 4);
+        assert!(reader.read(&mut output).is_err());
+        let mut exact = LimitedRead::new(std::io::Cursor::new(b"1234"), 4);
+        assert_eq!(exact.read(&mut output).unwrap(), 4);
+        assert_eq!(exact.read(&mut output).unwrap(), 0);
+    }
+    #[test]
+    fn latin1_preserva_acentos_entre_blocos_e_csv_persiste_em_lotes() {
+        let text = format!("{}José;São Paulo\n", "x".repeat(8191));
+        let (latin1, _, _) = encoding_rs::WINDOWS_1252.encode(&text);
+        let mut reader = Latin1Reader::new(std::io::Cursor::new(latin1));
+        let mut decoded = String::new();
+        reader.read_to_string(&mut decoded).unwrap();
+        assert_eq!(decoded, text);
+        let pool = storage::DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        storage::run_migrations(&mut conn).unwrap();
+        let csv = "NM_DOADOR;NR_CPF_CNPJ_DOADOR;VR_RECEITA\nJOSE;12345678900;10,00\nMARIA;98765432100;20,00\nANA;55566677788;30,00\n";
+        let mut batches = Vec::new();
+        let count = processar_csv_tse_reader_com_progresso(&mut conn, csv.as_bytes(), 2, |n| {
+            batches.push(n)
+        })
+        .unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(batches, [2, 1]);
     }
 }

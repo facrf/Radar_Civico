@@ -1,8 +1,9 @@
+use rusqlite::{Connection, OpenFlags};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use rusqlite::{Connection, OpenFlags};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::error::{Result, StorageError};
 
@@ -16,7 +17,7 @@ pub fn apply_pragmas(conn: &Connection) -> Result<()> {
          PRAGMA temp_store = MEMORY;
          PRAGMA mmap_size = 30000000000;
          PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 15000;"
+         PRAGMA busy_timeout = 15000;",
     )?;
     Ok(())
 }
@@ -25,7 +26,7 @@ pub fn apply_pragmas(conn: &Connection) -> Result<()> {
 pub fn aplicar_pragmas_ingestao(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = OFF;
+         PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -500000;
          PRAGMA temp_store = MEMORY;
          PRAGMA wal_autocheckpoint = 100000;
@@ -54,7 +55,7 @@ pub fn desativar_indices_tse(conn: &Connection) -> Result<()> {
          DROP INDEX IF EXISTS idx_receitas_candidatura;
          DROP INDEX IF EXISTS idx_receitas_doador;
          DROP INDEX IF EXISTS idx_despesas_candidatura;
-         DROP INDEX IF EXISTS idx_despesas_fornecedor;"
+         DROP INDEX IF EXISTS idx_despesas_fornecedor;",
     )?;
     Ok(())
 }
@@ -77,7 +78,7 @@ pub fn recriar_indices_tse(conn: &Connection) -> Result<()> {
 pub fn executar_manutencao_db(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "PRAGMA optimize;
-         PRAGMA wal_checkpoint(PASSIVE);"
+         PRAGMA wal_checkpoint(PASSIVE);",
     )?;
     Ok(())
 }
@@ -88,10 +89,15 @@ enum DbTarget {
     SharedMemory(String),
 }
 
+struct PoolState {
+    idle: Vec<Connection>,
+    total: usize,
+}
+
 #[derive(Clone)]
 pub struct DbPool {
     target: DbTarget,
-    pool: Arc<Mutex<Vec<Connection>>>,
+    pool: Arc<(Mutex<PoolState>, Condvar)>,
     max_size: usize,
     // Keep at least one connection alive for shared-memory databases so it doesn't get dropped
     _anchor: Option<Arc<Mutex<Connection>>>,
@@ -106,23 +112,34 @@ impl Deref for PooledConnection {
     type Target = Connection;
 
     fn deref(&self) -> &Self::Target {
-        self.conn.as_ref().expect("Connection is always present until drop")
+        self.conn
+            .as_ref()
+            .expect("Connection is always present until drop")
     }
 }
 
 impl DerefMut for PooledConnection {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.conn.as_mut().expect("Connection is always present until drop")
+        self.conn
+            .as_mut()
+            .expect("Connection is always present until drop")
     }
 }
 
 impl Drop for PooledConnection {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
-            if let Ok(mut pool) = self.pool.pool.lock() {
-                if pool.len() < self.pool.max_size {
-                    pool.push(conn);
+            // Uma conexão com transação pendente ou configuração inválida não volta ao pool.
+            let reusable = (conn.is_autocommit() || conn.execute_batch("ROLLBACK").is_ok())
+                && restaurar_pragmas_padrao(&conn).is_ok();
+            let (lock, available) = &*self.pool.pool;
+            if let Ok(mut state) = lock.lock() {
+                if reusable {
+                    state.idle.push(conn);
+                } else {
+                    state.total -= 1;
                 }
+                available.notify_one();
             }
         }
     }
@@ -134,6 +151,11 @@ impl DbPool {
     }
 
     pub fn open_with_size<P: AsRef<Path>>(path: P, max_size: usize) -> Result<Self> {
+        if max_size == 0 {
+            return Err(StorageError::Pool(
+                "Pool deve ter pelo menos uma conexão".into(),
+            ));
+        }
         let path_buf = path.as_ref().to_path_buf();
         if let Some(parent) = path_buf.parent() {
             if !parent.as_os_str().is_empty() {
@@ -146,7 +168,13 @@ impl DbPool {
         let initial_conn = Connection::open(&path_buf)?;
         apply_pragmas(&initial_conn)?;
 
-        let pool = Arc::new(Mutex::new(vec![initial_conn]));
+        let pool = Arc::new((
+            Mutex::new(PoolState {
+                idle: vec![initial_conn],
+                total: 1,
+            }),
+            Condvar::new(),
+        ));
         Ok(Self {
             target: DbTarget::File(path_buf),
             pool,
@@ -160,6 +188,11 @@ impl DbPool {
     }
 
     pub fn open_in_memory_with_size(max_size: usize) -> Result<Self> {
+        if max_size == 0 {
+            return Err(StorageError::Pool(
+                "Pool deve ter pelo menos uma conexão".into(),
+            ));
+        }
         let counter = MEM_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let uri = format!("file:memdb_{counter}?mode=memory&cache=shared");
 
@@ -173,7 +206,13 @@ impl DbPool {
         let first_conn = Connection::open_with_flags(&uri, flags)?;
         apply_pragmas(&first_conn)?;
 
-        let pool = Arc::new(Mutex::new(vec![first_conn]));
+        let pool = Arc::new((
+            Mutex::new(PoolState {
+                idle: vec![first_conn],
+                total: 1,
+            }),
+            Condvar::new(),
+        ));
         Ok(Self {
             target: DbTarget::SharedMemory(uri),
             pool,
@@ -198,20 +237,69 @@ impl DbPool {
     }
 
     pub fn get(&self) -> Result<PooledConnection> {
-        let mut pool_guard = self.pool.lock().map_err(|_| {
-            StorageError::Pool("Poisoned connection pool lock".to_string())
-        })?;
+        self.get_timeout(Duration::from_secs(15))
+    }
 
-        let conn = if let Some(c) = pool_guard.pop() {
-            c
-        } else {
-            self.create_connection()?
-        };
+    /// Limita conexões ativas e ociosas, aguardando no máximo o prazo informado.
+    /// Em handlers assíncronos, chamar dentro de `spawn_blocking`.
+    pub fn get_timeout(&self, timeout: Duration) -> Result<PooledConnection> {
+        let (lock, available) = &*self.pool;
+        let deadline = Instant::now() + timeout;
+        let mut state = lock
+            .lock()
+            .map_err(|_| StorageError::Pool("Poisoned connection pool lock".into()))?;
+        loop {
+            if let Some(conn) = state.idle.pop() {
+                return Ok(PooledConnection {
+                    pool: self.clone(),
+                    conn: Some(conn),
+                });
+            }
+            if state.total < self.max_size {
+                state.total += 1;
+                drop(state);
+                match self.create_connection() {
+                    Ok(conn) => {
+                        return Ok(PooledConnection {
+                            pool: self.clone(),
+                            conn: Some(conn),
+                        })
+                    }
+                    Err(error) => {
+                        if let Ok(mut state) = lock.lock() {
+                            state.total -= 1;
+                            available.notify_one();
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(StorageError::Pool(
+                    "Tempo de espera por conexão SQLite excedido".into(),
+                ));
+            }
+            state = available
+                .wait_timeout(state, remaining)
+                .map_err(|_| StorageError::Pool("Poisoned connection pool lock".into()))?
+                .0;
+        }
+    }
 
-        Ok(PooledConnection {
-            pool: self.clone(),
-            conn: Some(conn),
+    /// Executa acesso síncrono ao SQLite fora das threads do runtime HTTP.
+    pub async fn run_blocking<F, T>(&self, operation: F) -> Result<T>
+    where
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get()?;
+            operation(&mut conn)
         })
+        .await
+        .map_err(|e| StorageError::Pool(format!("Falha na tarefa SQLite: {e}")))?
     }
 
     fn create_connection(&self) -> Result<Connection> {
@@ -235,7 +323,8 @@ pub fn transaction_immediate(conn: &mut Connection) -> Result<rusqlite::Transact
     let timeout = std::time::Duration::from_secs(10);
     loop {
         let ptr = conn as *mut Connection;
-        match unsafe { (*ptr).transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) } {
+        match unsafe { (*ptr).transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) }
+        {
             Ok(tx) => return Ok(tx),
             Err(e) => {
                 let is_locked = match &e {
@@ -282,13 +371,17 @@ mod tests {
         assert_eq!(temp_store, 2);
 
         // Create table in conn1
-        conn1.execute("CREATE TABLE teste (id INTEGER PRIMARY KEY, valor TEXT);", [])?;
+        conn1.execute(
+            "CREATE TABLE teste (id INTEGER PRIMARY KEY, valor TEXT);",
+            [],
+        )?;
         conn1.execute("INSERT INTO teste (id, valor) VALUES (1, 'radar');", [])?;
         drop(conn1);
 
         // Read from conn2 and ensure shared in-memory state
         let conn2 = pool.get()?;
-        let valor: String = conn2.query_row("SELECT valor FROM teste WHERE id = 1;", [], |r| r.get(0))?;
+        let valor: String =
+            conn2.query_row("SELECT valor FROM teste WHERE id = 1;", [], |r| r.get(0))?;
         assert_eq!(valor, "radar");
 
         Ok(())
@@ -297,7 +390,13 @@ mod tests {
     #[test]
     fn test_file_pool_pragmas_and_wal() -> Result<()> {
         let temp_dir = std::env::temp_dir();
-        let db_path = temp_dir.join(format!("test_radar_{}.db", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db_path = temp_dir.join(format!(
+            "test_radar_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
 
         let pool = DbPool::open(&db_path)?;
         let conn = pool.get()?;
@@ -327,21 +426,77 @@ mod tests {
         let pool = DbPool::open_in_memory()?;
         {
             let conn = pool.get()?;
-            conn.execute("CREATE TABLE teste_bkp (id INTEGER PRIMARY KEY, item TEXT);", [])?;
+            conn.execute(
+                "CREATE TABLE teste_bkp (id INTEGER PRIMARY KEY, item TEXT);",
+                [],
+            )?;
             conn.execute("INSERT INTO teste_bkp (item) VALUES ('backup_valido');", [])?;
         }
 
         let temp_dir = std::env::temp_dir();
-        let backup_path = temp_dir.join(format!("test_bkp_{}.db", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let backup_path = temp_dir.join(format!(
+            "test_bkp_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
 
         pool.backup_to_file(&backup_path)?;
         assert!(backup_path.exists());
 
         let dst_conn = Connection::open(&backup_path)?;
-        let item: String = dst_conn.query_row("SELECT item FROM teste_bkp WHERE id = 1;", [], |r| r.get(0))?;
+        let item: String =
+            dst_conn.query_row("SELECT item FROM teste_bkp WHERE id = 1;", [], |r| r.get(0))?;
         assert_eq!(item, "backup_valido");
 
         let _ = std::fs::remove_file(backup_path);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pool_regressions {
+    use super::*;
+
+    #[test]
+    fn pool_limita_emprestimos_e_reutiliza_apos_devolucao() {
+        let pool = DbPool::open_in_memory_with_size(1).unwrap();
+        let conn = pool.get().unwrap();
+        assert!(pool.get_timeout(Duration::from_millis(5)).is_err());
+        drop(conn);
+        assert!(pool.get_timeout(Duration::from_millis(5)).is_ok());
+        assert!(DbPool::open_in_memory_with_size(0).is_err());
+    }
+
+    #[test]
+    fn devolucao_restaura_pragmas_e_reverte_transacao_pendente() {
+        let pool = DbPool::open_in_memory_with_size(1).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE exemplo (id INTEGER); BEGIN; INSERT INTO exemplo VALUES (1);",
+            )
+            .unwrap();
+        }
+        {
+            let conn = pool.get().unwrap();
+            let total: i64 = conn
+                .query_row("SELECT COUNT(*) FROM exemplo", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(total, 0);
+            aplicar_pragmas_ingestao(&conn).unwrap();
+        }
+        let conn = pool.get().unwrap();
+        let cache: i64 = conn
+            .query_row("PRAGMA cache_size", [], |r| r.get(0))
+            .unwrap();
+        let sync: i64 = conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .unwrap();
+        let checkpoint: i64 = conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((cache, sync, checkpoint), (-64000, 1, 1000));
     }
 }

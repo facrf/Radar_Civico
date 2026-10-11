@@ -1,13 +1,18 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import type { ItemBusca } from '$lib/types';
 
 	let query = '';
+	let request: AbortController | null = null;
 	let loading = false;
 	let resultados: ItemBusca[] = [];
 	let buscou = false;
 	let inputRef: HTMLInputElement;
 
 	async function executarBusca() {
+		request?.abort();
+		const current = new AbortController();
+		request = current;
 		const termo = query.trim();
 		if (!termo) {
 			resultados = [];
@@ -18,22 +23,25 @@
 		loading = true;
 		buscou = true;
 		try {
-			const res = await fetch(`/api/v1/busca?q=${encodeURIComponent(termo)}`);
+			const res = await fetch(`/api/v1/busca?q=${encodeURIComponent(termo)}`, { signal: current.signal });
 			if (res.ok) {
 				const data = await res.json();
+				if (request !== current) return;
 				resultados = data.resultados || data.itens || [];
 			} else {
 				resultados = [];
 			}
 		} catch (err) {
-			console.error('Erro na busca:', err);
-			resultados = [];
+			if (!current.signal.aborted) { console.error('Erro na busca:', err); resultados = []; }
 		} finally {
-			loading = false;
+			if (request === current) loading = false;
 		}
 	}
 
 	function limparBusca() {
+		request?.abort();
+		request = null;
+		loading = false;
 		query = '';
 		resultados = [];
 		buscou = false;
@@ -128,6 +136,7 @@
 		}
 		return `/grafo/${encodeURIComponent(doc || item.titulo || '')}?grau=2`;
 	}
+	onDestroy(() => request?.abort());
 </script>
 
 <div class="w-full max-w-3xl mx-auto">

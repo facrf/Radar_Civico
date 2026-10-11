@@ -38,7 +38,7 @@
 		job_id: string;
 		fonte: string;
 		ano?: number;
-		status: 'PENDENTE' | 'PROCESSANDO' | 'CONCLUIDO' | 'ERRO';
+		status: 'PENDENTE' | 'PROCESSANDO' | 'CONCLUIDO' | 'PARCIAL' | 'ERRO';
 		progresso: number;
 		mensagem: string;
 		logs: string[];
@@ -61,12 +61,24 @@
 	// Parâmetros do Motor de Auditoria
 	interface ParametrosAuditoria {
 		limite_combustivel_litros: number;
+		preco_combustivel_referencia: number;
+		sobrepreco_combustivel_percentual: number;
+		estimar_volume_combustivel: boolean;
+		referencia_combustivel_periodo: string;
+		referencia_combustivel_local: string;
+		referencia_combustivel_url: string | null;
 		janela_triangulacao_dias: number;
 		concentracao_fornecedor_percentual: number;
 	}
 
 	let auditRules: ParametrosAuditoria = {
 		limite_combustivel_litros: 250,
+		preco_combustivel_referencia: 5.8,
+		sobrepreco_combustivel_percentual: 50,
+		estimar_volume_combustivel: true,
+		referencia_combustivel_periodo: 'Não informado',
+		referencia_combustivel_local: 'Não informado',
+		referencia_combustivel_url: null,
 		janela_triangulacao_dias: 180,
 		concentracao_fornecedor_percentual: 60
 	};
@@ -84,8 +96,14 @@
 				const data = await res.json();
 				auditRules = {
 					limite_combustivel_litros: Number(data.limite_combustivel_litros) || 250,
+					preco_combustivel_referencia: Number(data.preco_combustivel_referencia ?? 5.8),
+					sobrepreco_combustivel_percentual: Number(data.sobrepreco_combustivel_percentual ?? 50),
+					estimar_volume_combustivel: data.estimar_volume_combustivel ?? true,
+					referencia_combustivel_periodo: data.referencia_combustivel_periodo ?? 'Não informado',
+					referencia_combustivel_local: data.referencia_combustivel_local ?? 'Não informado',
+					referencia_combustivel_url: data.referencia_combustivel_url ?? null,
 					janela_triangulacao_dias: Number(data.janela_triangulacao_dias) || 180,
-					concentracao_fornecedor_percentual: Number(data.concentracao_fornecedor_percentual) || 60
+					concentracao_fornecedor_percentual: Number(data.concentracao_fornecedor_percentual ?? 60)
 				};
 			}
 		} catch (e: any) {
@@ -109,6 +127,15 @@
 			return;
 		}
 
+		if (!Number.isFinite(auditRules.preco_combustivel_referencia) || auditRules.preco_combustivel_referencia < 0.01 || auditRules.preco_combustivel_referencia > 100) {
+			erroAuditRules = 'Preço de referência deve estar entre R$ 0,01 e R$ 100,00 por litro.';
+			return;
+		}
+		if (!Number.isFinite(auditRules.sobrepreco_combustivel_percentual) || auditRules.sobrepreco_combustivel_percentual < 0 || auditRules.sobrepreco_combustivel_percentual > 1000) {
+			erroAuditRules = 'Margem de sobrepreço deve estar entre 0% e 1.000%.';
+			return;
+		}
+
 		salvandoAuditRules = true;
 		erroAuditRules = null;
 		msgAuditRulesSucesso = null;
@@ -117,18 +144,24 @@
 			const res = await fetch('/api/settings/audit-rules', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(auditRules)
+				body: JSON.stringify({ ...auditRules, referencia_combustivel_url: auditRules.referencia_combustivel_url?.trim() || null })
 			});
 
 			if (!res.ok) {
 				const err = await res.json();
-				throw new Error(err.erro || 'Falha ao salvar parâmetros do motor de auditoria');
+				throw new Error(err.mensagem || err.erro || 'Falha ao salvar parâmetros do motor de auditoria');
 			}
 
 			const data = await res.json();
 			if (data.parametros) {
 				auditRules = {
 					limite_combustivel_litros: Number(data.parametros.limite_combustivel_litros),
+					preco_combustivel_referencia: Number(data.parametros.preco_combustivel_referencia ?? 5.8),
+					sobrepreco_combustivel_percentual: Number(data.parametros.sobrepreco_combustivel_percentual ?? 50),
+					estimar_volume_combustivel: data.parametros.estimar_volume_combustivel ?? true,
+					referencia_combustivel_periodo: data.parametros.referencia_combustivel_periodo ?? 'Não informado',
+					referencia_combustivel_local: data.parametros.referencia_combustivel_local ?? 'Não informado',
+					referencia_combustivel_url: data.parametros.referencia_combustivel_url ?? null,
 					janela_triangulacao_dias: Number(data.parametros.janela_triangulacao_dias),
 					concentracao_fornecedor_percentual: Number(data.parametros.concentracao_fornecedor_percentual)
 				};
@@ -151,6 +184,12 @@
 	async function restaurarPadroesAuditRules() {
 		auditRules = {
 			limite_combustivel_litros: 250,
+			preco_combustivel_referencia: 5.8,
+			sobrepreco_combustivel_percentual: 50,
+			estimar_volume_combustivel: true,
+			referencia_combustivel_periodo: 'Não informado',
+			referencia_combustivel_local: 'Não informado',
+			referencia_combustivel_url: null,
 			janela_triangulacao_dias: 180,
 			concentracao_fornecedor_percentual: 60
 		};
@@ -595,7 +634,7 @@
 					importProgress = await resProg.json();
 				}
 
-				if (activeJob?.status === 'CONCLUIDO' || activeJob?.status === 'ERRO') {
+				if (activeJob?.status === 'CONCLUIDO' || activeJob?.status === 'ERRO' || activeJob?.status === 'PARCIAL') {
 					clearInterval(pollingInterval);
 					pollingInterval = null;
 					carregarStatus();
@@ -1070,7 +1109,7 @@
 				</p>
 			</div>
 			<div class="flex items-center gap-2">
-				{#if auditRules.limite_combustivel_litros === 250 && auditRules.janela_triangulacao_dias === 180 && auditRules.concentracao_fornecedor_percentual === 60}
+				{#if auditRules.limite_combustivel_litros === 250 && auditRules.janela_triangulacao_dias === 180 && auditRules.concentracao_fornecedor_percentual === 60 && auditRules.preco_combustivel_referencia === 5.8 && auditRules.sobrepreco_combustivel_percentual === 50 && auditRules.estimar_volume_combustivel && !auditRules.referencia_combustivel_url && auditRules.referencia_combustivel_periodo === 'Não informado' && auditRules.referencia_combustivel_local === 'Não informado'}
 					<span class="px-2.5 py-1 text-xs font-medium rounded-full bg-slate-800 border border-slate-700 text-slate-400">
 						Limiares Padrão de Fábrica
 					</span>
@@ -1100,7 +1139,7 @@
 							</span>
 						</div>
 						<p class="text-[11px] text-slate-400 leading-snug">
-							Volume máximo por abastecimento na CEAP. Notas com volume acima deste valor disparam anomalia de capacidade física do tanque excedida.
+							Volume máximo por abastecimento na CEAP. Volumes acima deste limite geram indícios para conferência. Uma nota pode abranger vários veículos ou abastecimentos.
 						</p>
 					</div>
 
@@ -1154,7 +1193,7 @@
 								on:click={() => (auditRules.limite_combustivel_litros = 250)}
 								class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors font-medium"
 							>
-								250 L (Recomendado)
+								250 L (Padrão)
 							</button>
 							<button
 								type="button"
@@ -1165,6 +1204,30 @@
 							</button>
 						</div>
 					</div>
+				</div>
+
+				<div class="p-5 bg-slate-900/60 border border-slate-800 rounded-xl space-y-4">
+					<h3 class="text-sm font-semibold text-amber-300">Referência de combustível</h3>
+					<p class="text-xs text-slate-400">Informe o preço e a fonte para o período e local analisados. A referência é manual; não há consulta automática à ANP.</p>
+					<label class="block text-xs text-slate-300">Preço de referência (R$/L)
+						<input type="number" min="0.01" max="100" step="0.01" bind:value={auditRules.preco_combustivel_referencia} class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
+					</label>
+					<label class="block text-xs text-slate-300">Margem de sobrepreço (%)
+						<input type="number" min="0" max="1000" step="0.1" bind:value={auditRules.sobrepreco_combustivel_percentual} class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
+					</label>
+					<label class="flex gap-2 items-start text-xs text-slate-300">
+						<input type="checkbox" bind:checked={auditRules.estimar_volume_combustivel} class="mt-0.5 accent-amber-500" />
+						Estimar litros quando a nota não declarar volume (alerta de confiança reduzida)
+					</label>
+					<label class="block text-xs text-slate-300">Período da referência
+						<input type="text" maxlength="120" placeholder="Ex.: setembro/2024" bind:value={auditRules.referencia_combustivel_periodo} class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
+					</label>
+					<label class="block text-xs text-slate-300">Local da referência
+						<input type="text" maxlength="120" placeholder="Ex.: Campinas/SP" bind:value={auditRules.referencia_combustivel_local} class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
+					</label>
+					<label class="block text-xs text-slate-300">Link da fonte (opcional)
+						<input type="url" maxlength="2048" placeholder="https://..." bind:value={auditRules.referencia_combustivel_url} class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
+					</label>
 				</div>
 
 				<!-- Parâmetro 2: Janela de Triangulação -->
@@ -2036,6 +2099,7 @@
 					</span>
 					<span class="text-xs font-semibold px-2 py-0.5 rounded uppercase
 						{activeJob.status === 'CONCLUIDO' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+						 activeJob.status === 'PARCIAL' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
 						 activeJob.status === 'ERRO' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' :
 						 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse'}">
 						{activeJob.status}

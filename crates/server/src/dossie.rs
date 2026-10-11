@@ -54,6 +54,10 @@ pub struct NotaFiscalCeapItem {
     pub numero_documento: Option<String>,
     pub url_nota_fiscal: Option<String>,
     pub flag_anomalia: bool,
+    #[serde(default)]
+    pub volume_estimado: bool,
+    #[serde(default)]
+    pub volume_litros: Option<f64>,
     pub politico_id: Option<i64>,
 }
 
@@ -384,7 +388,11 @@ pub async fn dossie_cnpj_handler(
             };
 
             socios.push(SocioItem {
-                nome: if s_nome.is_empty() { s_doc.clone() } else { s_nome },
+                nome: if s_nome.is_empty() {
+                    s_doc.clone()
+                } else {
+                    s_nome
+                },
                 documento_mascarado: s_doc,
                 qualificacao: qualif,
                 tipo,
@@ -439,19 +447,22 @@ pub async fn dossie_cnpj_handler(
 
         if let Some(mut stmt) = stmt_outras {
             let rows = stmt
-                .query_map([&socio.documento_mascarado, &cnpj_basico.to_string()], |row| {
-                    let b: String = row.get(0)?;
-                    let o: String = row.get(1)?;
-                    let d: String = row.get(2)?;
-                    let r: String = row.get(3)?;
-                    let c_full = format!("{}{}{}", b, o, d);
-                    Ok(EmpresaResumo {
-                        cnpj: c_full.clone(),
-                        cnpj_formatado: formatar_cnpj(&c_full),
-                        razao_social: r,
-                        vinculo: format!("Sócio comum: {}", socio.nome),
-                    })
-                })
+                .query_map(
+                    [&socio.documento_mascarado, &cnpj_basico.to_string()],
+                    |row| {
+                        let b: String = row.get(0)?;
+                        let o: String = row.get(1)?;
+                        let d: String = row.get(2)?;
+                        let r: String = row.get(3)?;
+                        let c_full = format!("{}{}{}", b, o, d);
+                        Ok(EmpresaResumo {
+                            cnpj: c_full.clone(),
+                            cnpj_formatado: formatar_cnpj(&c_full),
+                            razao_social: r,
+                            vinculo: format!("Sócio comum: {}", socio.nome),
+                        })
+                    },
+                )
                 .ok();
 
             if let Some(r_iter) = rows {
@@ -470,7 +481,8 @@ pub async fn dossie_cnpj_handler(
     // 3. Gastos Parlamentares (CEAP)
     let mut notas_fiscais: Vec<NotaFiscalCeapItem> = Vec::new();
     let mut total_faturado_ceap = 0.0;
-    let mut compradores_map: std::collections::HashMap<String, (f64, usize)> = std::collections::HashMap::new();
+    let mut compradores_map: std::collections::HashMap<String, (f64, usize)> =
+        std::collections::HashMap::new();
 
     {
         let like_basico = format!("%{}%", cnpj_basico);
@@ -492,19 +504,12 @@ pub async fn dossie_cnpj_handler(
                 .query_map([&like_basico], |row| {
                     let cat: String = row.get(3)?;
                     let val: f64 = row.get(4)?;
-                    let flag_banco: bool = row.get::<_, i32>(7).unwrap_or(0) != 0;
                     let litros_opt: Option<f64> = row.get(9)?;
-                    let litros_val = litros_opt.unwrap_or_else(|| {
-                        if cat.to_uppercase().contains("COMBUST") {
-                            (val / 5.80 * 10.0).round() / 10.0
-                        } else {
-                            0.0
-                        }
-                    });
-
-                    // Flag de anomalia dinâmica respeitando o limiar configurado pelo usuário
-                    let flag_anomalia = (litros_val > params_auditoria.limite_combustivel_litros)
-                        || (flag_banco && litros_val > params_auditoria.limite_combustivel_litros);
+                    let volume = params_auditoria.volume_combustivel(&cat, val, litros_opt);
+                    let volume_estimado = volume.is_some_and(|(_, estimated)| estimated);
+                    let volume_litros = volume.map(|(liters, _)| liters);
+                    let flag_anomalia = volume_litros
+                        .is_some_and(|liters| liters > params_auditoria.limite_combustivel_litros);
 
                     Ok(NotaFiscalCeapItem {
                         id: row.get(0)?,
@@ -515,6 +520,8 @@ pub async fn dossie_cnpj_handler(
                         numero_documento: row.get(5)?,
                         url_nota_fiscal: row.get(6)?,
                         flag_anomalia,
+                        volume_estimado,
+                        volume_litros,
                         politico_id: row.get(8)?,
                     })
                 })
@@ -553,12 +560,17 @@ pub async fn dossie_cnpj_handler(
             }
         })
         .collect();
-    compradores.sort_by(|a, b| b.total_gasto.partial_cmp(&a.total_gasto).unwrap_or(std::cmp::Ordering::Equal));
+    compradores.sort_by(|a, b| {
+        b.total_gasto
+            .partial_cmp(&a.total_gasto)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // 4. Contratos Públicos (PNCP)
     let mut contratos: Vec<ContratoPncpItem> = Vec::new();
     let mut total_contratado_pncp = 0.0;
-    let mut orgaos_map: std::collections::HashMap<String, (f64, usize)> = std::collections::HashMap::new();
+    let mut orgaos_map: std::collections::HashMap<String, (f64, usize)> =
+        std::collections::HashMap::new();
 
     {
         let like_basico = format!("%{}%", cnpj_basico);
@@ -589,7 +601,9 @@ pub async fn dossie_cnpj_handler(
             if let Some(r_iter) = rows {
                 for c in r_iter.flatten() {
                     total_contratado_pncp += c.valor_contratado;
-                    let entry = orgaos_map.entry(c.orgao_contratante.clone()).or_insert((0.0, 0));
+                    let entry = orgaos_map
+                        .entry(c.orgao_contratante.clone())
+                        .or_insert((0.0, 0));
                     entry.0 += c.valor_contratado;
                     entry.1 += 1;
                     contratos.push(c);
@@ -606,7 +620,11 @@ pub async fn dossie_cnpj_handler(
             quantidade_contratos: qtd,
         })
         .collect();
-    orgaos_contratantes.sort_by(|a, b| b.total_valor.partial_cmp(&a.total_valor).unwrap_or(std::cmp::Ordering::Equal));
+    orgaos_contratantes.sort_by(|a, b| {
+        b.total_valor
+            .partial_cmp(&a.total_valor)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // 5. Cruzamento Heurístico TSE para cada Sócio PF (Nome normalizado + 6 dígitos centrais do CPF)
     let mut doacoes_socios: Vec<DoacaoSocioTse> = Vec::new();
@@ -781,7 +799,9 @@ pub async fn dossie_cnpj_handler(
         }
     }
 
-    if max_concentracao >= params_auditoria.concentracao_fornecedor_percentual && total_faturado_ceap > 10_000.0 {
+    if max_concentracao >= params_auditoria.concentracao_fornecedor_percentual
+        && total_faturado_ceap > 10_000.0
+    {
         alertas.push(AlertaDossie {
             tipo: "FORNECEDOR_HUB".to_string(),
             severidade: "ALTA".to_string(),
@@ -814,10 +834,11 @@ pub async fn dossie_cnpj_handler(
         alertas.push(AlertaDossie {
             tipo: "COMBUSTIVEL_VOLUME".to_string(),
             severidade: "MEDIA".to_string(),
-            titulo: "Notas Fiscais de Combustível com Volume Excessivo".to_string(),
+            titulo: "Indícios de Volume Elevado em Combustível".to_string(),
             descricao: format!(
-                "{} nota(s) fiscal(is) deste fornecedor ultrapassam o limiar configurado de {:.0} L por abastecimento.",
-                notas_anomalas, params_auditoria.limite_combustivel_litros
+                "{} nota(s) ultrapassam o limite configurado de {:.0} L; {} usam volume estimado pelo preço de referência informado. Conferir a nota e sua abrangência antes de concluir irregularidade.",
+                notas_anomalas, params_auditoria.limite_combustivel_litros,
+                notas_fiscais.iter().filter(|n| n.flag_anomalia && n.volume_estimado).count()
             ),
             valor_envolvido: None,
             fonte: "Auditor CEAP Determinístico".to_string(),
@@ -1065,34 +1086,31 @@ pub async fn dossie_cpf_handler(
 
         for r in qsa_records {
             let c_full = format!("{}{}{}", r.0, r.1, r.2);
-            if nome_identificado.is_empty() && !r.4.is_empty() && r.4 != "HOLDING / SOCIO" && !r.4.contains("***") {
+            if nome_identificado.is_empty()
+                && !r.4.is_empty()
+                && r.4 != "HOLDING / SOCIO"
+                && !r.4.contains("***")
+            {
                 nome_identificado = r.4.clone();
             } else if nome_identificado.is_empty() && !r.3.is_empty() {
                 nome_identificado = r.3.clone();
             }
 
-                        // Consulta CEAP da empresa
-                        let mut total_ceap_emp = 0.0;
-                        let like_cnpj = format!("%{}%", r.0);
-                        if let Ok(mut stmt_c) = conn.prepare(
+            // Consulta CEAP da empresa
+            let mut total_ceap_emp = 0.0;
+            let like_cnpj = format!("%{}%", r.0);
+            if let Ok(mut stmt_c) = conn.prepare(
                             "SELECT id, parlamentar_nome, data_emissao, categoria_despesa, valor_liquido, numero_documento, url_nota_fiscal, flag_anomalia, detalhes_litros
                              FROM despesas_parlamentares WHERE fornecedor_cnpj_cpf LIKE ?1 LIMIT 20"
                         ) {
                             if let Ok(c_rows) = stmt_c.query_map([&like_cnpj], |nr| {
                                 let cat: String = nr.get(3)?;
                                 let val: f64 = nr.get(4)?;
-                                let flag_banco: bool = nr.get::<_, i32>(7).unwrap_or(0) != 0;
-                                let litros_opt: Option<f64> = nr.get(8)?;
-                                let litros_val = litros_opt.unwrap_or_else(|| {
-                                    if cat.to_uppercase().contains("COMBUST") {
-                                        (val / 5.80 * 10.0).round() / 10.0
-                                    } else {
-                                        0.0
-                                    }
-                                });
-
-                                let flag_anomalia = (litros_val > params_auditoria.limite_combustivel_litros)
-                                    || (flag_banco && litros_val > params_auditoria.limite_combustivel_litros);
+                    let litros_opt: Option<f64> = nr.get(8)?;
+                    let volume = params_auditoria.volume_combustivel(&cat, val, litros_opt);
+                    let volume_estimado = volume.is_some_and(|(_, estimated)| estimated);
+                    let volume_litros = volume.map(|(liters, _)| liters);
+                    let flag_anomalia = volume_litros.is_some_and(|liters| liters > params_auditoria.limite_combustivel_litros);
 
                                 Ok(NotaFiscalCeapItem {
                                     id: nr.get(0)?,
@@ -1103,6 +1121,8 @@ pub async fn dossie_cpf_handler(
                                     numero_documento: nr.get(5)?,
                                     url_nota_fiscal: nr.get(6)?,
                                     flag_anomalia,
+                        volume_estimado,
+                        volume_litros,
                                     politico_id: None,
                                 })
                             }) {
@@ -1114,9 +1134,9 @@ pub async fn dossie_cpf_handler(
                             }
                         }
 
-                        // Consulta PNCP da empresa
-                        let mut total_pncp_emp = 0.0;
-                        if let Ok(mut stmt_p) = conn.prepare(
+            // Consulta PNCP da empresa
+            let mut total_pncp_emp = 0.0;
+            if let Ok(mut stmt_p) = conn.prepare(
                             "SELECT id, orgao_contratante, valor_contratado, objeto, data_assinatura, data_termino
                              FROM contratos_publicos WHERE fornecedor_cnpj LIKE ?1 LIMIT 10"
                         ) {
@@ -1138,14 +1158,14 @@ pub async fn dossie_cpf_handler(
                             }
                         }
 
-                        empresas_socio.push(EmpresaSocioItem {
-                            cnpj: c_full.clone(),
-                            cnpj_formatado: formatar_cnpj(&c_full),
-                            razao_social: r.3,
-                            qualificacao: r.5,
-                            total_ceap: total_ceap_emp,
-                            total_pncp: total_pncp_emp,
-                        });
+            empresas_socio.push(EmpresaSocioItem {
+                cnpj: c_full.clone(),
+                cnpj_formatado: formatar_cnpj(&c_full),
+                razao_social: r.3,
+                qualificacao: r.5,
+                total_ceap: total_ceap_emp,
+                total_pncp: total_pncp_emp,
+            });
         }
     }
 
@@ -1403,7 +1423,9 @@ pub async fn dossie_cpf_handler(
     }
 
     // Conflito de Interesses OAB
-    let tem_oab_regular = registros_oab.iter().any(|r| r.situacao.to_uppercase() == "REGULAR");
+    let tem_oab_regular = registros_oab
+        .iter()
+        .any(|r| r.situacao.to_uppercase() == "REGULAR");
     let eh_politico_ativo = candidaturas.iter().any(|c| c.ano_eleicao >= 2020);
     if tem_oab_regular && eh_politico_ativo {
         alertas.push(AlertaDossie {
@@ -1418,7 +1440,10 @@ pub async fn dossie_cpf_handler(
 
     // Benefício indevido
     let total_beneficios: f64 = beneficios.iter().map(|b| b.valor).sum();
-    let total_bens_declarados: f64 = candidaturas.iter().map(|c| c.total_bens).fold(0.0, f64::max);
+    let total_bens_declarados: f64 = candidaturas
+        .iter()
+        .map(|c| c.total_bens)
+        .fold(0.0, f64::max);
     if total_beneficios > 0.0 && (total_bens_declarados > 300_000.0 || !empresas_socio.is_empty()) {
         alertas.push(AlertaDossie {
             tipo: "AUXILIO_INDEVIDO".to_string(),

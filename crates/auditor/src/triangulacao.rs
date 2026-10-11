@@ -69,20 +69,25 @@ pub fn auditar_triangulacao_com_janela(
     for doador in doadores {
         let doador_doc_clean = limpar_documento(&doador.doador_cpf_cnpj);
 
+        if !matches!(doador_doc_clean.len(), 11 | 14) {
+            continue;
+        }
+
         // Encontrar empresas onde o doador é sócio
         let empresas_do_doador: Vec<&SocioEmpresa> = socios
             .iter()
             .filter(|s| {
                 let socio_doc_clean = limpar_documento(&s.socio_cpf_cnpj);
-                socio_doc_clean == doador_doc_clean
-                    || (!doador.doador_nome.is_empty()
-                        && s.socio_nome.trim().eq_ignore_ascii_case(doador.doador_nome.trim()))
+                matches!(socio_doc_clean.len(), 11 | 14) && socio_doc_clean == doador_doc_clean
             })
             .collect();
 
         for socio in empresas_do_doador {
             let empresa_cnpj_clean = limpar_documento(&socio.empresa_cnpj);
 
+            if empresa_cnpj_clean.len() != 14 {
+                continue;
+            }
             // Encontrar contratos firmados por esta empresa
             for contrato in contratos {
                 let forn_cnpj_clean = limpar_documento(&contrato.fornecedor_cnpj);
@@ -93,7 +98,7 @@ pub fn auditar_triangulacao_com_janela(
                 let dias = (contrato.data_assinatura - doador.data_posse).num_days();
 
                 // Regra: Contrato assinado após a posse em janela configurada
-                if dias >= 0 && dias <= janela_dias {
+                if dias >= 0 && dias < janela_dias {
                     let score_risco = if dias <= 60 {
                         95
                     } else if dias <= 120 {
@@ -235,5 +240,57 @@ mod tests {
 
         let alertas = auditar_triangulacao(&doadores, &socios, &contratos);
         assert!(alertas.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod identity_regressions {
+    use super::*;
+    #[test]
+    fn documentos_ausentes_mascarados_e_homonimos_nao_confirmam_vinculo() {
+        let data = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+        let mut doador = DoadorCampanha {
+            doador_cpf_cnpj: "12345678900".into(),
+            doador_nome: "JOAO SILVA".into(),
+            politico_id: 1,
+            politico_nome: "PREFEITO".into(),
+            data_posse: data,
+            valor_doado: 1000.0,
+        };
+        let mut socio = SocioEmpresa {
+            socio_cpf_cnpj: "98765432100".into(),
+            socio_nome: "JOAO SILVA".into(),
+            empresa_cnpj: "11222333000144".into(),
+            empresa_razao_social: "EMPRESA".into(),
+        };
+        let contrato = ContratoPublico {
+            id: 1,
+            orgao_contratante: "PREFEITURA".into(),
+            fornecedor_cnpj: "11222333000144".into(),
+            valor_contratado: 50000.0,
+            objeto: None,
+            data_assinatura: data,
+        };
+        assert!(
+            auditar_triangulacao(&[doador.clone()], &[socio.clone()], &[contrato.clone()])
+                .is_empty()
+        );
+        for doc in ["", "***.123.456-**", "-4"] {
+            doador.doador_cpf_cnpj = doc.into();
+            socio.socio_cpf_cnpj = doc.into();
+            assert!(
+                auditar_triangulacao(&[doador.clone()], &[socio.clone()], &[contrato.clone()])
+                    .is_empty()
+            );
+        }
+        doador.doador_cpf_cnpj = "123.456.789-00".into();
+        socio.socio_cpf_cnpj = "12345678900".into();
+        assert_eq!(
+            auditar_triangulacao(&[doador.clone()], &[socio.clone()], &[contrato.clone()]).len(),
+            1
+        );
+        let mut limite = contrato;
+        limite.data_assinatura = data + chrono::Duration::days(180);
+        assert!(auditar_triangulacao(&[doador], &[socio], &[limite]).is_empty());
     }
 }

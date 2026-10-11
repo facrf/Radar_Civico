@@ -21,7 +21,7 @@ COPY web/ ./
 RUN npm run build
 
 # Stage 2: Build Rust backend
-FROM rust:slim AS builder
+FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
 ARG APP_VERSION
@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN cargo build --release -p server
+RUN cargo build --locked --release -p server
 
 # Stage 3: Runner de produção
 FROM debian:bookworm-slim AS runner

@@ -1,11 +1,13 @@
-use std::sync::Arc;
 use async_trait::async_trait;
+use std::sync::Arc;
 use tokio::task::spawn_blocking;
 
 use crate::error::{IngestionError, Result};
 use crate::importers::sink::BatchSink;
 use crate::importers::traits::{ImportContext, ImportStage, SourceImporter};
-use crate::tse_ckan::{descobrir_urls_tse, processar_zip_tse_bytes};
+use crate::tse_ckan::{
+    baixar_pacote_tse, descobrir_urls_tse, processar_zip_tse_bytes, processar_zip_tse_reader,
+};
 
 pub struct TseImporter {
     pub custom_id: Option<String>,
@@ -18,7 +20,11 @@ pub struct TseImporter {
 impl TseImporter {
     pub fn new(ano: u32) -> Self {
         Self {
-            custom_id: if ano == 2024 { None } else { Some(format!("tse-{}", ano)) },
+            custom_id: if ano == 2024 {
+                None
+            } else {
+                Some(format!("tse-{}", ano))
+            },
             custom_name: if ano == 2024 {
                 None
             } else {
@@ -77,7 +83,9 @@ impl SourceImporter for TseImporter {
     }
 
     fn name(&self) -> &str {
-        self.custom_name.as_deref().unwrap_or("Tribunal Superior Eleitoral")
+        self.custom_name
+            .as_deref()
+            .unwrap_or("Tribunal Superior Eleitoral")
     }
 
     fn description(&self) -> &str {
@@ -87,7 +95,10 @@ impl SourceImporter for TseImporter {
     async fn run(&self, ctx: Arc<ImportContext>, sink: Arc<BatchSink>) -> Result<()> {
         ctx.set_stage(
             ImportStage::Conectando,
-            format!("Iniciando preparação da importação do TSE para o ano {}", self.ano),
+            format!(
+                "Iniciando preparação da importação do TSE para o ano {}",
+                self.ano
+            ),
         );
 
         if let Some(ref mock_bytes) = self.mock_data {
@@ -123,7 +134,10 @@ impl SourceImporter for TseImporter {
         // Modo Online via CKAN
         ctx.set_stage(
             ImportStage::Conectando,
-            format!("Descobrindo pacotes do TSE para o ano {} via API CKAN...", self.ano),
+            format!(
+                "Descobrindo pacotes do TSE para o ano {} via API CKAN...",
+                self.ano
+            ),
         );
 
         let dataset_slices: Vec<&str> = self.datasets.iter().map(|s| s.as_str()).collect();
@@ -154,15 +168,15 @@ impl SourceImporter for TseImporter {
             let nome_arquivo = url.rsplit('/').next().unwrap_or("pacote.zip").to_string();
             ctx.set_stage(
                 ImportStage::Baixando,
-                format!("Baixando pacote [{}/{}]: {}", index + 1, total_urls, nome_arquivo),
+                format!(
+                    "Baixando pacote [{}/{}]: {}",
+                    index + 1,
+                    total_urls,
+                    nome_arquivo
+                ),
             );
 
-            let response = client.get(&url).send().await.map_err(IngestionError::Reqwest)?;
-            if !response.status().is_success() {
-                continue;
-            }
-
-            let bytes = response.bytes().await.map_err(IngestionError::Reqwest)?;
+            let temporary = baixar_pacote_tse(&client, &url).await?;
 
             if ctx.is_cancelled() {
                 ctx.set_stage(ImportStage::Cancelado, "Importação cancelada pelo usuário");
@@ -171,16 +185,22 @@ impl SourceImporter for TseImporter {
 
             ctx.set_stage(
                 ImportStage::Processando,
-                format!("Processando e gravando [{}/{}]: {}", index + 1, total_urls, nome_arquivo),
+                format!(
+                    "Processando e gravando [{}/{}]: {}",
+                    index + 1,
+                    total_urls,
+                    nome_arquivo
+                ),
             );
 
             let pool = sink.pool().clone();
-            let bytes_vec = bytes.to_vec();
 
             let inseridos = spawn_blocking(move || -> Result<usize> {
                 let mut conn = pool.get().map_err(IngestionError::Storage)?;
                 storage::aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
-                processar_zip_tse_bytes(&mut conn, &bytes_vec)
+                processar_zip_tse_reader(&mut conn, temporary.reopen()?, |name, n| {
+                    tracing::trace!(arquivo = name, registros = n, "Lote TSE persistido")
+                })
             })
             .await
             .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
@@ -238,7 +258,10 @@ ANO_ELEICAO;SG_UF;DS_CARGO;SQ_CANDIDATO;NR_CANDIDATO;NM_CANDIDATO;NM_URNA_CANDID
         assert_eq!(importer.name(), "Tribunal Superior Eleitoral");
 
         let ctx = Arc::new(ImportContext::new("tse"));
-        importer.run(Arc::clone(&ctx), sink).await.expect("execucao run");
+        importer
+            .run(Arc::clone(&ctx), sink)
+            .await
+            .expect("execucao run");
 
         let prog = ctx.get_progress();
         assert_eq!(prog.stage, ImportStage::Concluido);

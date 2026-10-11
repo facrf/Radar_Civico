@@ -304,7 +304,7 @@
 										<span class="text-slate-400 text-[11px]">{formatarData(nf.data_emissao)}</span>
 										<span class="text-slate-200 font-medium ml-1 truncate">{nf.parlamentar_nome}</span>
 										{#if nf.flag_anomalia}
-											<span class="ml-1 text-[10px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">Anomalia</span>
+											<span class="ml-1 text-[10px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">{nf.volume_estimado ? 'Volume estimado elevado' : 'Volume declarado elevado'}</span>
 										{/if}
 									</div>
 									<div class="flex items-center gap-2 flex-shrink-0">
