@@ -30,6 +30,14 @@ O tempo total de sincronização varia conforme o escopo e os anos selecionados:
 * **Execução Padrão de Manutenção (Ano Corrente/Eleitoral Recente):** entre **8 e 15 minutos**.
 * Toda a operação ocorre em **segundo plano**, com telemetria exibida em tempo real no monitor de jobs da tela de configurações (`activeJob`).
 
+## 2.1 Concorrência do SQLite durante a sincronização
+
+As cargas CEAP podem gravar muitos lotes e competir com as atualizações de progresso do job e com as consultas da tela de configurações. O acesso ao SQLite durante essas cargas é síncrono; por isso, as gravações em lote da sincronização CEAP individual e de **Sincronizar Tudo** são executadas com `tokio::task::spawn_blocking`. A conexão é adquirida dentro da tarefa bloqueante e devolvida ao pool ao fim da ingestão, antes da sincronização continuar atualizando o progresso.
+
+As atualizações dos snapshots dos jobs usam `storage::transaction_immediate`, que aplica retentativas para contenção `SQLITE_BUSY`/`SQLITE_LOCKED`. Isso evita que uma atualização concorrente de progresso falhe imediatamente ao disputar a trava de escrita do SQLite. O `busy_timeout` continua configurado nas conexões como proteção complementar.
+
+Esses ajustes tratam os timeouts observados nas requisições de configuração, que expiravam após 15 segundos aguardando uma conexão durante a sincronização. Eles não alteram a idempotência das cargas nem a granularidade dos lotes.
+
 ---
 
 ## 3. Idempotência e Comportamento do Banco de Dados

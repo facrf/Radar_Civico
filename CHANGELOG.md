@@ -2,6 +2,13 @@
 
 Todas as alterações relevantes neste projeto são documentadas neste arquivo.
 
+## [Unreleased]
+
+### Concorrência na sincronização
+- **CEAP:** Execução das gravações em lote em tarefas bloqueantes nas sincronizações individual e unificada, mantendo o runtime HTTP livre durante o trabalho SQLite.
+- **Snapshots dos jobs:** Uso de transações imediatas com retentativas ao salvar progresso, reduzindo falhas de sincronização causadas por contenção de escrita.
+- **Documentação:** Registro da causa dos timeouts de 15 segundos e dos ajustes de concorrência em `docs/sincronizacao_e_idempotencia.md`.
+
 ## [0.1.3] - 2026-10-08
 
 ### Sincronização Unificada e Proteção de Idempotência

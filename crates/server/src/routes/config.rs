@@ -619,10 +619,7 @@ async fn atualizar_snapshot(
     let message = mensagem.to_owned();
     let result = pool
         .run_blocking(move |conn| {
-            let tx = rusqlite::Transaction::new_unchecked(
-                conn,
-                rusqlite::TransactionBehavior::Immediate,
-            )?;
+            let tx = storage::transaction_immediate(conn)?;
             let payload = storage::jobs::load(&tx, "config", &id)?
                 .ok_or_else(|| storage::StorageError::NotFound(id.clone()))?;
             let mut job: JobInfo = serde_json::from_str(&payload)
@@ -1249,31 +1246,37 @@ pub async fn sincronizar_camara_handler(
                                 )
                                 .await;
 
-                                if let Ok(mut conn) = pool_spawn.get() {
-                                    if let Ok(inseridos) =
-                                        ingestion::camara::ingerir_ceap_bulk_em_lotes(
-                                            &mut conn, &records, 500,
-                                        )
-                                    {
-                                        let msg = format!(
-                                            "Sincronização CEAP {ano} (BULK) concluída com sucesso. {} despesas inseridas.",
-                                            inseridos
-                                        );
-                                        atualizar_job_concluido(
-                                            &pool_spawn,
-                                            &job_id_spawn,
-                                            100,
-                                            "CONCLUIDO",
-                                            &msg,
-                                        )
-                                        .await;
+                                let pool = pool_spawn.clone();
+                                let inseridos = tokio::task::spawn_blocking(move || {
+                                    let mut conn = pool.get().map_err(|e| e.to_string())?;
+                                    ingestion::camara::ingerir_ceap_bulk_em_lotes(
+                                        &mut conn, &records, 500,
+                                    )
+                                    .map_err(|e| e.to_string())
+                                })
+                                .await
+                                .unwrap_or_else(|e| Err(format!("Falha da tarefa: {e}")));
+                                if let Ok(inseridos) = inseridos {
+                                    let msg = format!(
+                                        "Sincronização CEAP {ano} (BULK) concluída com sucesso. {} despesas inseridas.",
+                                        inseridos
+                                    );
+                                    atualizar_job_concluido(
+                                        &pool_spawn,
+                                        &job_id_spawn,
+                                        100,
+                                        "CONCLUIDO",
+                                        &msg,
+                                    )
+                                    .await;
+                                    if let Ok(conn) = pool_spawn.get() {
                                         let _ = conn.execute(
                                             "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
                                              VALUES ('CAMARA_BULK', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
                                             rusqlite::params![msg],
                                         );
-                                        processou_remoto = true;
                                     }
+                                    processou_remoto = true;
                                 }
                             }
                         }
@@ -1795,13 +1798,19 @@ pub async fn sincronizar_tudo_handler(
                         if let Ok(records) =
                             ingestion::camara::processar_ceap_buffer_ou_zip(&bytes).await
                         {
-                            if let Ok(mut conn) = pool_spawn.get() {
-                                if let Ok(n) = ingestion::camara::ingerir_ceap_bulk_em_lotes(
+                            let pool = pool_spawn.clone();
+                            let resultado = tokio::task::spawn_blocking(move || {
+                                let mut conn = pool.get().map_err(|e| e.to_string())?;
+                                ingestion::camara::ingerir_ceap_bulk_em_lotes(
                                     &mut conn, &records, 1000,
-                                ) {
-                                    ceap_inseridos = n;
-                                    ceap_ok = true;
-                                }
+                                )
+                                .map_err(|e| e.to_string())
+                            })
+                            .await
+                            .unwrap_or_else(|e| Err(format!("Falha da tarefa: {e}")));
+                            if let Ok(n) = resultado {
+                                ceap_inseridos = n;
+                                ceap_ok = true;
                             }
                         }
                     }
