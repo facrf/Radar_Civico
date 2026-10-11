@@ -30,13 +30,47 @@ O tempo total de sincronização varia conforme o escopo e os anos selecionados:
 * **Execução Padrão de Manutenção (Ano Corrente/Eleitoral Recente):** entre **8 e 15 minutos**.
 * Toda a operação ocorre em **segundo plano**, com telemetria exibida em tempo real no monitor de jobs da tela de configurações (`activeJob`).
 
-## 2.1 Concorrência do SQLite durante a sincronização
+### 2.1 Concorrência do SQLite durante a sincronização
 
-As cargas CEAP podem gravar muitos lotes e competir com as atualizações de progresso do job e com as consultas da tela de configurações. O acesso ao SQLite durante essas cargas é síncrono; por isso, as gravações em lote da sincronização CEAP individual e de **Sincronizar Tudo** são executadas com `tokio::task::spawn_blocking`. A conexão é adquirida dentro da tarefa bloqueante e devolvida ao pool ao fim da ingestão, antes da sincronização continuar atualizando o progresso.
+O backend reserva cada job em uma transação imediata antes de iniciar o worker. Sincronizações da mesma família e ano não podem iniciar simultaneamente, mesmo quando solicitadas por abas diferentes. CEAP BULK e API compartilham a mesma família; TSE e TSE CKAN também. Importadores sem ano declarado reservam toda a família. **Sincronizar Tudo** e deduplicação em massa conflitam com qualquer job de configuração ou importador ativo. A API responde `409 Conflict` e informa `job_id` para tarefas de configuração ou `importer_id` para importadores. A interface acompanha o job de configuração informado.
 
-As atualizações dos snapshots dos jobs usam `storage::transaction_immediate`, que aplica retentativas para contenção `SQLITE_BUSY`/`SQLITE_LOCKED`. Isso evita que uma atualização concorrente de progresso falhe imediatamente ao disputar a trava de escrita do SQLite. O `busy_timeout` continua configurado nas conexões como proteção complementar.
+As consultas e gravações das rotinas de sincronização são executadas em tarefas bloqueantes, fora das threads HTTP. Na CEAP, a conexão é emprestada apenas para cada lote e devolvida antes da atualização de progresso. Os snapshots usam `storage::transaction_immediate` com retentativas para `SQLITE_BUSY`/`SQLITE_LOCKED`; leituras de snapshots também toleram contenção transitória do banco em memória compartilhada.
 
-Esses ajustes tratam os timeouts observados nas requisições de configuração, que expiravam após 15 segundos aguardando uma conexão durante a sincronização. Eles não alteram a idempotência das cargas nem a granularidade dos lotes.
+A consulta automática de progresso agenda a próxima chamada depois da resposta anterior. Em caso de falha, o intervalo aumenta até 15 segundos; ao recuperar, retorna ao intervalo normal. A troca de job e a saída da página cancelam as consultas pendentes. As consultas de importadores seguem o mesmo mecanismo.
+
+Uma resposta após 15 segundos, isoladamente, **não identifica a causa**: tanto o pool quanto o `busy_timeout` utilizam esse prazo. Os logs agora distinguem `stage=pool`, `stage=transaction`, `stage=operation` e `stage=completion`, registrando tempos de espera e códigos SQLite nas falhas. Atrasos relevantes aparecem no nível `info`; detalhes das aquisições aparecem em `debug`.
+
+### 2.2 Streaming e resultados da CEAP
+
+O download é gravado em blocos em arquivo temporário, limitado a **1 GiB**. O CSV é descompactado para outro arquivo temporário, limitado a **4 GiB**, e lido com `csv-async` em lotes de **500 registros**. Cada registro tem limite de **1 MiB**, incluindo campos entre aspas com múltiplas linhas. O runtime HTTP não faz a descompactação nem as gravações. Os arquivos temporários são removidos ao terminar a tarefa; uma carga pode ocupar até aproximadamente **5 GiB de disco temporário**.
+
+O importador CEAP usa o mesmo processamento da sincronização individual e unificada. Duplicatas continuam sendo ignoradas. O modo API exige IDs de deputados e informa falhas de consulta ou gravação por deputado.
+
+- `CONCLUIDO`: todos os pacotes ou deputados solicitados foram processados, mesmo quando não havia novas despesas por causa da deduplicação.
+- `PARCIAL`: parte da carga foi confirmada e outra parte falhou. Lotes já confirmados permanecem na base.
+- `ERRO`: falha no download, no schema ou no processamento sem uma etapa bem-sucedida. A existência de dados antigos não transforma a falha em sucesso.
+
+As rotinas legadas que apenas consultam TSE, CEAP, QSA ou PNCP na base local informam explicitamente que não baixaram novos dados. Falhas remotas do Querido Diário ficam registradas como erro no cache e não contam como consultas bem-sucedidas.
+
+### 2.3 Persistência da conclusão e recuperação
+
+O resultado final é colocado em uma fila de conclusões antes de disputar a trava SQLite. Em bancos em arquivo, a fila usa arquivos JSON gravados atomicamente ao lado da base; para `data/radar_civico.db`, o diretório é `data/radar_civico.job-completions/`. Esse diretório deve acompanhar o volume de dados. Bancos em memória usam uma fila em memória.
+
+O endpoint de status pode consultar essa fila sem adquirir uma conexão do pool. O campo `persistencia_pendente` indica que o resultado está disponível e aguarda gravação no SQLite; a interface continua consultando até a confirmação. Bloqueios e timeouts de pool recebem novas tentativas com intervalo crescente, até cinco segundos entre tentativas.
+
+O snapshot final e o histórico são confirmados na mesma transação, liberando a reserva do job. A reaplicação é idempotente e não duplica o histórico. No arranque, conclusões pendentes são reaplicadas antes de os workers antigos serem marcados como interrompidos. Erros permanentes de banco ou de disco são registrados para diagnóstico; a fila preserva o resultado quando sua gravação em disco foi possível.
+
+### 2.4 Validação de concorrência
+
+As regressões usam SQLite em arquivo e servidor HTTP local mockado para verificar admissão simultânea, conflito entre endpoints, leituras durante escrita em WAL, conclusão com pool esgotado, recuperação após reinício, idempotência do histórico, limites dos lotes e falhas após confirmação parcial. O polling é testado com timers controlados, incluindo cancelamento e recuperação após erros.
+
+```bash
+cargo check --workspace --locked
+cargo test --all --locked
+npm run test:polling --prefix web
+npm run check --prefix web
+npm run build --prefix web
+```
 
 ---
 

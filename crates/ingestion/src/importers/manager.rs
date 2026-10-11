@@ -58,6 +58,19 @@ impl ImporterManager {
         let progress = ctx.get_progress();
         let payload =
             serde_json::to_string(&progress).map_err(|e| IngestionError::Parse(e.to_string()))?;
+        if !progress.is_running {
+            storage::jobs::complete(
+                &pool,
+                storage::jobs::Completion {
+                    namespace: "importer".into(),
+                    id: progress.importer_id.clone(),
+                    payload,
+                    history: None,
+                },
+            )
+            .await?;
+            return Ok(());
+        }
         pool.run_blocking(move |conn| {
             storage::jobs::save_current(
                 conn,
@@ -173,11 +186,11 @@ impl ImporterManager {
                 )));
             }
             let ctx = Arc::new(ImportContext::new(id));
-            let conn = self.sink.pool().get()?;
+            let mut conn = self.sink.pool().get()?;
             let progress = ctx.get_progress();
             let json = serde_json::to_string(&progress)
                 .map_err(|e| IngestionError::Parse(e.to_string()))?;
-            storage::jobs::save(&conn, "importer", id, true, &json)?;
+            storage::jobs::save_exclusive(&mut conn, "importer", id, &json)?;
             contexts.insert(id.to_string(), Arc::clone(&ctx));
             ctx
         };
@@ -206,7 +219,11 @@ impl ImporterManager {
                         }
                     }
                     Err(err) => {
-                        ctx_cloned.set_error(err.to_string());
+                        if ctx_cloned.is_cancelled() {
+                            ctx_cloned.set_stage(ImportStage::Cancelado, err.to_string());
+                        } else {
+                            ctx_cloned.set_error(err.to_string());
+                        }
                     }
                 }
             });
@@ -215,8 +232,10 @@ impl ImporterManager {
                 tokio::select! {
                     result=&mut worker => break result,
                     _=interval.tick() => {
+                        if monitor.get_progress().is_running {
                         if let Err(error)=Self::persist(persistence_pool.clone(),&monitor).await {
                             tracing::error!("Falha ao persistir progresso: {error}");
+                        }
                         }
                     }
                 }

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { startPolling } from '$lib/polling';
 	import { versionStore, sincronizarVersaoServidor } from '$lib/version';
 
 	interface TotalRegistros {
@@ -39,6 +40,7 @@
 		fonte: string;
 		ano?: number;
 		status: 'PENDENTE' | 'PROCESSANDO' | 'CONCLUIDO' | 'PARCIAL' | 'INTERROMPIDO' | 'ERRO';
+		persistencia_pendente?: boolean;
 		progresso: number;
 		mensagem: string;
 		logs: string[];
@@ -149,6 +151,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.mensagem || err.erro || 'Falha ao salvar parâmetros do motor de auditoria');
 			}
 
@@ -237,7 +240,8 @@
 
 	// Monitor de Job & Ingestão
 	let activeJob: JobInfo | null = null;
-	let pollingInterval: any = null;
+	let stopJobPolling: (() => void) | null = null;
+	let jobPollingError: string | null = null;
 
 	interface ImportProgress {
 		is_running: boolean;
@@ -270,7 +274,7 @@
 	}
 	let importers: ImporterSummary[] = [];
 	let acaoImporterId: string | null = null;
-	let importersInterval: any = null;
+	let stopImportersPolling: (() => void) | null = null;
 
 	// Upload Manual
 	let tipoDocumentoUpload = 'AUTO';
@@ -343,6 +347,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha ao salvar ícone');
 			}
 
@@ -374,6 +379,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha ao restaurar ícone');
 			}
 
@@ -445,6 +451,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha ao sincronizar dados do TSE');
 			}
 
@@ -468,6 +475,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha ao despachar job de ingestão');
 			}
 
@@ -501,6 +509,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha ao sincronizar dados da Câmara');
 			}
 
@@ -523,6 +532,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha ao sincronizar autoridades de cúpula');
 			}
 
@@ -550,6 +560,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha ao sincronizar diários municipais');
 			}
 
@@ -582,6 +593,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha ao despachar sincronização unificada');
 			}
 
@@ -606,6 +618,7 @@
 			});
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha ao despachar deduplicação');
 			}
 			const data = await res.json();
@@ -618,40 +631,39 @@
 	}
 
 	function iniciarPollingJob(jobId: string) {
-        try { localStorage.setItem('radar:lastJobId',jobId); } catch { /* Armazenamento do navegador pode estar desabilitado. */ }
-		if (pollingInterval) clearInterval(pollingInterval);
-
-		const verificar = async () => {
-			try {
-				const [resJob, resProg] = await Promise.all([
-					fetch(`/api/v1/config/ingestao/status/${jobId}`),
-					fetch('/api/import/status')
-				]);
-
-				if (resJob.ok) {
-                    activeJob = await resJob.json();
-                } else if (resJob.status === 404) {
-                    try { localStorage.removeItem('radar:lastJobId'); } catch { /* Sem armazenamento local. */ }
-                    if (pollingInterval) clearInterval(pollingInterval);
-                    pollingInterval = null;
-                }
-				if (resProg.ok) {
-					importProgress = await resProg.json();
-				}
-
-				if (activeJob?.status === 'CONCLUIDO' || activeJob?.status === 'ERRO' || activeJob?.status === 'PARCIAL' || activeJob?.status === 'INTERROMPIDO') {
-					clearInterval(pollingInterval);
-					pollingInterval = null;
-					carregarStatus();
-				}
-			} catch (e) {
-				console.error('Erro no polling do job:', e);
-			}
-		};
-
-		verificar();
-		pollingInterval = setInterval(verificar, 1000);
-	}
+        try { localStorage.setItem('radar:lastJobId', jobId); } catch { /* Sem armazenamento local. */ }
+        stopJobPolling?.();
+        jobPollingError = null;
+        stopJobPolling = startPolling(async (signal) => {
+            const [resJob, resProg] = await Promise.all([
+                fetch(`/api/v1/config/ingestao/status/${jobId}`, { signal }),
+                fetch('/api/import/status', { signal })
+            ]);
+            if (resJob.status === 404) {
+                try { localStorage.removeItem('radar:lastJobId'); } catch { /* Sem armazenamento local. */ }
+                jobPollingError = 'Tarefa não encontrada. Atualize a página para consultar os dados.';
+                return false;
+            }
+            if (!resJob.ok) throw new Error(`Consulta de tarefa retornou HTTP ${resJob.status}`);
+            const job: JobInfo = await resJob.json();
+            if (signal.aborted) throw new Error('Consulta interrompida');
+            activeJob = job;
+            jobPollingError = null;
+            if (resProg.ok) {
+                const progress = await resProg.json();
+                if (!signal.aborted) importProgress = progress;
+            }
+            if (!job.persistencia_pendente && ['CONCLUIDO', 'ERRO', 'PARCIAL', 'INTERROMPIDO'].includes(job.status)) {
+                try { localStorage.removeItem('radar:lastJobId'); } catch { /* Sem armazenamento local. */ }
+                void carregarStatus();
+                return false;
+            }
+            return true;
+        }, {
+            intervalMs: 1000,
+            onError: () => { jobPollingError = 'Não foi possível atualizar o progresso. Tentaremos novamente em alguns segundos.'; }
+        });
+    }
 
 	function handleFileDrop(e: DragEvent) {
 		e.preventDefault();
@@ -691,6 +703,7 @@
 
 			if (!res.ok) {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				throw new Error(err.erro || 'Falha no processamento do upload');
 			}
 
@@ -811,16 +824,17 @@
 		}
 	}
 
-	async function carregarImporters() {
-		try {
-			const res = await fetch('/api/importers');
-			if (res.ok) {
-				importers = await res.json();
-			}
-		} catch (e) {
-			console.error('Erro ao consultar /api/importers:', e);
-		}
-	}
+	async function consultarImporters(signal?: AbortSignal) {
+        const res = await fetch('/api/importers', { signal });
+        if (!res.ok) throw new Error(`Consulta de importadores retornou HTTP ${res.status}`);
+        const next: ImporterSummary[] = await res.json();
+        if (!signal?.aborted) importers = next;
+    }
+
+    async function carregarImporters() {
+        try { await consultarImporters(); }
+        catch (error) { console.error('Erro ao consultar importadores:', error); }
+    }
 
 	async function iniciarImporter(id: string) {
 		acaoImporterId = id;
@@ -830,6 +844,7 @@
 				await carregarImporters();
 			} else {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				alert(err.erro || 'Falha ao iniciar importação');
 			}
 		} catch (e: any) {
@@ -847,6 +862,7 @@
 				await carregarImporters();
 			} else {
 				const err = await res.json();
+                if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
 				alert(err.erro || 'Falha ao cancelar importação');
 			}
 		} catch (e: any) {
@@ -861,13 +877,12 @@
 		carregarStatus();
 		carregarAuditRules();
 		carregarIdentidade();
-		carregarImporters();
 		carregarBackups();
 		sincronizarVersaoServidor();
-		importersInterval = setInterval(carregarImporters, 2000);
+		stopImportersPolling = startPolling(async (signal) => { await consultarImporters(signal); return true; }, { intervalMs: 2000 });
 		return () => {
-			if (pollingInterval) clearInterval(pollingInterval);
-			if (importersInterval) clearInterval(importersInterval);
+			stopJobPolling?.();
+			stopImportersPolling?.();
 			if (previewIconeUrl) URL.revokeObjectURL(previewIconeUrl);
 		};
 	});
@@ -2095,6 +2110,9 @@
 	</div>
 
 	<!-- Seção 3: Monitor de Job Ativo em Tempo Real -->
+	{#if jobPollingError}
+		<p role="status" class="text-sm text-amber-300">{jobPollingError}</p>
+	{/if}
 	{#if activeJob}
 		<div class="p-6 bg-slate-800/70 border border-slate-700 rounded-xl space-y-4 animate-fade-in">
 			<div class="flex items-center justify-between">
@@ -2113,6 +2131,10 @@
 				</div>
 				<span class="text-xs text-slate-400 font-mono">{activeJob.progresso}%</span>
 			</div>
+
+			{#if activeJob.persistencia_pendente}
+				<p role="status" class="text-sm text-amber-300">Resultado disponível; aguardando gravação no banco de dados.</p>
+			{/if}
 
 			<!-- Barra de Progresso -->
 			<div class="w-full bg-slate-900 rounded-full h-2.5 overflow-hidden border border-slate-700/60">

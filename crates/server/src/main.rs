@@ -72,6 +72,9 @@ async fn main() -> Result<()> {
             .get()
             .context("Falha ao obter conexão para migrações")?;
         run_migrations(&mut conn).context("Falha ao executar migrações no arranque")?;
+        let recovered = storage::jobs::recover_completions(&pool)
+            .context("Falha ao reaplicar conclusões pendentes")?;
+        info!("Conclusões reaplicadas: {recovered}");
         let interrupted =
             storage::jobs::recover_interrupted(&conn).context("Falha ao recuperar tarefas")?;
         info!("Tarefas interrompidas pelo reinício: {interrupted}");

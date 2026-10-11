@@ -68,17 +68,43 @@ pub struct ApiErrorResponse {
     pub erro: String,
 }
 
-pub async fn listar_importers_handler(State(pool): State<DbPool>) -> Json<Vec<ImporterSummary>> {
-    let manager = get_or_init_importer_manager(&pool);
-    Json(manager.list())
+async fn manager_operation<T, F>(
+    pool: DbPool,
+    operation: F,
+) -> Result<T, (StatusCode, Json<serde_json::Value>)>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<ImporterManager>) -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || operation(get_or_init_importer_manager(&pool)))
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"erro":error.to_string()})),
+            )
+        })
+}
+
+pub async fn listar_importers_handler(
+    State(pool): State<DbPool>,
+) -> Result<Json<Vec<ImporterSummary>>, (StatusCode, Json<serde_json::Value>)> {
+    Ok(Json(
+        manager_operation(pool, |manager| manager.list()).await?,
+    ))
 }
 
 pub async fn obter_status_handler(
     State(pool): State<DbPool>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let manager = get_or_init_importer_manager(&pool);
-    match manager.get_status(&id) {
+    let status_id = id.clone();
+    let status = match manager_operation(pool, move |manager| manager.get_status(&status_id)).await
+    {
+        Ok(status) => status,
+        Err(error) => return error,
+    };
+    match status {
         Some(status) => (StatusCode::OK, Json(serde_json::to_value(status).unwrap())),
         None => (
             StatusCode::NOT_FOUND,
@@ -93,8 +119,12 @@ pub async fn iniciar_importer_handler(
     State(pool): State<DbPool>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let manager = get_or_init_importer_manager(&pool);
-    match manager.start(&id) {
+    let start_id = id.clone();
+    let result = match manager_operation(pool, move |manager| manager.start(&start_id)).await {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+    match result {
         Ok(_) => (
             StatusCode::ACCEPTED,
             Json(serde_json::json!({
@@ -103,6 +133,9 @@ pub async fn iniciar_importer_handler(
                 "mensagem": "Processo de importação iniciado com sucesso em background"
             })),
         ),
+        Err(ingestion::IngestionError::Storage(error @ storage::StorageError::Conflict { .. })) => {
+            crate::config::sqlite_http_error(error)
+        }
         Err(e) => {
             let erro_str = e.to_string();
             let status_code = if erro_str.contains("não encontrado") {
@@ -126,8 +159,12 @@ pub async fn cancelar_importer_handler(
     State(pool): State<DbPool>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let manager = get_or_init_importer_manager(&pool);
-    match manager.cancel(&id) {
+    let cancel_id = id.clone();
+    let result = match manager_operation(pool, move |manager| manager.cancel(&cancel_id)).await {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+    match result {
         Ok(_) => (
             StatusCode::OK,
             Json(serde_json::json!({

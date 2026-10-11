@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::task::spawn_blocking;
 
-use crate::camara::bulk::extrair_e_processar_ceap_zip;
 use crate::error::{IngestionError, Result};
 use crate::importers::sink::BatchSink;
 use crate::importers::traits::{ImportContext, ImportStage, SourceImporter};
@@ -152,45 +151,56 @@ impl SourceImporter for CamaraCeapImporter {
 
     async fn run(&self, ctx: Arc<ImportContext>, sink: Arc<BatchSink>) -> Result<()> {
         let ano = if self.ano == 0 { 2024 } else { self.ano };
-        ctx.set_stage(ImportStage::Conectando, format!("Acessando dados da CEAP para o ano {}", ano));
-
-        if let Some(ref zip_bytes) = self.mock_zip {
-            if ctx.is_cancelled() {
-                ctx.set_stage(ImportStage::Cancelado, "Cancelado");
-                return Ok(());
+        ctx.set_stage(
+            ImportStage::Baixando,
+            format!("Baixando dump CEAP {ano} para disco..."),
+        );
+        let temporary = if let Some(bytes) = self.mock_zip.clone() {
+            spawn_blocking(move || -> Result<tempfile::NamedTempFile> {
+                use std::io::Write;
+                let mut file = tempfile::NamedTempFile::new()?;
+                file.write_all(&bytes)?;
+                Ok(file)
+            })
+            .await
+            .map_err(|e| IngestionError::TokioJoin(e.to_string()))??
+        } else {
+            let client = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .user_agent("RadarCivico/1.0")
+                .build()?;
+            let url = format!("https://www.camara.leg.br/cotas/Ano-{ano}.csv.zip");
+            tokio::select! {
+                result = crate::camara::baixar_ceap(&client, &url) => result?,
+                _ = ctx.cancellation_token.cancelled() => {
+                    ctx.set_stage(ImportStage::Cancelado, "Cancelado durante download CEAP");
+                    return Ok(());
+                }
             }
-
-            ctx.set_stage(ImportStage::Descompactando, "Descompactando dump da CEAP...");
-            let bulk_records = extrair_e_processar_ceap_zip(zip_bytes).await?;
-
-            let despesas: Vec<storage::NovaDespesaParlamentar> = bulk_records
-                .into_iter()
-                .map(|r| storage::NovaDespesaParlamentar {
-                    casa_legislativa: r.casa_legislativa,
-                    parlamentar_nome: r.parlamentar_nome,
-                    parlamentar_cpf_mascarado: r.parlamentar_cpf_mascarado,
-                    data_emissao: r.data_emissao,
-                    categoria_despesa: r.categoria_despesa,
-                    fornecedor_nome: r.fornecedor_nome,
-                    fornecedor_cnpj_cpf: r.fornecedor_cnpj_cpf,
-                    valor_liquido: r.valor_liquido,
-                    numero_documento: r.numero_documento,
-                    url_nota_fiscal: r.url_nota_fiscal,
-                    detalhes_litros: r.detalhes_litros,
-                })
-                .collect();
-
-            let inseridos = sink.insert_despesas_parlamentares(despesas).await?;
-
-            ctx.update_progress(format!("Ano-{}.csv.zip", ano), 1, 1, inseridos as u64);
-            ctx.finish(format!("CEAP: {} despesas parlamentares processadas", inseridos));
-            return Ok(());
-        }
-
-        // Caso sem mock: executa ingestão padrão
-        ctx.set_stage(ImportStage::Baixando, format!("Baixando notas da CEAP da Câmara ({})", ano));
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        ctx.finish(format!("CEAP: Ingestão do ano {} concluída", ano));
+        };
+        let pool = sink.pool().clone();
+        let worker_ctx = ctx.clone();
+        ctx.set_stage(ImportStage::Processando, "Processando CSV CEAP em lotes...");
+        let inserted = spawn_blocking(move || {
+            crate::camara::processar_ceap_zip_em_lotes(
+                &pool,
+                temporary.reopen()?,
+                500,
+                |_, total| {
+                    if worker_ctx.is_cancelled() {
+                        return Err(IngestionError::Custom(
+                            "CEAP cancelada; lotes confirmados preservados".into(),
+                        ));
+                    }
+                    worker_ctx.update_progress(format!("Ano-{ano}.csv.zip"), 0, 1, total as u64);
+                    Ok(())
+                },
+            )
+        })
+        .await
+        .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
+        ctx.update_progress(format!("Ano-{ano}.csv.zip"), 1, 1, inserted as u64);
+        ctx.finish(format!("CEAP: {inserted} novas despesas gravadas"));
         Ok(())
     }
 }

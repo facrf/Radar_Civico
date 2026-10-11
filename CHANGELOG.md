@@ -4,10 +4,15 @@ Todas as alterações relevantes neste projeto são documentadas neste arquivo.
 
 ## [Unreleased]
 
-### Concorrência na sincronização
-- **CEAP:** Execução das gravações em lote em tarefas bloqueantes nas sincronizações individual e unificada, mantendo o runtime HTTP livre durante o trabalho SQLite.
-- **Snapshots dos jobs:** Uso de transações imediatas com retentativas ao salvar progresso, reduzindo falhas de sincronização causadas por contenção de escrita.
-- **Documentação:** Registro da causa dos timeouts de 15 segundos e dos ajustes de concorrência em `docs/sincronizacao_e_idempotencia.md`.
+### Confiabilidade da sincronização
+
+- **CEAP em streaming:** Download e descompactação em arquivos temporários, parsing em lotes de 500, limites de tamanho e empréstimo da conexão apenas durante cada lote; mesmo fluxo para sincronização individual, unificada e importador CEAP.
+- **Resultados corretos:** Falhas de download, parsing e gravação geram `ERRO` ou `PARCIAL`, com detalhes e preservação dos lotes confirmados. O modo API exige IDs e contabiliza resultados por deputado. Consultas locais e falhas do Querido Diário não são apresentadas como novas importações bem-sucedidas.
+- **Admissão de jobs:** Reserva atômica compartilhada por configuração e importadores, com `409 Conflict` para cargas conflitantes, incluindo Sincronizar Tudo e deduplicação.
+- **Conclusão durável:** Fila de resultados ao lado do banco, consulta de status sem conexão do pool quando a conclusão está pendente, retentativas e recuperação no arranque. Snapshot final e histórico são gravados atomicamente, sem duplicação na reaplicação.
+- **Polling:** Consultas sem sobreposição, cancelamento ao trocar job ou sair da página, intervalo crescente após falhas e indicação de persistência pendente.
+- **Diagnóstico:** Logs distinguem espera por conexão, trava de transação, operação e conclusão; a duração de 15 segundos não é tratada como prova de esgotamento do pool.
+- **Validação:** Regressões com banco em arquivo, HTTP mockado, falhas após lotes confirmados, conflito entre endpoints, recuperação após reinício e timers controlados no frontend.
 
 ## [0.1.3] - 2026-10-08
 

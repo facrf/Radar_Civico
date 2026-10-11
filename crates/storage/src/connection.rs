@@ -10,6 +10,7 @@ use crate::error::{Result, StorageError};
 static MEM_DB_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub fn apply_pragmas(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(Duration::from_secs(15))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
@@ -24,6 +25,7 @@ pub fn apply_pragmas(conn: &Connection) -> Result<()> {
 
 /// Configura PRAGMAs de alta performance especificamente para operações de ingestão massiva no SQLite.
 pub fn aplicar_pragmas_ingestao(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(Duration::from_secs(15))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
@@ -99,6 +101,8 @@ pub struct DbPool {
     target: DbTarget,
     pool: Arc<(Mutex<PoolState>, Condvar)>,
     max_size: usize,
+    pub(crate) completions:
+        Arc<Mutex<std::collections::HashMap<(String, String), crate::jobs::Completion>>>,
     // Keep at least one connection alive for shared-memory databases so it doesn't get dropped
     _anchor: Option<Arc<Mutex<Connection>>>,
 }
@@ -179,6 +183,7 @@ impl DbPool {
             target: DbTarget::File(path_buf),
             pool,
             max_size,
+            completions: Arc::new(Mutex::new(std::collections::HashMap::new())),
             _anchor: None,
         })
     }
@@ -217,6 +222,7 @@ impl DbPool {
             target: DbTarget::SharedMemory(uri),
             pool,
             max_size,
+            completions: Arc::new(Mutex::new(std::collections::HashMap::new())),
             _anchor: Some(Arc::new(Mutex::new(anchor_conn))),
         })
     }
@@ -243,6 +249,7 @@ impl DbPool {
     /// Limita conexões ativas e ociosas, aguardando no máximo o prazo informado.
     /// Em handlers assíncronos, chamar dentro de `spawn_blocking`.
     pub fn get_timeout(&self, timeout: Duration) -> Result<PooledConnection> {
+        let started = Instant::now();
         let (lock, available) = &*self.pool;
         let deadline = Instant::now() + timeout;
         let mut state = lock
@@ -250,6 +257,20 @@ impl DbPool {
             .map_err(|_| StorageError::Pool("Poisoned connection pool lock".into()))?;
         loop {
             if let Some(conn) = state.idle.pop() {
+                if started.elapsed() >= Duration::from_millis(500) {
+                    tracing::info!(
+                        stage = "pool",
+                        wait_ms = started.elapsed().as_millis() as u64,
+                        "Espera por conexão SQLite"
+                    );
+                }
+                tracing::debug!(
+                    stage = "pool",
+                    wait_ms = started.elapsed().as_millis() as u64,
+                    active = state.total - state.idle.len(),
+                    total = state.total,
+                    "Conexão SQLite adquirida"
+                );
                 return Ok(PooledConnection {
                     pool: self.clone(),
                     conn: Some(conn),
@@ -276,6 +297,13 @@ impl DbPool {
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
+                tracing::warn!(
+                    stage = "pool",
+                    wait_ms = started.elapsed().as_millis() as u64,
+                    active = state.total - state.idle.len(),
+                    total = state.total,
+                    "Prazo de conexão SQLite excedido"
+                );
                 return Err(StorageError::Pool(
                     "Tempo de espera por conexão SQLite excedido".into(),
                 ));
@@ -296,7 +324,16 @@ impl DbPool {
         let pool = self.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = pool.get()?;
-            operation(&mut conn)
+            let started = Instant::now();
+            let result = operation(&mut conn);
+            if started.elapsed() >= Duration::from_secs(1) { tracing::info!(stage = "operation", elapsed_ms = started.elapsed().as_millis() as u64, "Operação SQLite demorada"); }
+            if let Err(error) = &result {
+                tracing::warn!(stage = "operation", elapsed_ms = started.elapsed().as_millis() as u64, error = %error, "Operação SQLite falhou");
+                if let StorageError::Sqlite(rusqlite::Error::SqliteFailure(code, _)) = error {
+                    tracing::warn!(stage = "operation", sqlite_code = ?code.code, sqlite_extended_code = code.extended_code, "Código da falha SQLite");
+                }
+            }
+            result
         })
         .await
         .map_err(|e| StorageError::Pool(format!("Falha na tarefa SQLite: {e}")))?
@@ -321,11 +358,28 @@ impl DbPool {
 pub fn transaction_immediate(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(10);
+    let mut attempts = 0u32;
     loop {
-        let ptr = conn as *mut Connection;
-        match unsafe { (*ptr).transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) }
+        attempts += 1;
+        match rusqlite::Transaction::new_unchecked(&*conn, rusqlite::TransactionBehavior::Immediate)
         {
-            Ok(tx) => return Ok(tx),
+            Ok(tx) => {
+                if start.elapsed() >= Duration::from_millis(500) {
+                    tracing::info!(
+                        stage = "transaction",
+                        wait_ms = start.elapsed().as_millis() as u64,
+                        attempts,
+                        "Espera pela trava de escrita SQLite"
+                    );
+                }
+                tracing::debug!(
+                    stage = "transaction",
+                    wait_ms = start.elapsed().as_millis() as u64,
+                    attempts,
+                    "Transação SQLite adquirida"
+                );
+                return Ok(tx);
+            }
             Err(e) => {
                 let is_locked = match &e {
                     rusqlite::Error::SqliteFailure(err, _) => {
@@ -338,6 +392,9 @@ pub fn transaction_immediate(conn: &mut Connection) -> Result<rusqlite::Transact
                 if is_locked && start.elapsed() < timeout {
                     std::thread::sleep(std::time::Duration::from_millis(15));
                     continue;
+                }
+                if let rusqlite::Error::SqliteFailure(error, _) = &e {
+                    tracing::warn!(stage = "transaction", wait_ms = start.elapsed().as_millis() as u64, attempts, sqlite_code = ?error.code, sqlite_extended_code = error.extended_code, "Falha ao iniciar transação SQLite");
                 }
                 return Err(StorageError::Sqlite(e));
             }

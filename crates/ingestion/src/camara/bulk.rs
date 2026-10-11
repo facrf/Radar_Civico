@@ -46,6 +46,7 @@ fn normalizar_data_ceap(raw: &str) -> String {
 
 fn normalize_header(s: &str) -> String {
     s.trim()
+        .trim_start_matches("\u{feff}")
         .to_uppercase()
         .chars()
         .map(|c| match c {
@@ -62,13 +63,20 @@ fn normalize_header(s: &str) -> String {
 }
 
 fn find_col(headers: &csv_async::StringRecord, candidates: &[&str]) -> Option<usize> {
-    for (i, h) in headers.iter().enumerate() {
-        let h_norm = normalize_header(h);
-        for &c in candidates {
-            let c_norm = normalize_header(c);
-            if h_norm == c_norm || h_norm.contains(&c_norm) {
-                return Some(i);
-            }
+    for candidate in candidates {
+        if let Some(index) = headers
+            .iter()
+            .position(|h| normalize_header(h) == normalize_header(candidate))
+        {
+            return Some(index);
+        }
+    }
+    for candidate in candidates {
+        if let Some(index) = headers
+            .iter()
+            .position(|h| normalize_header(h).contains(&normalize_header(candidate)))
+        {
+            return Some(index);
         }
     }
     None
@@ -78,6 +86,30 @@ pub async fn processar_stream_ceap_com_delimitador<R: AsyncRead + Unpin + Send>(
     reader: R,
     delimiter: u8,
 ) -> Result<Vec<CeapBulkRecord>> {
+    let mut all = Vec::new();
+    processar_ceap_em_lotes(reader, delimiter, 500, |batch| {
+        all.extend_from_slice(batch);
+        Ok(())
+    })
+    .await?;
+    Ok(all)
+}
+
+async fn processar_ceap_em_lotes<R, F>(
+    reader: R,
+    delimiter: u8,
+    batch_size: usize,
+    mut on_batch: F,
+) -> Result<usize>
+where
+    R: AsyncRead + Unpin + Send,
+    F: FnMut(&[CeapBulkRecord]) -> Result<()>,
+{
+    if !(1..=5000).contains(&batch_size) {
+        return Err(IngestionError::Parse(
+            "Lote CEAP deve ter entre 1 e 5000 registros".into(),
+        ));
+    }
     let mut csv_reader = AsyncReaderBuilder::new()
         .delimiter(delimiter)
         .has_headers(true)
@@ -194,7 +226,20 @@ pub async fn processar_stream_ceap_com_delimitador<R: AsyncRead + Unpin + Send>(
         &["DETALHESLITROS", "LITROS", "QTDLITROS", "VOLUMELITROS"],
     );
 
-    let mut records = Vec::new();
+    for (name, column) in [
+        ("parlamentar", col_nome),
+        ("data", col_data),
+        ("fornecedor", col_forn_doc),
+        ("valor_liquido", col_valor),
+    ] {
+        if column.is_none() {
+            return Err(IngestionError::Parse(format!(
+                "CSV CEAP sem coluna obrigatória: {name}"
+            )));
+        }
+    }
+    let mut records = Vec::with_capacity(batch_size);
+    let mut total = 0usize;
     let mut records_stream = csv_reader.into_records();
 
     while let Some(record_res) = records_stream.next().await {
@@ -276,9 +321,17 @@ pub async fn processar_stream_ceap_com_delimitador<R: AsyncRead + Unpin + Send>(
             url_nota_fiscal,
             detalhes_litros,
         });
+        if records.len() == batch_size {
+            on_batch(&records)?;
+            total += records.len();
+            records.clear();
+        }
     }
-
-    Ok(records)
+    if !records.is_empty() {
+        on_batch(&records)?;
+        total += records.len();
+    }
+    Ok(total)
 }
 
 pub async fn processar_stream_ceap_csv<R: AsyncRead + Unpin + Send>(
@@ -479,5 +532,252 @@ CARLOS DRUMMOND;11122233344;2024-06-01;LOCAÇÃO DE VEÍCULOS;LOCALIZA RENT A CA
         assert_eq!(parlamentar, "CARLOS DRUMMOND");
         assert_eq!(valor, 2500.0);
         assert_eq!(doc, "16670085000155");
+    }
+}
+
+pub const MAX_CEAP_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_CEAP_CSV_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Baixa em blocos para disco; nunca mantém o dump anual completo na RAM.
+pub async fn baixar_ceap(client: &reqwest::Client, url: &str) -> Result<tempfile::NamedTempFile> {
+    use tokio::io::AsyncWriteExt;
+    let response = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(300))
+        .send()
+        .await?
+        .error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_CEAP_DOWNLOAD_BYTES)
+    {
+        return Err(IngestionError::Parse(
+            "Download CEAP excede limite de 1 GiB".into(),
+        ));
+    }
+    let temporary = tempfile::NamedTempFile::new()?;
+    let mut output = tokio::fs::File::from_std(temporary.reopen()?);
+    let mut chunks = response.bytes_stream();
+    let mut total = 0u64;
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk?;
+        total += chunk.len() as u64;
+        if total > MAX_CEAP_DOWNLOAD_BYTES {
+            return Err(IngestionError::Parse(
+                "Download CEAP excede limite de 1 GiB".into(),
+            ));
+        }
+        output.write_all(&chunk).await?;
+    }
+    output.flush().await?;
+    Ok(temporary)
+}
+
+// Este adaptador só é usado pelo parser dentro de spawn_blocking/Handle::block_on.
+struct BlockingReader<R>(R);
+impl<R: Read + Unpin> AsyncRead for BlockingReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.0.read(buf.initialize_unfilled()) {
+            Ok(count) => {
+                buf.advance(count);
+                std::task::Poll::Ready(Ok(()))
+            }
+            Err(error) => std::task::Poll::Ready(Err(error)),
+        }
+    }
+}
+
+/// Leitura do ZIP e parsing ficam na thread bloqueante. A conexão é emprestada
+/// apenas durante cada lote, permitindo consultas e snapshots entre transações.
+pub fn processar_ceap_zip_em_lotes<R, F>(
+    pool: &storage::DbPool,
+    input: R,
+    batch_size: usize,
+    mut progress: F,
+) -> Result<usize>
+where
+    R: Read + std::io::Seek + Send + Unpin,
+    F: FnMut(usize, usize) -> Result<()>,
+{
+    let mut archive =
+        zip::ZipArchive::new(input).map_err(|e| IngestionError::Zip(e.to_string()))?;
+    let index = (0..archive.len())
+        .find(|&index| {
+            archive
+                .by_index(index)
+                .is_ok_and(|file| file.name().to_lowercase().ends_with(".csv"))
+        })
+        .ok_or_else(|| IngestionError::Parse("Nenhum CSV no ZIP CEAP".into()))?;
+    let file = archive
+        .by_index(index)
+        .map_err(|e| IngestionError::Zip(e.to_string()))?;
+    if file.size() > MAX_CEAP_CSV_BYTES {
+        return Err(IngestionError::Parse(
+            "CSV CEAP excede limite de 4 GiB".into(),
+        ));
+    }
+    let mut input = crate::tse_ckan::LimitedRead::new(file, MAX_CEAP_CSV_BYTES);
+    let mut csv_file = tempfile::NamedTempFile::new()?;
+    std::io::copy(&mut input, &mut csv_file)?;
+    let mut input = std::io::BufReader::new(csv_file.reopen()?);
+    use std::io::BufRead;
+    let header = input.fill_buf()?;
+    let delimiter = if header
+        .iter()
+        .take_while(|&&b| b != b'\n')
+        .filter(|&&b| b == b';')
+        .count()
+        > header
+            .iter()
+            .take_while(|&&b| b != b'\n')
+            .filter(|&&b| b == b',')
+            .count()
+    {
+        b';'
+    } else {
+        b','
+    };
+    let mut inserted = 0usize;
+    tokio::runtime::Handle::current().block_on(processar_ceap_em_lotes(
+        BlockingReader(RecordLimit {
+            inner: input,
+            bytes: 0,
+            quoted: false,
+        }),
+        delimiter,
+        batch_size,
+        |batch| {
+            let n = {
+                let mut conn = pool.get()?;
+                ingerir_ceap_bulk_em_lotes(&mut conn, batch, batch.len())?
+            };
+            inserted += n;
+            progress(batch.len(), inserted)?;
+            Ok(())
+        },
+    ))?;
+    Ok(inserted)
+}
+
+// Impede que uma linha ou um campo entre aspas sem fechamento cresça sem limite.
+struct RecordLimit<R> {
+    inner: R,
+    bytes: usize,
+    quoted: bool,
+}
+impl<R: Read> Read for RecordLimit<R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(output)?;
+        for &byte in &output[..count] {
+            self.bytes += 1;
+            if byte == b'"' {
+                self.quoted = !self.quoted;
+            }
+            if byte == b'\n' && !self.quoted {
+                self.bytes = 0;
+            }
+            if self.bytes > 1024 * 1024 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Registro CEAP excede 1 MiB",
+                ));
+            }
+        }
+        Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod streaming_regressions {
+    use super::*;
+    use std::io::Write;
+    fn zip(csv: &str) -> Vec<u8> {
+        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        archive
+            .start_file("Ano-2024.csv", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(csv.as_bytes()).unwrap();
+        archive.finish().unwrap().into_inner()
+    }
+    #[tokio::test]
+    async fn bounded_batches_release_single_connection_and_deduplicate() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = storage::DbPool::open_with_size(directory.path().join("db.sqlite"), 1).unwrap();
+        storage::run_migrations(&mut pool.get().unwrap()).unwrap();
+        let mut csv =
+            "\u{feff}txNomeParlamentar;datEmissao;txtCNPJCPF;vlrDocumento;vlrLiquido;txtNumero\n"
+                .to_string();
+        for index in 0..1201 {
+            csv.push_str(&format!(
+                "DEPUTADO ÁGUA;2024-01-01;11222333000144;999,00;10,00;NF-{index}\n"
+            ));
+        }
+        let bytes = zip(&csv);
+        let worker_pool = pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut sizes = Vec::new();
+            let count = processar_ceap_zip_em_lotes(
+                &worker_pool,
+                std::io::Cursor::new(&bytes),
+                500,
+                |size, _| {
+                    sizes.push(size);
+                    // Pool com uma conexão: consulta só funciona se o lote a devolveu.
+                    let conn = worker_pool.get_timeout(std::time::Duration::from_millis(100))?;
+                    let amount: f64 = conn.query_row(
+                        "SELECT valor_liquido FROM despesas_parlamentares LIMIT 1",
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    assert_eq!(amount, 10.0);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(sizes, [500, 500, 201]);
+            assert_eq!(count, 1201);
+            assert_eq!(
+                processar_ceap_zip_em_lotes(
+                    &worker_pool,
+                    std::io::Cursor::new(bytes),
+                    500,
+                    |_, _| Ok(())
+                )
+                .unwrap(),
+                0
+            );
+        })
+        .await
+        .unwrap();
+        let count: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1201);
+    }
+    #[test]
+    fn oversized_quoted_record_is_rejected_before_unbounded_allocation() {
+        let input = format!("\"{}\n{}", "a".repeat(600000), "b".repeat(600000));
+        let mut reader = RecordLimit {
+            inner: input.as_bytes(),
+            bytes: 0,
+            quoted: false,
+        };
+        let mut buffer = [0; 8192];
+        let error = loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => panic!("Registro excessivo aceito"),
+                Ok(_) => (),
+                Err(error) => break error,
+            }
+        };
+        assert!(error.to_string().contains("1 MiB"));
     }
 }

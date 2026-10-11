@@ -5,6 +5,12 @@ pub enum StorageError {
     #[error("Database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    #[error("Tarefa conflitante em execução: {namespace}/{id}")]
+    Conflict { namespace: String, id: String },
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("Money error: {0}")]
     Money(String),
 

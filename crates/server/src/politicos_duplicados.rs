@@ -763,6 +763,7 @@ pub async fn mesclar_automatico_job_handler(
         )],
         criado_em: now,
         concluido_em: None,
+        persistencia_pendente: false,
     };
 
     crate::config::registrar_job(&pool, job)
@@ -772,7 +773,7 @@ pub async fn mesclar_automatico_job_handler(
     let job_id_spawn = job_id.clone();
     let pool_spawn = pool.clone();
 
-    tokio::spawn(async move {
+    crate::config::spawn_monitored_job(pool_spawn.clone(), job_id_spawn.clone(), async move {
         crate::config::atualizar_job(
             &pool_spawn,
             &job_id_spawn,
@@ -781,58 +782,15 @@ pub async fn mesclar_automatico_job_handler(
         )
         .await;
 
-        let grupos = {
-            let conn = match pool_spawn.get() {
-                Ok(c) => c,
-                Err(e) => {
-                    crate::config::atualizar_job_concluido(
-                        &pool_spawn,
-                        &job_id_spawn,
-                        100,
-                        "ERRO",
-                        &format!("Erro de conexão: {e}"),
-                    )
-                    .await;
-                    return;
-                }
-            };
-
-            let sql_grupos = format!(
-                "SELECT UPPER(TRIM(nome_completo)), data_nascimento, GROUP_CONCAT(id)
-                 FROM politicos
-                 WHERE data_nascimento IS NOT NULL AND data_nascimento != ''
-                   AND nome_completo IS NOT NULL AND length(nome_completo) > 5
-                 GROUP BY UPPER(TRIM(nome_completo)), data_nascimento
-                 HAVING count(*) > 1
-                 LIMIT {}",
-                limite_grupos
-            );
-
-            let res = conn.prepare(&sql_grupos).and_then(|mut stmt| {
-                let rows = stmt.query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })?;
-                let list: Vec<(String, String, String)> = rows.filter_map(|r| r.ok()).collect();
-                Ok(list)
-            });
-
-            match res {
-                Ok(list) => list,
-                Err(e) => {
-                    crate::config::atualizar_job_concluido(
-                        &pool_spawn,
-                        &job_id_spawn,
-                        100,
-                        "ERRO",
-                        &format!("Erro na consulta de grupos: {e}"),
-                    )
-                    .await;
-                    return;
-                }
+        let grupos = match pool_spawn.run_blocking(move |conn| {
+            let mut stmt = conn.prepare("SELECT UPPER(TRIM(nome_completo)),data_nascimento,GROUP_CONCAT(id) FROM politicos WHERE data_nascimento IS NOT NULL AND data_nascimento != '' AND nome_completo IS NOT NULL AND length(nome_completo)>5 GROUP BY UPPER(TRIM(nome_completo)),data_nascimento HAVING count(*)>1 LIMIT ?1")?;
+            let rows = stmt.query_map([limite_grupos], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        }).await {
+            Ok(groups) => groups,
+            Err(error) => {
+                crate::config::atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "ERRO", &format!("Falha ao selecionar duplicados: {error}")).await;
+                return;
             }
         };
 
@@ -859,28 +817,42 @@ pub async fn mesclar_automatico_job_handler(
         let chunks: Vec<Vec<(String, String, String)>> =
             grupos.chunks(100).map(|c| c.to_vec()).collect();
 
+        let mut failures = Vec::new();
         for chunk in chunks {
-            if let Ok(mut conn) = pool_spawn.get() {
-                for (_nome, _nasc, ids_str) in chunk {
-                    let mut ids: Vec<i64> = ids_str
-                        .split(',')
-                        .filter_map(|s| s.trim().parse::<i64>().ok())
-                        .collect();
-
-                    if ids.len() < 2 {
-                        continue;
-                    }
-
-                    ids.sort();
-                    let id_canonico = ids[0];
-
-                    for &id_dup in &ids[1..] {
-                        if mesclar_politicos_db(&mut conn, id_canonico, id_dup).is_ok() {
-                            unificados += 1;
+            let result = pool_spawn
+                .run_blocking(move |conn| {
+                    let mut processed = 0;
+                    let mut merged = 0;
+                    let mut errors = Vec::new();
+                    for (_, _, ids_str) in chunk {
+                        let mut ids: Vec<i64> = ids_str
+                            .split(',')
+                            .filter_map(|id| id.trim().parse().ok())
+                            .collect();
+                        if ids.len() < 2 {
+                            continue;
                         }
+                        ids.sort();
+                        let canonical = ids[0];
+                        for &duplicate in &ids[1..] {
+                            match mesclar_politicos_db(conn, canonical, duplicate) {
+                                Ok(_) => merged += 1,
+                                Err(error) => errors
+                                    .push(format!("Mesclagem {duplicate} → {canonical}: {error}")),
+                            }
+                        }
+                        processed += 1;
                     }
-                    processados += 1;
+                    Ok((processed, merged, errors))
+                })
+                .await;
+            match result {
+                Ok((processed, merged, errors)) => {
+                    processados += processed;
+                    unificados += merged;
+                    failures.extend(errors);
                 }
+                Err(error) => failures.push(error.to_string()),
             }
 
             let progresso =
@@ -893,17 +865,16 @@ pub async fn mesclar_automatico_job_handler(
 
         invalidar_cache_resumo_duplicados();
 
-        let msg_final = format!(
-            "Deduplicação em massa concluída com sucesso: {processados} grupos resolvidos e {unificados} registros consolidados."
-        );
-        crate::config::atualizar_job_concluido(
-            &pool_spawn,
-            &job_id_spawn,
-            100,
-            "CONCLUIDO",
-            &msg_final,
-        )
-        .await;
+        let msg_final = format!("Deduplicação: {processados} grupos processados, {unificados} registros consolidados, {} falhas. {}", failures.len(), failures.join("; "));
+        let status = if failures.is_empty() {
+            "CONCLUIDO"
+        } else if unificados > 0 {
+            "PARCIAL"
+        } else {
+            "ERRO"
+        };
+        crate::config::atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, status, &msg_final)
+            .await;
     });
 
     Ok((

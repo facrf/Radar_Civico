@@ -318,13 +318,10 @@ pub fn salvar_parametros_auditoria(
 pub async fn obter_audit_rules_handler(
     State(pool): State<DbPool>,
 ) -> Result<Json<ParametrosAuditoria>, (StatusCode, Json<serde_json::Value>)> {
-    let conn = pool.get().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "erro", "mensagem": format!("Erro ao obter conexão: {e}")})),
-        )
-    })?;
-    let params = carregar_parametros_auditoria(&conn);
+    let params = pool
+        .run_blocking(|conn| Ok(carregar_parametros_auditoria(conn)))
+        .await
+        .map_err(sqlite_http_error)?;
     Ok(Json(params))
 }
 
@@ -399,6 +396,8 @@ pub struct JobInfo {
     pub logs: Vec<String>,
     pub criado_em: String,
     pub concluido_em: Option<String>,
+    #[serde(default)]
+    pub persistencia_pendente: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -415,24 +414,49 @@ pub struct ExportarTabelaParams {
     pub formato: Option<String>, // "csv" | "json"
 }
 
-pub async fn registrar_job(
-    pool: &DbPool,
-    job: JobInfo,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    let payload = serde_json::to_string(&job).map_err(|e| {
-        (
+type ConfigError = (StatusCode, Json<serde_json::Value>);
+
+pub(crate) fn sqlite_http_error(error: storage::StorageError) -> ConfigError {
+    tracing::error!(error = %error, "Falha em operação de configuração");
+    match error {
+        storage::StorageError::Conflict { namespace, id } => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "erro": format!("Já existe uma tarefa conflitante em execução: {namespace}/{id}"),
+                "job_id": if namespace == "config" { Some(&id) } else { None },
+                "importer_id": if namespace == "importer" { Some(&id) } else { None },
+            })),
+        ),
+        error => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"erro":e.to_string()})),
-        )
-    })?;
-    pool.run_blocking(move |conn| storage::jobs::save(conn, "config", &job.job_id, true, &payload))
+            Json(json!({"erro": error.to_string()})),
+        ),
+    }
+}
+
+fn job_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, JobInfo>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, JobInfo>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+pub async fn registrar_job(pool: &DbPool, job: JobInfo) -> Result<(), ConfigError> {
+    let payload = serde_json::to_string(&job)
+        .map_err(|e| sqlite_http_error(storage::StorageError::Pool(e.to_string())))?;
+    let id = job.job_id.clone();
+    pool.run_blocking(move |conn| storage::jobs::save_exclusive(conn, "config", &id, &payload))
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro":e.to_string()})),
-            )
-        })
+        .map_err(sqlite_http_error)?;
+    job_cache()
+        .lock()
+        .map_err(|_| {
+            sqlite_http_error(storage::StorageError::Pool(
+                "Cache de jobs indisponível".into(),
+            ))
+        })?
+        .insert(job.job_id.clone(), job);
+    Ok(())
 }
 
 fn formatar_tamanho(bytes: u64) -> String {
@@ -478,109 +502,93 @@ pub async fn status_handler(
             (0u64, "0 B (memória)".to_string(), ":memory:".to_string())
         };
 
-    let conn = pool.get().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"erro": format!("Erro ao obter conexão do pool: {e}")})),
-        )
-    })?;
+    pool.run_blocking(move |conn| {
+        let politicos: i64 = conn.query_row("SELECT count(*) FROM politicos", [], |r| r.get(0))?;
+        let candidaturas: i64 =
+            conn.query_row("SELECT count(*) FROM candidaturas", [], |r| r.get(0))?;
+        let receitas_campanha: i64 =
+            conn.query_row("SELECT count(*) FROM receitas_campanha", [], |r| r.get(0))?;
+        let despesas_campanha: i64 =
+            conn.query_row("SELECT count(*) FROM despesas_campanha", [], |r| r.get(0))?;
+        let despesas_parlamentares: i64 =
+            conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })?;
+        let contratos_publicos: i64 =
+            conn.query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))?;
+        let alertas_auditoria: i64 =
+            conn.query_row("SELECT count(*) FROM alertas_auditoria", [], |r| r.get(0))?;
+        let empresas_qsa: i64 =
+            conn.query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))?;
+        let registros_profissionais: i64 =
+            conn.query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
+                r.get(0)
+            })?;
+        let beneficios_emergenciais: i64 =
+            conn.query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
+                r.get(0)
+            })?;
+        let alertas_beneficio_indevido: i64 =
+            conn.query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| {
+                r.get(0)
+            })?;
+        let cargos_autoridades: i64 =
+            conn.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0))?;
+        let emendas_parlamentares: i64 =
+            conn.query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
+                r.get(0)
+            })?;
 
-    let politicos: i64 = conn
-        .query_row("SELECT count(*) FROM politicos", [], |r| r.get(0))
-        .unwrap_or(0);
-    let candidaturas: i64 = conn
-        .query_row("SELECT count(*) FROM candidaturas", [], |r| r.get(0))
-        .unwrap_or(0);
-    let receitas_campanha: i64 = conn
-        .query_row("SELECT count(*) FROM receitas_campanha", [], |r| r.get(0))
-        .unwrap_or(0);
-    let despesas_campanha: i64 = conn
-        .query_row("SELECT count(*) FROM despesas_campanha", [], |r| r.get(0))
-        .unwrap_or(0);
-    let despesas_parlamentares: i64 = conn
-        .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
-    let contratos_publicos: i64 = conn
-        .query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))
-        .unwrap_or(0);
-    let alertas_auditoria: i64 = conn
-        .query_row("SELECT count(*) FROM alertas_auditoria", [], |r| r.get(0))
-        .unwrap_or(0);
-    let empresas_qsa: i64 = conn
-        .query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))
-        .unwrap_or(0);
-    let registros_profissionais: i64 = conn
-        .query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
-    let beneficios_emergenciais: i64 = conn
-        .query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
-    let alertas_beneficio_indevido: i64 = conn
-        .query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
-    let cargos_autoridades: i64 = conn
-        .query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0))
-        .unwrap_or(0);
-    let emendas_parlamentares: i64 = conn
-        .query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
-
-    let ultimo_evento_sincronizacao: Option<String> = conn
-        .query_row(
-            "SELECT data_inicio || ' (' || fonte || ' - ' || status || ')' 
+        let ultimo_evento_sincronizacao: Option<String> = conn
+            .query_row(
+                "SELECT data_inicio || ' (' || fonte || ' - ' || status || ')'
              FROM historico_sincronizacao 
              ORDER BY id DESC LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .ok()
-        .or_else(|| {
-            conn.query_row(
-                "SELECT applied_at || ' (Migrações Aplicadas)' 
-                 FROM _migrations 
-                 ORDER BY version DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             )
             .ok()
-        });
+            .or_else(|| {
+                conn.query_row(
+                    "SELECT applied_at || ' (Migrações Aplicadas)'
+                 FROM _migrations
+                 ORDER BY version DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .ok()
+            });
 
-    Ok(Json(ConfigStatusResponse {
-        tamanho_banco_bytes,
-        tamanho_banco_formatado,
-        caminho_banco,
-        total_registros: TotalRegistros {
-            politicos,
-            candidaturas,
-            receitas_campanha,
-            despesas_campanha,
-            despesas_parlamentares,
-            contratos_publicos,
-            alertas_auditoria,
-            empresas_qsa,
-            registros_profissionais,
-            beneficios_emergenciais,
-            alertas_beneficio_indevido,
-            cargos_autoridades,
-            emendas_parlamentares,
-        },
-        ultimo_evento_sincronizacao,
-        versao_sistema: option_env!("APP_VERSION")
-            .unwrap_or(env!("CARGO_PKG_VERSION"))
-            .to_string(),
-        git_commit: option_env!("APP_GIT_COMMIT").map(|s| s.to_string()),
-        commit_count: option_env!("APP_COMMIT_COUNT").and_then(|s| s.parse().ok()),
-    }))
+        Ok(ConfigStatusResponse {
+            tamanho_banco_bytes,
+            tamanho_banco_formatado,
+            caminho_banco,
+            total_registros: TotalRegistros {
+                politicos,
+                candidaturas,
+                receitas_campanha,
+                despesas_campanha,
+                despesas_parlamentares,
+                contratos_publicos,
+                alertas_auditoria,
+                empresas_qsa,
+                registros_profissionais,
+                beneficios_emergenciais,
+                alertas_beneficio_indevido,
+                cargos_autoridades,
+                emendas_parlamentares,
+            },
+            ultimo_evento_sincronizacao,
+            versao_sistema: option_env!("APP_VERSION")
+                .unwrap_or(env!("CARGO_PKG_VERSION"))
+                .to_string(),
+            git_commit: option_env!("APP_GIT_COMMIT").map(|s| s.to_string()),
+            commit_count: option_env!("APP_COMMIT_COUNT").and_then(|s| s.parse().ok()),
+        })
+    })
+    .await
+    .map(Json)
+    .map_err(sqlite_http_error)
 }
 
 pub async fn versao_handler() -> Json<VersaoResponse> {
@@ -596,8 +604,11 @@ pub async fn versao_handler() -> Json<VersaoResponse> {
 }
 
 pub async fn atualizar_job(pool: &DbPool, job_id: &str, progresso: u8, mensagem: &str) {
-    atualizar_snapshot(pool, job_id, progresso, None, mensagem).await;
+    if let Err(error) = atualizar_snapshot(pool, job_id, progresso, mensagem).await {
+        tracing::error!(job_id, stage = "progress", error = %error, "Falha ao persistir progresso da tarefa");
+    }
 }
+
 pub async fn atualizar_job_concluido(
     pool: &DbPool,
     job_id: &str,
@@ -605,47 +616,89 @@ pub async fn atualizar_job_concluido(
     status: &str,
     mensagem: &str,
 ) {
-    atualizar_snapshot(pool, job_id, progresso, Some(status), mensagem).await;
+    if let Err(error) = concluir_job(pool, job_id, progresso, status, mensagem).await {
+        tracing::error!(job_id, stage = "completion", error = %error, "Falha ao persistir conclusão; resultado pendente requer recuperação");
+    }
 }
+
+async fn concluir_job(
+    pool: &DbPool,
+    job_id: &str,
+    progresso: u8,
+    status: &str,
+    mensagem: &str,
+) -> storage::Result<()> {
+    let mut job = job_cache()
+        .lock()
+        .map_err(|_| storage::StorageError::Pool("Cache de jobs indisponível".into()))?
+        .get(job_id)
+        .cloned()
+        .ok_or_else(|| storage::StorageError::NotFound(job_id.into()))?;
+    job.progresso = progresso;
+    job.status = status.into();
+    job.mensagem = mensagem.into();
+    job.concluido_em = Some(Utc::now().to_rfc3339());
+    job.logs
+        .push(format!("[{}] {}", Utc::now().to_rfc3339(), mensagem));
+    if job.logs.len() > 500 {
+        job.logs.drain(..job.logs.len() - 500);
+    }
+    let completion = storage::jobs::Completion {
+        namespace: "config".into(),
+        id: job_id.into(),
+        payload: serde_json::to_string(&job)
+            .map_err(|e| storage::StorageError::Pool(e.to_string()))?,
+        history: Some(storage::jobs::JobHistory {
+            source: job.fonte,
+            status: status.into(),
+            details: mensagem.into(),
+        }),
+    };
+    storage::jobs::complete(pool, completion).await?;
+    job_cache()
+        .lock()
+        .map_err(|_| storage::StorageError::Pool("Cache de jobs indisponível".into()))?
+        .remove(job_id);
+    Ok(())
+}
+
 async fn atualizar_snapshot(
     pool: &DbPool,
     job_id: &str,
     progresso: u8,
-    status: Option<&str>,
     mensagem: &str,
-) {
+) -> storage::Result<()> {
     let id = job_id.to_owned();
-    let status = status.map(str::to_owned);
     let message = mensagem.to_owned();
-    let result = pool
+    let job = pool
         .run_blocking(move |conn| {
             let tx = storage::transaction_immediate(conn)?;
             let payload = storage::jobs::load(&tx, "config", &id)?
                 .ok_or_else(|| storage::StorageError::NotFound(id.clone()))?;
             let mut job: JobInfo = serde_json::from_str(&payload)
                 .map_err(|e| storage::StorageError::Pool(e.to_string()))?;
+            if job.status != "PROCESSANDO" && job.status != "PENDENTE" {
+                return Ok(job);
+            }
             job.progresso = progresso;
             job.mensagem = message.clone();
-            if let Some(status) = status {
-                job.status = status;
-                job.concluido_em = Some(Utc::now().to_rfc3339());
-            }
             job.logs
                 .push(format!("[{}] {}", Utc::now().to_rfc3339(), message));
             if job.logs.len() > 500 {
                 job.logs.drain(..job.logs.len() - 500);
             }
-            let running = job.status == "PROCESSANDO" || job.status == "PENDENTE";
             let json = serde_json::to_string(&job)
                 .map_err(|e| storage::StorageError::Pool(e.to_string()))?;
-            storage::jobs::save(&tx, "config", &id, running, &json)?;
+            storage::jobs::save(&tx, "config", &id, true, &json)?;
             tx.commit()?;
-            Ok(())
+            Ok(job)
         })
-        .await;
-    if let Err(error) = result {
-        tracing::error!("Falha ao persistir tarefa {job_id}: {error}");
-    }
+        .await?;
+    job_cache()
+        .lock()
+        .map_err(|_| storage::StorageError::Pool("Cache de jobs indisponível".into()))?
+        .insert(job.job_id.clone(), job);
+    Ok(())
 }
 
 async fn executar_rotina_fonte(
@@ -654,120 +707,32 @@ async fn executar_rotina_fonte(
     ano: i32,
     job_id: &str,
 ) -> Result<String, String> {
-    match fonte {
-        "TSE" => {
-            atualizar_job(
-                pool,
-                job_id,
-                35,
-                &format!("Consultando repositório eleitoral TSE ano {ano}..."),
-            )
-            .await;
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-            atualizar_job(
-                pool,
-                job_id,
-                70,
-                "Processando registros eleitorais e prestação de contas...",
-            )
-            .await;
-
-            let conn = pool.get().map_err(|e| e.to_string())?;
-            // Sincroniza nós e conexões de rede se houver
-            let total_cand: i64 = conn
-                .query_row(
-                    "SELECT count(*) FROM candidaturas WHERE ano_eleicao = ?1",
-                    [ano],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-
-            Ok(format!(
-                "Sincronização TSE {ano} concluída. {total_cand} candidaturas ativas no banco."
-            ))
-        }
-        "CEAP" => {
-            atualizar_job(
-                pool,
-                job_id,
-                35,
-                &format!("Conectando à API de Dados Abertos da Câmara ({ano})..."),
-            )
-            .await;
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-            atualizar_job(
-                pool,
-                job_id,
-                70,
-                "Importando cotas parlamentares e notas fiscais...",
-            )
-            .await;
-
-            let conn = pool.get().map_err(|e| e.to_string())?;
-            let total_ceap: i64 = conn
-                .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
-                    r.get(0)
-                })
-                .unwrap_or(0);
-
-            Ok(format!(
-                "Ingestão CEAP {ano} concluída. Total de {total_ceap} despesas catalogadas."
-            ))
-        }
-        "RECEITA_QSA" => {
-            atualizar_job(
-                pool,
-                job_id,
-                35,
-                "Consultando base de CNPJs e Sócios da Receita Federal...",
-            )
-            .await;
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-            atualizar_job(
-                pool,
-                job_id,
-                70,
-                "Vinculando administradores e filiais aos nós de rede...",
-            )
-            .await;
-
-            let conn = pool.get().map_err(|e| e.to_string())?;
-            let total_qsa: i64 = conn
-                .query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))
-                .unwrap_or(0);
-
-            Ok(format!(
-                "Ingestão QSA concluída. {total_qsa} vínculos societários ativos."
-            ))
-        }
-        "PNCP" => {
-            atualizar_job(
-                pool,
-                job_id,
-                35,
-                &format!("Acessando Portal Nacional de Contratações Públicas ({ano})..."),
-            )
-            .await;
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-            atualizar_job(
-                pool,
-                job_id,
-                70,
-                "Consolidando contratos e termos de licitação...",
-            )
-            .await;
-
-            let conn = pool.get().map_err(|e| e.to_string())?;
-            let total_pncp: i64 = conn
-                .query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))
-                .unwrap_or(0);
-
-            Ok(format!(
-                "Ingestão PNCP {ano} concluída. {total_pncp} contratos registrados."
-            ))
-        }
-        _ => Err(format!("Fonte desconhecida: {fonte}")),
-    }
+    let (table, label) = match fonte {
+        "TSE" => ("candidaturas", "candidaturas"),
+        "CEAP" => ("despesas_parlamentares", "despesas"),
+        "RECEITA_QSA" => ("empresas_qsa", "vínculos QSA"),
+        "PNCP" => ("contratos_publicos", "contratos"),
+        _ => return Err(format!("Fonte desconhecida: {fonte}")),
+    };
+    atualizar_job(
+        pool,
+        job_id,
+        35,
+        "Consultando registros já importados na base local...",
+    )
+    .await;
+    let count: i64 = pool
+        .run_blocking(move |conn| {
+            let sql = if table == "candidaturas" {
+                format!("SELECT count(*) FROM {table} WHERE ano_eleicao=?1")
+            } else {
+                format!("SELECT count(*) FROM {table} WHERE ?1 IS NOT NULL")
+            };
+            Ok(conn.query_row(&sql, [ano], |r| r.get(0))?)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(format!("Consulta local {fonte} concluída: {count} {label}. Esta operação não baixou dados novos; utilize o sincronizador ou importe o arquivo da fonte."))
 }
 
 pub async fn executar_ingestao_handler(
@@ -810,6 +775,7 @@ pub async fn executar_ingestao_handler(
         )],
         criado_em: now,
         concluido_em: None,
+        persistencia_pendente: false,
     };
 
     registrar_job(&pool, job).await?;
@@ -818,7 +784,7 @@ pub async fn executar_ingestao_handler(
     let fonte_spawn = fonte_upper.clone();
     let pool_spawn = pool.clone();
 
-    tokio::spawn(async move {
+    spawn_monitored_job(pool_spawn.clone(), job_id_spawn.clone(), async move {
         atualizar_job(
             &pool_spawn,
             &job_id_spawn,
@@ -831,23 +797,9 @@ pub async fn executar_ingestao_handler(
         match res {
             Ok(msg) => {
                 atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "CONCLUIDO", &msg).await;
-                if let Ok(conn) = pool_spawn.get() {
-                    let _ = conn.execute(
-                        "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                         VALUES (?1, 'CONCLUIDO', ?2, CURRENT_TIMESTAMP)",
-                        rusqlite::params![fonte_spawn, msg],
-                    );
-                }
             }
             Err(err_msg) => {
                 atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "ERRO", &err_msg).await;
-                if let Ok(conn) = pool_spawn.get() {
-                    let _ = conn.execute(
-                        "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                         VALUES (?1, 'ERRO', ?2, CURRENT_TIMESTAMP)",
-                        rusqlite::params![fonte_spawn, err_msg],
-                    );
-                }
             }
         }
     });
@@ -925,6 +877,7 @@ pub async fn sincronizar_tse_handler(
             )],
             criado_em: now,
             concluido_em: None,
+            persistencia_pendente: false,
         };
 
         registrar_job(&pool, job).await?;
@@ -933,7 +886,7 @@ pub async fn sincronizar_tse_handler(
         let pool_spawn = pool.clone();
         let datasets = payload.datasets.unwrap_or_default();
 
-        tokio::spawn(async move {
+        spawn_monitored_job(pool_spawn.clone(), job_id_spawn.clone(), async move {
             let start_instant = std::time::Instant::now();
             ingestion::progress::reset_import_progress(0);
 
@@ -1005,35 +958,34 @@ pub async fn sincronizar_tse_handler(
                             ),
                         )
                         .await;
-                        let resultado =
-                            match download {
-                                Ok(temporary) => {
-                                    let pool = pool_spawn.clone();
-                                    let nome_callback = nome.clone();
-                                    tokio::task::spawn_blocking(move || -> Result<usize, String> {
-                                        let mut conn = pool.get().map_err(|e| e.to_string())?;
-                                        storage::aplicar_pragmas_ingestao(&conn)
-                                            .map_err(|e| e.to_string())?;
-                                        ingestion::tse_ckan::processar_zip_tse_reader(
-                                            &mut conn,
-                                            temporary.reopen().map_err(|e| e.to_string())?,
-                                            |arquivo, n| {
-                                                ingestion::progress::update_import_progress_batch(
-                                                    &format!("{nome_callback} -> {arquivo}"),
-                                                    idx,
-                                                    total_urls,
-                                                    n as u64,
-                                                    start_instant,
-                                                );
-                                            },
-                                        )
-                                        .map_err(|e| e.to_string())
-                                    })
-                                    .await
-                                    .unwrap_or_else(|e| Err(format!("Falha da tarefa: {e}")))
-                                }
-                                Err(e) => Err(e.to_string()),
-                            };
+                        let resultado = match download {
+                            Ok(temporary) => {
+                                let pool = pool_spawn.clone();
+                                let nome_callback = nome.clone();
+                                tokio::task::spawn_blocking(move || -> Result<usize, String> {
+                                    let mut conn = pool.get().map_err(|e| e.to_string())?;
+                                    storage::aplicar_pragmas_ingestao(&conn)
+                                        .map_err(|e| e.to_string())?;
+                                    ingestion::tse_ckan::processar_zip_tse_reader(
+                                        &mut conn,
+                                        temporary.reopen().map_err(|e| e.to_string())?,
+                                        |arquivo, n| {
+                                            ingestion::progress::update_import_progress_batch(
+                                                &format!("{nome_callback} -> {arquivo}"),
+                                                idx,
+                                                total_urls,
+                                                n as u64,
+                                                start_instant,
+                                            );
+                                        },
+                                    )
+                                    .map_err(|e| e.to_string())
+                                })
+                                .await
+                                .unwrap_or_else(|e| Err(format!("Falha da tarefa: {e}")))
+                            }
+                            Err(e) => Err(e.to_string()),
+                        };
                         match resultado {
                             Ok(n) => {
                                 total_inseridos += n;
@@ -1075,13 +1027,6 @@ pub async fn sincronizar_tse_handler(
                         ingestion::progress::set_import_error(&falhas.join("; "), start_instant);
                     }
                     atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, status, &msg).await;
-                    if let Ok(conn) = pool_spawn.get() {
-                        let _ = conn.execute(
-                            "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                             VALUES ('TSE_CKAN', ?2, ?1, CURRENT_TIMESTAMP)",
-                            rusqlite::params![msg, status],
-                        );
-                    }
                 }
                 Ok(_) => {
                     ingestion::progress::finish_import_progress(start_instant);
@@ -1090,26 +1035,12 @@ pub async fn sincronizar_tse_handler(
                     );
                     atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "CONCLUIDO", &msg)
                         .await;
-                    if let Ok(conn) = pool_spawn.get() {
-                        let _ = conn.execute(
-                            "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                             VALUES ('TSE_CKAN', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
-                            rusqlite::params![msg],
-                        );
-                    }
                 }
                 Err(e) => {
                     let err_msg = format!("Falha na descoberta de pacotes via CKAN ({ano}): {e}");
                     ingestion::progress::set_import_error(&err_msg, start_instant);
                     atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "ERRO", &err_msg)
                         .await;
-                    if let Ok(conn) = pool_spawn.get() {
-                        let _ = conn.execute(
-                            "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                             VALUES ('TSE_CKAN', 'ERRO', ?1, CURRENT_TIMESTAMP)",
-                            rusqlite::params![err_msg],
-                        );
-                    }
                 }
             }
         });
@@ -1152,241 +1083,242 @@ pub struct SincronizarCamaraRequest {
 pub async fn sincronizar_camara_handler(
     State(pool): State<DbPool>,
     Json(payload): Json<SincronizarCamaraRequest>,
-) -> Result<(StatusCode, Json<ExecutarIngestaoResponse>), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(StatusCode, Json<ExecutarIngestaoResponse>), ConfigError> {
     let ano = payload.ano.unwrap_or(2024);
-    let modo_input = payload
+    let modo = payload
         .modo
-        .unwrap_or_else(|| "BULK".to_string())
+        .as_deref()
+        .unwrap_or("BULK")
         .trim()
         .to_uppercase();
-    let modo = if modo_input.contains("API") {
-        "API".to_string()
-    } else {
-        "BULK".to_string()
-    };
-
+    if !["BULK", "API"].contains(&modo.as_str()) || !(1990..=2100).contains(&ano) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"erro": "Informe um ano entre 1990 e 2100 e modo BULK ou API"})),
+        ));
+    }
+    let ids = payload.deputados_ids.unwrap_or_default();
+    if modo == "API" && (ids.is_empty() || ids.contains(&0) || payload.max_paginas == Some(0)) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({"erro": "No modo API, informe os IDs dos deputados e um limite de páginas maior que zero"}),
+            ),
+        ));
+    }
     let job_id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-
-    let job = JobInfo {
-        job_id: job_id.clone(),
-        fonte: format!("CAMARA_{}", modo),
-        ano: Some(ano),
-        status: "PROCESSANDO".to_string(),
-        progresso: 10,
-        mensagem: format!(
-            "Iniciando sincronização da Câmara no modo {} para o ano {}...",
-            modo, ano
-        ),
-        logs: vec![format!(
-            "[{now}] Disparada sincronização da Câmara no modo {modo} ({ano})"
-        )],
-        criado_em: now,
-        concluido_em: None,
-    };
-
-    registrar_job(&pool, job).await?;
-
-    let job_id_spawn = job_id.clone();
+    registrar_job(
+        &pool,
+        JobInfo {
+            job_id: job_id.clone(),
+            fonte: format!("CAMARA_{modo}"),
+            ano: Some(ano),
+            status: "PROCESSANDO".into(),
+            progresso: 10,
+            mensagem: format!("Sincronização CEAP {ano} ({modo}) iniciada"),
+            logs: vec![format!(
+                "[{now}] Sincronização CEAP {ano} ({modo}) solicitada"
+            )],
+            criado_em: now,
+            concluido_em: None,
+            persistencia_pendente: false,
+        },
+    )
+    .await?;
     let pool_spawn = pool.clone();
+    let job_id_spawn = job_id.clone();
     let modo_spawn = modo.clone();
-    let deputados_ids = payload.deputados_ids;
-    let max_paginas = payload.max_paginas;
-
-    tokio::spawn(async move {
-        atualizar_job(
+    spawn_monitored_job(pool.clone(), job_id.clone(), async move {
+        let outcome = if modo_spawn == "BULK" {
+            let url = format!("https://www.camara.leg.br/cotas/Ano-{ano}.csv.zip");
+            sincronizar_ceap_bulk(&pool_spawn, &job_id_spawn, &url).await
+        } else {
+            sincronizar_ceap_api(
+                &pool_spawn,
+                &job_id_spawn,
+                ano,
+                ids,
+                payload.max_paginas,
+                ingestion::camara::CamaraApiClient::new()
+                    .with_rate_limit(std::time::Duration::from_millis(50)),
+            )
+            .await
+        };
+        atualizar_job_concluido(
             &pool_spawn,
             &job_id_spawn,
-            20,
-            "Iniciando processamento assíncrono da Câmara...",
+            100,
+            outcome.status,
+            &outcome.message,
         )
         .await;
-
-        if modo_spawn == "BULK" {
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                40,
-                &format!("Acessando dump anual da CEAP (Ano-{ano}.csv.zip)..."),
-            )
-            .await;
-
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .user_agent("RadarCivico/1.0")
-                .build()
-                .unwrap_or_default();
-
-            let url = format!("https://www.camara.leg.br/cotas/Ano-{ano}.csv.zip");
-            let download_res = client.get(&url).send().await;
-
-            let mut processou_remoto = false;
-            if let Ok(resp) = download_res {
-                if resp.status().is_success() {
-                    if let Ok(bytes) = resp.bytes().await {
-                        atualizar_job(
-                            &pool_spawn,
-                            &job_id_spawn,
-                            60,
-                            "Descompactando e analisando dados da CEAP...",
-                        )
-                        .await;
-                        if let Ok(records) =
-                            ingestion::camara::processar_ceap_buffer_ou_zip(&bytes).await
-                        {
-                            if !records.is_empty() {
-                                atualizar_job(
-                                    &pool_spawn,
-                                    &job_id_spawn,
-                                    80,
-                                    &format!(
-                                        "Gravando {} despesas parlamentares no SQLite...",
-                                        records.len()
-                                    ),
-                                )
-                                .await;
-
-                                let pool = pool_spawn.clone();
-                                let inseridos = tokio::task::spawn_blocking(move || {
-                                    let mut conn = pool.get().map_err(|e| e.to_string())?;
-                                    ingestion::camara::ingerir_ceap_bulk_em_lotes(
-                                        &mut conn, &records, 500,
-                                    )
-                                    .map_err(|e| e.to_string())
-                                })
-                                .await
-                                .unwrap_or_else(|e| Err(format!("Falha da tarefa: {e}")));
-                                if let Ok(inseridos) = inseridos {
-                                    let msg = format!(
-                                        "Sincronização CEAP {ano} (BULK) concluída com sucesso. {} despesas inseridas.",
-                                        inseridos
-                                    );
-                                    atualizar_job_concluido(
-                                        &pool_spawn,
-                                        &job_id_spawn,
-                                        100,
-                                        "CONCLUIDO",
-                                        &msg,
-                                    )
-                                    .await;
-                                    if let Ok(conn) = pool_spawn.get() {
-                                        let _ = conn.execute(
-                                            "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                                             VALUES ('CAMARA_BULK', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
-                                            rusqlite::params![msg],
-                                        );
-                                    }
-                                    processou_remoto = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if !processou_remoto {
-                let conn = pool_spawn.get();
-                let total: i64 = conn
-                    .as_ref()
-                    .map(|c| {
-                        c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
-                            r.get(0)
-                        })
-                        .unwrap_or(0)
-                    })
-                    .unwrap_or(0);
-
-                let msg = format!(
-                    "Sincronização CEAP {ano} (BULK) processada. Base local com {total} registros de despesas catalogadas."
-                );
-                atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "CONCLUIDO", &msg).await;
-                if let Ok(c) = conn {
-                    let _ = c.execute(
-                        "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                         VALUES ('CAMARA_BULK', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
-                        rusqlite::params![msg],
-                    );
-                }
-            }
-        } else {
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                30,
-                "Conectando à API REST v2 da Câmara dos Deputados...",
-            )
-            .await;
-            let api_client = ingestion::camara::CamaraApiClient::new()
-                .with_rate_limit(std::time::Duration::from_millis(50));
-
-            let mut total_inseridos = 0;
-            let ids = deputados_ids.unwrap_or_default();
-
-            if !ids.is_empty() {
-                atualizar_job(
-                    &pool_spawn,
-                    &job_id_spawn,
-                    50,
-                    &format!(
-                        "Consultando despesas paginadas para {} deputados...",
-                        ids.len()
-                    ),
-                )
-                .await;
-
-                for id in ids {
-                    if let Ok(despesas) = api_client
-                        .buscar_despesas_deputado_hateoas(id, ano, max_paginas)
-                        .await
-                    {
-                        if let Ok(mut conn) = pool_spawn.get() {
-                            let inseridos =
-                                ingestion::camara::CamaraApiClient::salvar_despesas_api(
-                                    &mut conn,
-                                    &format!("DEPUTADO ID {id}"),
-                                    None,
-                                    &despesas,
-                                )
-                                .unwrap_or(0);
-                            total_inseridos += inseridos;
-                        }
-                    }
-                }
-            }
-
-            let conn = pool_spawn.get();
-            let total_db: i64 = conn
-                .as_ref()
-                .map(|c| {
-                    c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
-                        r.get(0)
-                    })
-                    .unwrap_or(0)
-                })
-                .unwrap_or(0);
-
-            let msg = format!(
-                "Sincronização CEAP {ano} (API REST) concluída. {total_inseridos} novos itens importados. Total no banco: {total_db}."
-            );
-            atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "CONCLUIDO", &msg).await;
-            if let Ok(c) = conn {
-                let _ = c.execute(
-                    "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                     VALUES ('CAMARA_API', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
-                    rusqlite::params![msg],
-                );
-            }
-        }
     });
-
     Ok((
         StatusCode::ACCEPTED,
         Json(ExecutarIngestaoResponse {
             job_id,
-            status: "PROCESSANDO".to_string(),
-            mensagem: format!("Job de sincronização da Câmara despachado com sucesso ({modo})."),
+            status: "PROCESSANDO".into(),
+            mensagem: format!("Sincronização CEAP ({modo}) iniciada"),
         }),
     ))
+}
+
+struct SyncOutcome {
+    status: &'static str,
+    message: String,
+}
+
+async fn sincronizar_ceap_bulk(pool: &DbPool, job_id: &str, url: &str) -> SyncOutcome {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    atualizar_job(
+        pool,
+        job_id,
+        20,
+        "Baixando dump CEAP para arquivo temporário...",
+    )
+    .await;
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .user_agent("RadarCivico/1.0")
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return SyncOutcome {
+                status: "ERRO",
+                message: error.to_string(),
+            }
+        }
+    };
+    let temporary = match ingestion::camara::baixar_ceap(&client, url).await {
+        Ok(file) => file,
+        Err(error) => {
+            return SyncOutcome {
+                status: "ERRO",
+                message: format!("Falha ao baixar CEAP: {error}"),
+            }
+        }
+    };
+    atualizar_job(
+        pool,
+        job_id,
+        40,
+        "Processando CSV CEAP em lotes, com memória limitada...",
+    )
+    .await;
+    let inserted = Arc::new(AtomicUsize::new(0));
+    let processed = Arc::new(AtomicUsize::new(0));
+    let inserted_worker = inserted.clone();
+    let processed_worker = processed.clone();
+    let worker_pool = pool.clone();
+    let mut worker = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        ingestion::camara::processar_ceap_zip_em_lotes(
+            &worker_pool,
+            temporary.reopen().map_err(|e| e.to_string())?,
+            500,
+            |rows, total| {
+                inserted_worker.store(total, Ordering::Relaxed);
+                processed_worker.fetch_add(rows, Ordering::Relaxed);
+                Ok(())
+            },
+        )
+        .map_err(|e| e.to_string())
+    });
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let result = loop {
+        tokio::select! {
+            result = &mut worker => break result.unwrap_or_else(|e| Err(format!("Falha da tarefa CEAP: {e}"))),
+            _ = interval.tick() => {
+                atualizar_job(pool, job_id, 60, &format!("CEAP: {} linhas processadas, {} novas despesas gravadas", processed.load(Ordering::Relaxed), inserted.load(Ordering::Relaxed))).await;
+            }
+        }
+    };
+    match result {
+        Ok(total) => SyncOutcome { status: "CONCLUIDO", message: format!("CEAP concluída: {} linhas processadas, {total} novas despesas gravadas; duplicatas ignoradas", processed.load(Ordering::Relaxed)) },
+        Err(error) => {
+            let total = inserted.load(Ordering::Relaxed);
+            SyncOutcome { status: if total > 0 { "PARCIAL" } else { "ERRO" }, message: format!("Falha CEAP: {error}. {total} novas despesas de lotes já confirmados permanecem na base") }
+        }
+    }
+}
+
+async fn sincronizar_ceap_api(
+    pool: &DbPool,
+    job_id: &str,
+    ano: i32,
+    ids: Vec<u32>,
+    max_paginas: Option<usize>,
+    client: ingestion::camara::CamaraApiClient,
+) -> SyncOutcome {
+    let mut inserted = 0;
+    let mut completed = 0;
+    let mut failures = Vec::new();
+    let total = ids.len();
+    for (index, id) in ids.into_iter().enumerate() {
+        atualizar_job(
+            pool,
+            job_id,
+            20 + (index * 70 / total) as u8,
+            &format!("Consultando deputado {id} ({}/{total})", index + 1),
+        )
+        .await;
+        let result = match client
+            .buscar_despesas_deputado_hateoas(id, ano, max_paginas)
+            .await
+        {
+            Ok(records) => {
+                let worker_pool = pool.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut conn = worker_pool.get().map_err(|e| e.to_string())?;
+                    ingestion::camara::CamaraApiClient::salvar_despesas_api(
+                        &mut conn,
+                        &format!("DEPUTADO ID {id}"),
+                        None,
+                        &records,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("Falha da tarefa: {e}")))
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        match result {
+            Ok(count) => {
+                inserted += count;
+                completed += 1;
+            }
+            Err(error) => failures.push(format!("Deputado {id}: {error}")),
+        }
+    }
+    SyncOutcome {
+        status: if failures.is_empty() { "CONCLUIDO" } else if completed > 0 { "PARCIAL" } else { "ERRO" },
+        message: format!("CEAP API {ano}: {completed}/{total} deputados consultados, {inserted} novas despesas. {}", failures.join("; ")),
+    }
+}
+
+pub(crate) fn spawn_monitored_job(
+    pool: DbPool,
+    job_id: String,
+    future: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    tokio::spawn(async move {
+        if let Err(error) = tokio::spawn(future).await {
+            atualizar_job_concluido(
+                &pool,
+                &job_id,
+                100,
+                "ERRO",
+                &format!("Worker interrompido: {error}"),
+            )
+            .await;
+        }
+    });
 }
 
 pub async fn sincronizar_autoridades_handler(
@@ -1405,6 +1337,7 @@ pub async fn sincronizar_autoridades_handler(
         logs: vec![format!("[{now}] Disparada sincronização de autoridades de cúpula")],
         criado_em: now,
         concluido_em: None,
+        persistencia_pendente: false,
     };
 
     registrar_job(&pool, job).await?;
@@ -1412,7 +1345,7 @@ pub async fn sincronizar_autoridades_handler(
     let job_id_spawn = job_id.clone();
     let pool_spawn = pool.clone();
 
-    tokio::spawn(async move {
+    spawn_monitored_job(pool_spawn.clone(), job_id_spawn.clone(), async move {
         atualizar_job(
             &pool_spawn,
             &job_id_spawn,
@@ -1421,18 +1354,30 @@ pub async fn sincronizar_autoridades_handler(
         )
         .await;
 
-        let total = if let Ok(mut conn) = pool_spawn.get() {
-            match ingestion::autoridades::sincronizar_autoridades_cupula(&mut conn) {
-                Ok(n) => n,
-                Err(e) => {
-                    let err_msg = format!("Erro na sincronização de autoridades: {e}");
-                    atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "ERRO", &err_msg)
-                        .await;
-                    return;
-                }
+        let result = pool_spawn
+            .run_blocking(|conn| {
+                ingestion::autoridades::sincronizar_autoridades_cupula(conn)
+                    .map_err(|e| storage::StorageError::Pool(e.to_string()))?;
+                Ok(
+                    conn.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| {
+                        r.get::<_, i64>(0)
+                    })?,
+                )
+            })
+            .await;
+        let total = match result {
+            Ok(total) => total,
+            Err(error) => {
+                atualizar_job_concluido(
+                    &pool_spawn,
+                    &job_id_spawn,
+                    100,
+                    "ERRO",
+                    &format!("Falha ao sincronizar autoridades: {error}"),
+                )
+                .await;
+                return;
             }
-        } else {
-            0
         };
 
         atualizar_job(
@@ -1446,27 +1391,13 @@ pub async fn sincronizar_autoridades_handler(
         )
         .await;
 
-        let total_cargos: i64 = pool_spawn
-            .get()
-            .map(|c| {
-                c.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0))
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0);
+        let total_cargos = total;
 
         let msg = format!(
             "Sincronização de autoridades concluída: {} cargos registrados no sistema.",
             total_cargos
         );
         atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "CONCLUIDO", &msg).await;
-
-        if let Ok(conn) = pool_spawn.get() {
-            let _ = conn.execute(
-                "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                 VALUES ('AUTORIDADES_CUPULA', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
-                rusqlite::params![msg],
-            );
-        }
     });
 
     Ok((
@@ -1506,6 +1437,7 @@ pub async fn sincronizar_diarios_handler(
         logs: vec![format!("[{now}] Disparada sincronização do Querido Diário")],
         criado_em: now,
         concluido_em: None,
+        persistencia_pendente: false,
     };
 
     registrar_job(&pool, job).await?;
@@ -1513,7 +1445,7 @@ pub async fn sincronizar_diarios_handler(
     let job_id_spawn = job_id.clone();
     let pool_spawn = pool.clone();
 
-    tokio::spawn(async move {
+    spawn_monitored_job(pool_spawn.clone(), job_id_spawn.clone(), async move {
         atualizar_job(
             &pool_spawn,
             &job_id_spawn,
@@ -1522,168 +1454,116 @@ pub async fn sincronizar_diarios_handler(
         )
         .await;
 
-        let limite = payload.limite.unwrap_or(10).clamp(1, 50);
-        let mut termos_pesquisa: Vec<(String, String, Option<String>)> = Vec::new();
-
-        if let Some(termo_custom) = payload.termo.filter(|t| !t.trim().is_empty()) {
-            termos_pesquisa.push((
-                termo_custom.trim().to_string(),
+        let limit = payload.limite.unwrap_or(10).clamp(1, 50);
+        let terms = if let Some(term) = payload.termo.filter(|term| !term.trim().is_empty()) {
+            Ok(vec![(
+                term.trim().to_string(),
                 "CONSULTA_MANUAL".to_string(),
-                payload.municipio.clone(),
-            ));
+                payload.municipio,
+            )])
         } else {
-            // Seleciona principais doadores de campanha e parlamentares da base
-            if let Ok(conn) = pool_spawn.get() {
-                if let Ok(mut stmt) = conn.prepare(
-                    "SELECT doador_nome, doador_cpf_cnpj, NULL
-                     FROM receitas_campanha
-                     WHERE doador_nome IS NOT NULL AND length(doador_nome) > 4
-                     GROUP BY doador_nome
-                     ORDER BY (SUM(valor_centavos)/100.0) DESC
-                     LIMIT ?1",
-                ) {
-                    if let Ok(rows) = stmt.query_map([limite], |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, Option<String>>(2)?,
-                        ))
-                    }) {
-                        for item in rows.flatten() {
-                            termos_pesquisa.push(item);
-                        }
-                    }
+            pool_spawn.run_blocking(move |conn| {
+                let mut terms = {
+                    let mut statement = conn.prepare("SELECT doador_nome,doador_cpf_cnpj,NULL FROM receitas_campanha WHERE doador_nome IS NOT NULL AND length(doador_nome)>4 GROUP BY doador_nome ORDER BY SUM(valor_centavos) DESC LIMIT ?1")?;
+                    let rows = statement.query_map([limit], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, Option<String>>(2)?)))?;
+                    rows.collect::<Result<Vec<_>, _>>()?
+                };
+                if terms.len() < 3 {
+                    let mut statement = conn.prepare("SELECT nome_completo,COALESCE(cpf_mascarado,'S/D'),uf FROM politicos WHERE nome_completo IS NOT NULL AND length(nome_completo)>4 ORDER BY id LIMIT ?1")?;
+                    let rows = statement.query_map([limit], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, Option<String>>(2)?)))?;
+                    for row in rows { let row = row?; if !terms.iter().any(|existing| existing.0 == row.0) { terms.push(row); } }
                 }
-
-                // Se não houver doadores suficientes, inclui parlamentares da base
-                if termos_pesquisa.len() < 3 {
-                    if let Ok(mut stmt) = conn.prepare(
-                        "SELECT nome_completo, COALESCE(cpf_mascarado, 'S/D'), uf
-                         FROM politicos
-                         WHERE nome_completo IS NOT NULL AND length(nome_completo) > 4
-                         ORDER BY id ASC
-                         LIMIT ?1",
-                    ) {
-                        if let Ok(rows) = stmt.query_map([limite], |r| {
-                            Ok((
-                                r.get::<_, String>(0)?,
-                                r.get::<_, String>(1)?,
-                                r.get::<_, Option<String>>(2)?,
-                            ))
-                        }) {
-                            for item in rows.flatten() {
-                                if !termos_pesquisa.iter().any(|(t, _, _)| t == &item.0) {
-                                    termos_pesquisa.push(item);
-                                }
-                            }
-                        }
-                    }
-                }
+                terms.truncate(limit);
+                Ok(terms)
+            }).await
+        };
+        let terms = match terms {
+            Ok(terms) if !terms.is_empty() => terms,
+            Ok(_) => {
+                atualizar_job_concluido(
+                    &pool_spawn,
+                    &job_id_spawn,
+                    100,
+                    "ERRO",
+                    "Nenhum termo disponível; informe um termo para consultar o Querido Diário",
+                )
+                .await;
+                return;
             }
-        }
-
-        if termos_pesquisa.is_empty() {
-            termos_pesquisa.push((
-                "EMPRESA CONSTRUTORA".to_string(),
-                "00000000000000".to_string(),
-                None,
-            ));
-        }
-
-        let total_termos = termos_pesquisa.len();
-        let qd_client = ingestion::QueridoDiarioClient::new();
-        let mut consultas_salvas = 0;
-
-        for (idx, (termo, doc, muni)) in termos_pesquisa.iter().enumerate() {
-            let pct = (20 + ((idx as u32 * 70) / total_termos as u32)).min(95) as u8;
+            Err(error) => {
+                atualizar_job_concluido(
+                    &pool_spawn,
+                    &job_id_spawn,
+                    100,
+                    "ERRO",
+                    &format!("Falha ao selecionar termos: {error}"),
+                )
+                .await;
+                return;
+            }
+        };
+        let client = ingestion::QueridoDiarioClient::new();
+        let mut completed = 0;
+        let mut failures = Vec::new();
+        let total = terms.len();
+        for (index, (term, document, municipality)) in terms.into_iter().enumerate() {
             atualizar_job(
                 &pool_spawn,
                 &job_id_spawn,
-                pct,
-                &format!(
-                    "Consultando Querido Diário ({}/{}): '{}'...",
-                    idx + 1,
-                    total_termos,
-                    termo
-                ),
+                20 + (index * 70 / total) as u8,
+                &format!("Consultando Querido Diário: {term} ({}/{total})", index + 1),
             )
             .await;
-
-            // Busca na API pública oficial do Querido Diário
-            match qd_client
-                .buscar_nomeacoes(termo, muni.as_deref(), None)
-                .await
-            {
-                Ok(resp) => {
-                    let total_gazettes = resp.total_gazettes;
-                    let payload_json =
-                        serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
-                    let municipio_str = muni.clone().unwrap_or_else(|| "BRASIL".to_string());
-
-                    if let Ok(mut conn) = pool_spawn.get() {
-                        let _ = ingestion::QueridoDiarioClient::salvar_cache(
-                            &mut conn,
-                            doc,
-                            termo,
-                            &municipio_str,
-                            total_gazettes,
-                            &payload_json,
-                        );
-                        consultas_salvas += 1;
+            let response = client
+                .buscar_nomeacoes(&term, municipality.as_deref(), None)
+                .await;
+            let (count, json, remote_ok) = match response {
+                Ok(response) => match serde_json::to_string(&response) {
+                    Ok(json) => (response.total_gazettes, json, true),
+                    Err(error) => {
+                        failures.push(format!("{term}: {error}"));
+                        continue;
                     }
+                },
+                Err(error) => {
+                    failures.push(format!("{term}: {error}"));
+                    (0, json!({"total_gazettes":0,"gazettes":[],"status":"ERRO","aviso":error.to_string()}).to_string(), false)
                 }
-                Err(err) => {
-                    tracing::warn!("Querido Diário offline ou indisponível para '{}': {}. Gravando registro de conformidade local.", termo, err);
-                    let municipio_str = muni.clone().unwrap_or_else(|| "BRASIL".to_string());
-                    let fallback_json = serde_json::json!({
-                        "total_gazettes": 0,
-                        "gazettes": [],
-                        "status": "consulta_registrada",
-                        "aviso": format!("API remota offline ou indisponível: {}", err)
-                    })
-                    .to_string();
-
-                    if let Ok(mut conn) = pool_spawn.get() {
-                        let _ = ingestion::QueridoDiarioClient::salvar_cache(
-                            &mut conn,
-                            doc,
-                            termo,
-                            &municipio_str,
-                            0,
-                            &fallback_json,
-                        );
-                        consultas_salvas += 1;
-                    }
-                }
+            };
+            let municipality = municipality.unwrap_or_else(|| "BRASIL".into());
+            let cache_term = term.clone();
+            let result = pool_spawn
+                .run_blocking(move |conn| {
+                    ingestion::QueridoDiarioClient::salvar_cache(
+                        conn,
+                        &document,
+                        &cache_term,
+                        &municipality,
+                        count,
+                        &json,
+                    )
+                    .map_err(|e| storage::StorageError::Pool(e.to_string()))
+                })
+                .await;
+            match result {
+                Ok(_) if remote_ok => completed += 1,
+                Ok(_) => (),
+                Err(error) => failures.push(format!("Cache de {term}: {error}")),
             }
-
-            // Intervalo breve para estabilidade de rede
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
-
-        let total_cache: i64 = pool_spawn
-            .get()
-            .map(|c| {
-                c.query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| {
-                    r.get(0)
-                })
-                .unwrap_or(0)
-            })
-            .unwrap_or(0);
-
-        let msg = format!(
-            "Sincronização com o Querido Diário concluída: {} consultas executadas ({} registros no cache).",
-            consultas_salvas, total_cache
+        let status = if failures.is_empty() {
+            "CONCLUIDO"
+        } else if completed > 0 {
+            "PARCIAL"
+        } else {
+            "ERRO"
+        };
+        let message = format!(
+            "Querido Diário: {completed}/{total} consultas concluídas. {}",
+            failures.join("; ")
         );
-        atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "CONCLUIDO", &msg).await;
-
-        if let Ok(conn) = pool_spawn.get() {
-            let _ = conn.execute(
-                "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim) 
-                 VALUES ('QUERIDO_DIARIO', 'CONCLUIDO', ?1, CURRENT_TIMESTAMP)",
-                rusqlite::params![msg],
-            );
-        }
+        atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, status, &message).await;
     });
 
     Ok((
@@ -1740,6 +1620,7 @@ pub async fn sincronizar_tudo_handler(
         ],
         criado_em: now,
         concluido_em: None,
+        persistencia_pendente: false,
     };
 
     registrar_job(&pool, job).await?;
@@ -1747,314 +1628,163 @@ pub async fn sincronizar_tudo_handler(
     let job_id_spawn = job_id.clone();
     let pool_spawn = pool.clone();
 
-    tokio::spawn(async move {
-        let mut falhas = Vec::<String>::new();
-        atualizar_job(
-            &pool_spawn,
-            &job_id_spawn,
-            10,
-            "Garantindo integridade e aplicando pragmas de alto desempenho no SQLite...",
-        )
-        .await;
-
-        if let Ok(conn) = pool_spawn.get() {
-            let _ = storage::aplicar_pragmas_ingestao(&conn);
-        }
-
-        // 1. Sincronização CEAP (Câmara dos Deputados)
+    spawn_monitored_job(pool_spawn.clone(), job_id_spawn.clone(), async move {
+        let mut failures = Vec::<String>::new();
+        let mut successes = 0usize;
         if incluir_camara {
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                20,
-                &format!(
-                    "Sincronizando CEAP (Câmara) para o ano fiscal {}...",
-                    ano_fiscal
-                ),
-            )
-            .await;
-
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(12))
-                .user_agent("RadarCivico/1.0 (Auditoria Parlamentar)")
-                .build()
-                .unwrap_or_default();
-
-            let url_ceap = format!("https://www.camara.leg.br/cotas/Ano-{ano_fiscal}.csv.zip");
-            let mut ceap_inseridos = 0;
-            let mut ceap_ok = false;
-
-            if let Ok(resp) = client.get(&url_ceap).send().await {
-                if resp.status().is_success() {
-                    if let Ok(bytes) = resp.bytes().await {
-                        atualizar_job(
-                            &pool_spawn,
-                            &job_id_spawn,
-                            30,
-                            "Processando notas da CEAP e aplicando deduplicação no SQLite...",
-                        )
-                        .await;
-
-                        if let Ok(records) =
-                            ingestion::camara::processar_ceap_buffer_ou_zip(&bytes).await
-                        {
-                            let pool = pool_spawn.clone();
-                            let resultado = tokio::task::spawn_blocking(move || {
-                                let mut conn = pool.get().map_err(|e| e.to_string())?;
-                                ingestion::camara::ingerir_ceap_bulk_em_lotes(
-                                    &mut conn, &records, 1000,
-                                )
-                                .map_err(|e| e.to_string())
-                            })
-                            .await
-                            .unwrap_or_else(|e| Err(format!("Falha da tarefa: {e}")));
-                            if let Ok(n) = resultado {
-                                ceap_inseridos = n;
-                                ceap_ok = true;
-                            }
-                        }
-                    }
-                }
+            let url = format!("https://www.camara.leg.br/cotas/Ano-{ano_fiscal}.csv.zip");
+            let outcome = sincronizar_ceap_bulk(&pool_spawn, &job_id_spawn, &url).await;
+            if outcome.status != "ERRO" {
+                successes += 1;
             }
-
-            if ceap_ok {
-                atualizar_job(
-                    &pool_spawn,
-                    &job_id_spawn,
-                    45,
-                    &format!(
-                        "CEAP {} sincronizada: {} novas despesas persistidas com sucesso.",
-                        ano_fiscal, ceap_inseridos
-                    ),
-                )
-                .await;
-            } else {
-                falhas.push("CEAP: falha ao baixar ou processar os dados da Câmara".into());
-                let total_ceap = pool_spawn
-                    .get()
-                    .map(|c| {
-                        c.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
-                            r.get::<_, i64>(0)
-                        })
-                        .unwrap_or(0)
-                    })
-                    .unwrap_or(0);
-                atualizar_job(
-                    &pool_spawn,
-                    &job_id_spawn,
-                    45,
-                    &format!(
-                        "CEAP: base local preservada e íntegra ({} notas catalogadas).",
-                        total_ceap
-                    ),
-                )
-                .await;
+            if outcome.status != "CONCLUIDO" {
+                failures.push(outcome.message.clone());
             }
+            atualizar_job(&pool_spawn, &job_id_spawn, 45, &outcome.message).await;
         }
-
-        // 2. Sincronização TSE (Tribunal Superior Eleitoral)
         if incluir_tse {
             atualizar_job(
                 &pool_spawn,
                 &job_id_spawn,
                 50,
-                &format!(
-                    "Consultando repositório eleitoral TSE para o ano {}...",
-                    ano_eleitoral
-                ),
+                &format!("Consultando pacotes eleitorais TSE {ano_eleitoral}..."),
             )
             .await;
-
             let datasets = ["candidatos", "bens-candidatos"];
             match ingestion::tse_ckan::descobrir_urls_tse(ano_eleitoral as u32, &datasets).await {
-                Ok(urls) => {
-                    let client = reqwest::Client::new();
-                    let mut pacotes = ingestion::tse_ckan::baixar_pacotes_tse(client, urls);
-                    while let Some((url, download)) = pacotes.recv().await {
-                        let result =
-                            match download {
-                                Ok(temporary) => {
-                                    let pool = pool_spawn.clone();
-                                    tokio::task::spawn_blocking(move || -> Result<usize, String> {
-                                        let mut conn = pool.get().map_err(|e| e.to_string())?;
-                                        ingestion::tse_ckan::processar_zip_tse_reader(
-                                            &mut conn,
-                                            temporary.reopen().map_err(|e| e.to_string())?,
-                                            |arquivo, n| {
-                                                tracing::trace!(
-                                                    arquivo,
-                                                    registros = n,
-                                                    "Lote TSE persistido"
-                                                )
-                                            },
-                                        )
-                                        .map_err(|e| e.to_string())
-                                    })
-                                    .await
-                                    .unwrap_or_else(|e| Err(e.to_string()))
+                Ok(urls) if !urls.is_empty() => {
+                    let mut packages =
+                        ingestion::tse_ckan::baixar_pacotes_tse(reqwest::Client::new(), urls);
+                    while let Some((url, download)) = packages.recv().await {
+                        let committed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                        let counter = committed.clone();
+                        let result = match download {
+                            Ok(file) => {
+                                let worker_pool = pool_spawn.clone();
+                                tokio::task::spawn_blocking(move || -> Result<usize, String> {
+                                    let mut conn = worker_pool.get().map_err(|e| e.to_string())?;
+                                    ingestion::tse_ckan::processar_zip_tse_reader(
+                                        &mut conn,
+                                        file.reopen().map_err(|e| e.to_string())?,
+                                        |_, count| {
+                                            counter.fetch_add(
+                                                count,
+                                                std::sync::atomic::Ordering::Relaxed,
+                                            );
+                                        },
+                                    )
+                                    .map_err(|e| e.to_string())
+                                })
+                                .await
+                                .unwrap_or_else(|e| Err(e.to_string()))
+                            }
+                            Err(error) => Err(error.to_string()),
+                        };
+                        match result {
+                            Ok(count) => {
+                                successes += 1;
+                                atualizar_job(
+                                    &pool_spawn,
+                                    &job_id_spawn,
+                                    70,
+                                    &format!("TSE: pacote processado com {count} registros: {url}"),
+                                )
+                                .await;
+                            }
+                            Err(error) => {
+                                if committed.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                                    successes += 1;
                                 }
-                                Err(e) => Err(e.to_string()),
-                            };
-                        if let Err(e) = result {
-                            falhas.push(format!("TSE {url}: {e}"));
+                                failures.push(format!("TSE {url}: {error}"));
+                            }
                         }
                     }
                 }
-                Err(e) => falhas.push(format!("Descoberta TSE: {e}")),
+                Ok(_) => failures.push(format!(
+                    "TSE {ano_eleitoral}: nenhum pacote disponível no catálogo"
+                )),
+                Err(error) => failures.push(format!("Descoberta TSE: {error}")),
             }
-
-            let total_cand = pool_spawn
-                .get()
-                .map(|c| {
-                    c.query_row(
-                        "SELECT count(*) FROM candidaturas WHERE ano_eleicao = ?1",
-                        [ano_eleitoral],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .unwrap_or(0)
-                })
-                .unwrap_or(0);
-
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                75,
-                &format!(
-                    "TSE {}: candidaturas consolidadas de forma idempotente ({} registros).",
-                    ano_eleitoral, total_cand
-                ),
-            )
-            .await;
         }
-
-        // 3. Vínculos Societários e Registros Profissionais (QSA e OAB)
         if incluir_receita {
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                80,
-                "Consultando vínculos QSA e registros OAB já importados...",
-            )
-            .await;
-
-            let (qsa_count, oab_count) = pool_spawn
-                .get()
-                .map(|c| {
-                    let q: i64 = c
-                        .query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))
-                        .unwrap_or(0);
-                    let o: i64 = c
-                        .query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
+            let result = pool_spawn
+                .run_blocking(|conn| {
+                    let qsa: i64 =
+                        conn.query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))?;
+                    let oab: i64 =
+                        conn.query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
                             r.get(0)
-                        })
-                        .unwrap_or(0);
-                    (q, o)
+                        })?;
+                    Ok((qsa, oab))
                 })
-                .unwrap_or((0, 0));
-
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                85,
-                &format!(
-                    "Vínculos consolidados: {} sócios/CNPJs e {} registros OAB.",
-                    qsa_count, oab_count
-                ),
-            )
-            .await;
-        }
-
-        // 4. Sincronização de Autoridades de Cúpula (STF, PGR, Embaixadores, Secretários)
-        if incluir_autoridades {
-            atualizar_job(&pool_spawn, &job_id_spawn,
-                88,
-                "Sincronizando catálogo de autoridades públicas de cúpula (STF, PGR, Embaixadores, Secretários)...",
-            )
-            .await;
-
-            if let Ok(mut conn) = pool_spawn.get() {
-                let _ = ingestion::autoridades::sincronizar_autoridades_cupula(&mut conn);
+                .await;
+            match result {
+                Ok((qsa, oab)) => {
+                    successes += 1;
+                    atualizar_job(&pool_spawn, &job_id_spawn, 85, &format!("Consulta local: {qsa} vínculos QSA e {oab} registros OAB; novos dados exigem importação da fonte")).await;
+                }
+                Err(error) => failures.push(format!("Consulta QSA/OAB: {error}")),
             }
-
-            let total_auth = pool_spawn
-                .get()
-                .map(|c| {
-                    c.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| {
-                        r.get::<_, i64>(0)
-                    })
-                    .unwrap_or(0)
-                })
-                .unwrap_or(0);
-
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                90,
-                &format!(
-                    "Autoridades de cúpula sincronizadas ({} cargos catalogados).",
-                    total_auth
-                ),
-            )
-            .await;
         }
-
-        // 5. Execução do Motor de Auditoria Analítico
+        if incluir_autoridades {
+            let result = pool_spawn
+                .run_blocking(|conn| {
+                    ingestion::autoridades::sincronizar_autoridades_cupula(conn)
+                        .map_err(|e| storage::StorageError::Pool(e.to_string()))
+                })
+                .await;
+            match result {
+                Ok(count) => {
+                    successes += 1;
+                    atualizar_job(
+                        &pool_spawn,
+                        &job_id_spawn,
+                        88,
+                        &format!("Autoridades: {count} registros processados"),
+                    )
+                    .await;
+                }
+                Err(error) => failures.push(format!("Autoridades: {error}")),
+            }
+        }
         if incluir_auditoria {
             atualizar_job(
                 &pool_spawn,
                 &job_id_spawn,
                 90,
-                "Disparando varredura determinística do Motor de Auditoria do Radar Cívico...",
+                "Executando motor de auditoria...",
             )
             .await;
-
-            let novos_alertas = match pool_spawn
+            match pool_spawn
                 .run_blocking(|conn| crate::alertas::sincronizar_alertas_sistema(conn))
                 .await
             {
-                Ok(n) => n,
-                Err(e) => {
-                    falhas.push(format!("Auditoria: {e}"));
-                    0
+                Ok(count) => {
+                    successes += 1;
+                    atualizar_job(
+                        &pool_spawn,
+                        &job_id_spawn,
+                        95,
+                        &format!("Auditoria concluída: {count} novos alertas"),
+                    )
+                    .await;
                 }
-            };
-
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                95,
-                &format!(
-                    "Auditoria analítica concluída: {} novos alertas detectados.",
-                    novos_alertas
-                ),
-            )
-            .await;
-        }
-
-        let status = if falhas.is_empty() {
-            "CONCLUIDO"
-        } else {
-            "PARCIAL"
-        };
-        let msg_conclusao = if falhas.is_empty() {
-            "Sincronização concluída. Fontes solicitadas processadas; QSA/OAB utilizam os dados já importados.".to_string()
-        } else {
-            format!(
-                "Sincronização encerrada com {} falhas: {}",
-                falhas.len(),
-                falhas.join("; ")
-            )
-        };
-        atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, status, &msg_conclusao).await;
-        if let Ok(conn) = pool_spawn.get() {
-            if let Err(e) = conn.execute(
-                "INSERT INTO historico_sincronizacao (fonte, status, detalhes, data_fim)
-                 VALUES ('SINCRONIZAR_TUDO', ?2, ?1, CURRENT_TIMESTAMP)",
-                rusqlite::params![msg_conclusao, status],
-            ) {
-                tracing::error!("Falha ao registrar histórico: {e}");
+                Err(error) => failures.push(format!("Auditoria: {error}")),
             }
         }
+        let status = if failures.is_empty() {
+            "CONCLUIDO"
+        } else if successes > 0 {
+            "PARCIAL"
+        } else {
+            "ERRO"
+        };
+        let message = format!(
+            "Sincronização encerrada: {successes} etapas/pacotes concluídos, {} falhas. {}",
+            failures.len(),
+            failures.join("; ")
+        );
+        atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, status, &message).await;
     });
 
     Ok((
@@ -2072,27 +1802,40 @@ pub async fn job_status_handler(
     State(pool): State<DbPool>,
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<Json<JobInfo>, (StatusCode, Json<serde_json::Value>)> {
-    let payload = pool
-        .run_blocking(move |conn| storage::jobs::load(conn, "config", &job_id))
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro":e.to_string()})),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({"erro":"Job não encontrado"})),
-            )
-        })?;
-    let job = serde_json::from_str(&payload).map_err(|e| {
+    let pending_pool = pool.clone();
+    let pending_id = job_id.clone();
+    let pending = tokio::task::spawn_blocking(move || {
+        storage::jobs::load_completion(&pending_pool, "config", &pending_id)
+    })
+    .await
+    .map_err(|e| sqlite_http_error(storage::StorageError::Pool(e.to_string())))?
+    .map_err(sqlite_http_error)?;
+    let persistence_pending = pending.is_some();
+    let payload = if let Some(payload) = pending {
+        Some(payload)
+    } else {
+        pool.run_blocking(move |conn| storage::jobs::load(conn, "config", &job_id))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"erro":e.to_string()})),
+                )
+            })?
+    }
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"erro":"Job não encontrado"})),
+        )
+    })?;
+    let mut job: JobInfo = serde_json::from_str(&payload).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"erro":e.to_string()})),
         )
     })?;
+    job.persistencia_pendente = persistence_pending;
     Ok(Json(job))
 }
 
@@ -3966,7 +3709,16 @@ mod tests {
             .unwrap();
 
         let res_404 = app.oneshot(req_404).await.unwrap();
-        assert_eq!(res_404.status(), StatusCode::NOT_FOUND);
+        let status = res_404.status();
+        let body = axum::body::to_bytes(res_404.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[tokio::test]
@@ -4380,118 +4132,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_camara_sincronizar_modo_bulk_e_api() {
+    async fn test_camara_sincronizar_rejeita_api_sem_ids() {
         let pool = DbPool::open_in_memory().unwrap();
-        {
-            let mut conn = pool.get().unwrap();
-            run_migrations(&mut conn).unwrap();
-
-            conn.execute(
-                "INSERT INTO despesas_parlamentares (
-                    casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado, data_emissao,
-                    categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido
-                 ) VALUES ('CAMARA', 'DEPUTADO BASE', '***.000.000-**', '2024-01-01', 'COMBUSTIVEL', 'POSTO', '11222333000144', 100.0)",
-                [],
-            )
-            .unwrap();
-        }
-
-        // 1. Testa modo BULK
-        let app = crate::criar_router(pool.clone());
-        let req_bulk = Request::builder()
+        run_migrations(&mut pool.get().unwrap()).unwrap();
+        let app = crate::criar_router(pool);
+        let request = Request::builder()
             .method("POST")
             .uri("/api/v1/config/camara/sincronizar")
             .header("content-type", "application/json")
             .body(Body::from(
-                json!({
-                    "ano": 2024,
-                    "modo": "BULK"
-                })
-                .to_string(),
+                json!({"ano":2024,"modo":"API","deputados_ids":[]}).to_string(),
             ))
             .unwrap();
-
-        let res_bulk = app.oneshot(req_bulk).await.unwrap();
-        assert_eq!(res_bulk.status(), StatusCode::ACCEPTED);
-
-        let bytes_bulk = axum::body::to_bytes(res_bulk.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp_bulk: ExecutarIngestaoResponse = serde_json::from_slice(&bytes_bulk).unwrap();
-        assert!(!resp_bulk.job_id.is_empty());
-
-        // Consulta job status
-        let app = crate::criar_router(pool.clone());
-        let req_job_bulk = Request::builder()
-            .uri(format!(
-                "/api/v1/config/ingestao/status/{}",
-                resp_bulk.job_id
-            ))
-            .body(Body::empty())
-            .unwrap();
-
-        let res_job_bulk = app.oneshot(req_job_bulk).await.unwrap();
-        assert_eq!(res_job_bulk.status(), StatusCode::OK);
-        let bytes_jb = axum::body::to_bytes(res_job_bulk.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let job_bulk: JobInfo = serde_json::from_slice(&bytes_jb).unwrap();
-        assert_eq!(job_bulk.fonte, "CAMARA_BULK");
-
-        // 2. Testa modo API
-        let app = crate::criar_router(pool.clone());
-        let req_api = Request::builder()
-            .method("POST")
-            .uri("/api/v1/config/camara/sincronizar")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({
-                    "ano": 2024,
-                    "modo": "API",
-                    "deputados_ids": []
-                })
-                .to_string(),
-            ))
-            .unwrap();
-
-        let res_api = app.oneshot(req_api).await.unwrap();
-        assert_eq!(res_api.status(), StatusCode::ACCEPTED);
-
-        let bytes_api = axum::body::to_bytes(res_api.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp_api: ExecutarIngestaoResponse = serde_json::from_slice(&bytes_api).unwrap();
-        assert!(!resp_api.job_id.is_empty());
-
-        // Consulta job status da API
-        let app = crate::criar_router(pool.clone());
-        let req_job_api = Request::builder()
-            .uri(format!(
-                "/api/v1/config/ingestao/status/{}",
-                resp_api.job_id
-            ))
-            .body(Body::empty())
-            .unwrap();
-
-        let res_job_api = app.oneshot(req_job_api).await.unwrap();
-        assert_eq!(res_job_api.status(), StatusCode::OK);
-        let bytes_ja = axum::body::to_bytes(res_job_api.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let job_api: JobInfo = serde_json::from_slice(&bytes_ja).unwrap();
-        assert_eq!(job_api.fonte, "CAMARA_API");
-
-        // Aguarda jobs concluírem e verifica histórico
-        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-        let conn = pool.get().unwrap();
-        let historico_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM historico_sincronizacao WHERE fonte LIKE 'CAMARA_%'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(historico_count >= 1);
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]
@@ -4961,5 +4617,179 @@ mod tests {
             .unwrap();
         let job_st: JobInfo = serde_json::from_slice(&bytes_st).unwrap();
         assert_eq!(job_st.fonte, "QUERIDO_DIARIO");
+    }
+}
+
+#[cfg(test)]
+mod synchronization_regressions {
+    use super::*;
+    use std::io::Write;
+    use tower::ServiceExt;
+    fn job(id: &str) -> JobInfo {
+        JobInfo {
+            job_id: id.into(),
+            fonte: "CAMARA_BULK".into(),
+            ano: Some(2024),
+            status: "PROCESSANDO".into(),
+            progresso: 0,
+            mensagem: "start".into(),
+            logs: Vec::new(),
+            criado_em: Utc::now().to_rfc3339(),
+            concluido_em: None,
+            persistencia_pendente: false,
+        }
+    }
+    fn zip(csv: &str) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .start_file("Ano-2024.csv", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(csv.as_bytes()).unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+    async fn mock(status: StatusCode, bytes: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/dump.zip", listener.local_addr().unwrap());
+        let router = axum::Router::new().route(
+            "/dump.zip",
+            axum::routing::get(move || {
+                let bytes = bytes.clone();
+                async move { (status, bytes) }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (url, server)
+    }
+    #[tokio::test]
+    async fn failed_download_preserves_data_and_records_error() {
+        let pool = DbPool::open_in_memory().unwrap();
+        storage::run_migrations(&mut pool.get().unwrap()).unwrap();
+        pool.get().unwrap().execute("INSERT INTO despesas_parlamentares(casa_legislativa,parlamentar_nome,data_emissao,categoria_despesa,fornecedor_nome,fornecedor_cnpj_cpf,valor_liquido) VALUES ('CAMARA','BASE','2024-01-01','TESTE','BASE','11222333000144',10)", []).unwrap();
+        registrar_job(&pool, job("failure")).await.unwrap();
+        let (url, server) = mock(StatusCode::SERVICE_UNAVAILABLE, b"offline".to_vec()).await;
+        let outcome = sincronizar_ceap_bulk(&pool, "failure", &url).await;
+        assert_eq!(outcome.status, "ERRO");
+        assert!(outcome.message.contains("503"));
+        concluir_job(&pool, "failure", 100, outcome.status, &outcome.message)
+            .await
+            .unwrap();
+        let conn = pool.get().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        let history: String = conn
+            .query_row("SELECT status FROM historico_sincronizacao", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(history, "ERRO");
+        assert!(storage::jobs::load(&conn, "config", "failure")
+            .unwrap()
+            .unwrap()
+            .contains("ERRO"));
+        server.abort();
+    }
+    #[tokio::test]
+    async fn malformed_late_row_reports_partial_and_keeps_committed_batches() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = DbPool::open_with_size(directory.path().join("test.db"), 1).unwrap();
+        storage::run_migrations(&mut pool.get().unwrap()).unwrap();
+        registrar_job(&pool, job("partial")).await.unwrap();
+        let mut csv = "txNomeParlamentar;datEmissao;txtCNPJCPF;vlrLiquido;txtNumero\n".to_string();
+        for index in 0..500 {
+            csv.push_str(&format!(
+                "DEPUTADO;2024-01-01;11222333000144;10,00;NF-{index}\n"
+            ));
+        }
+        csv.push_str("DEPUTADO;2024-01-01;11222333000144;INVALIDO;NF-INVALIDO\n");
+        let (url, server) = mock(StatusCode::OK, zip(&csv)).await;
+        let outcome = sincronizar_ceap_bulk(&pool, "partial", &url).await;
+        assert_eq!(outcome.status, "PARCIAL");
+        assert!(outcome.message.contains("500"));
+        assert!(outcome.message.contains("valor_liquido"));
+        concluir_job(&pool, "partial", 100, outcome.status, &outcome.message)
+            .await
+            .unwrap();
+        let count: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 500);
+        server.abort();
+    }
+    #[tokio::test]
+    async fn endpoints_reject_conflicting_jobs_and_terminal_status_works_without_pool_slot() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = DbPool::open_with_size(directory.path().join("test.db"), 1).unwrap();
+        storage::run_migrations(&mut pool.get().unwrap()).unwrap();
+        registrar_job(&pool, job("active")).await.unwrap();
+        let app = crate::criar_router(pool.clone());
+        for (route, payload) in [
+            (
+                "/api/v1/config/camara/sincronizar",
+                json!({"ano":2024,"modo":"BULK"}),
+            ),
+            ("/api/v1/config/sincronizar-tudo", json!({})),
+        ] {
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(route)
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let payload: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(payload["job_id"], "active");
+        }
+        let borrowed = pool.get().unwrap();
+        let worker_pool = pool.clone();
+        let worker = tokio::spawn(async move {
+            concluir_job(&worker_pool, "active", 100, "CONCLUIDO", "done").await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while storage::jobs::load_completion(&pool, "config", "active")
+                .unwrap()
+                .is_none()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            job_status_handler(State(pool.clone()), AxumPath("active".into())),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.0.status, "CONCLUIDO");
+        assert!(response.0.persistencia_pendente);
+        drop(borrowed);
+        tokio::time::timeout(std::time::Duration::from_secs(3), worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            storage::jobs::load(&pool.get().unwrap(), "config", "active")
+                .unwrap()
+                .unwrap()
+                .contains("CONCLUIDO")
+        );
     }
 }
