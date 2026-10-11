@@ -818,6 +818,43 @@ pub fn processar_zip_tse_bytes_com_progresso(
     })
 }
 
+/// Downloads antecipados limitados a dois pacotes em disco, em ordem de entrada.
+/// Descartar o consumidor cancela o produtor e remove os arquivos temporários.
+pub struct PacotesTse {
+    receiver: tokio::sync::mpsc::Receiver<(String, Result<tempfile::NamedTempFile>)>,
+    producer: tokio::task::JoinHandle<()>,
+}
+
+impl PacotesTse {
+    pub async fn recv(&mut self) -> Option<(String, Result<tempfile::NamedTempFile>)> {
+        self.receiver.recv().await
+    }
+}
+
+impl Drop for PacotesTse {
+    fn drop(&mut self) {
+        self.producer.abort();
+    }
+}
+
+pub fn baixar_pacotes_tse(client: Client, urls: Vec<String>) -> PacotesTse {
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let producer = tokio::spawn(async move {
+        for url in urls {
+            // Reserva antes do download: também limita arquivos em trânsito.
+            let Ok(permit) = sender.reserve().await else {
+                break;
+            };
+            let result = tokio::select! {
+                _ = sender.closed() => break,
+                result = baixar_pacote_tse(&client, &url) => result,
+            };
+            permit.send((url, result));
+        }
+    });
+    PacotesTse { receiver, producer }
+}
+
 pub async fn baixar_pacote_tse(client: &Client, url: &str) -> Result<tempfile::NamedTempFile> {
     let response = client
         .get(url)
@@ -866,6 +903,75 @@ mod tests {
     use super::*;
     use std::io::Write;
     use storage::{run_migrations, DbPool};
+
+    #[tokio::test]
+    async fn pipeline_antecipa_limita_preserva_erros_e_cancela() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            for index in 0..4 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 2048];
+                socket.read(&mut request).await.unwrap();
+                let status = if index == 1 { "500 Error" } else { "200 OK" };
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{index}").as_bytes()).await.unwrap();
+                requests.send(index).unwrap();
+            }
+        });
+        let urls: Vec<_> = (0..4).map(|i| format!("{base}/{i}")).collect();
+        let mut pipeline = baixar_pacotes_tse(Client::new(), urls.clone());
+        let deadline = Duration::from_secs(5);
+        assert_eq!(
+            tokio::time::timeout(deadline, observed.recv())
+                .await
+                .unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            tokio::time::timeout(deadline, observed.recv())
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        // O consumidor ainda não retirou nada: a terceira requisição deve esperar.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), observed.recv())
+                .await
+                .is_err()
+        );
+        let (url, first) = pipeline.recv().await.unwrap();
+        assert_eq!(url, urls[0]);
+        let first = first.unwrap();
+        let path = first.path().to_owned();
+        assert_eq!(std::fs::read(&path).unwrap(), b"0");
+        // O terceiro download termina enquanto o primeiro arquivo permanece em uso.
+        assert_eq!(
+            tokio::time::timeout(deadline, observed.recv())
+                .await
+                .unwrap(),
+            Some(2)
+        );
+        let (url, second) = pipeline.recv().await.unwrap();
+        assert_eq!(url, urls[1]);
+        assert!(second.is_err());
+        let (url, third) = pipeline.recv().await.unwrap();
+        assert_eq!(url, urls[2]);
+        assert!(third.is_ok());
+        let producer = pipeline.producer.abort_handle();
+        drop(pipeline);
+        tokio::time::timeout(deadline, async {
+            while !producer.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(first);
+        assert!(!path.exists());
+        server.abort();
+    }
 
     #[test]
     fn test_tse_ckan_deserializacao_resposta() {

@@ -992,7 +992,9 @@ pub async fn sincronizar_tse_handler(
                     let mut total_inseridos = 0;
                     let mut arquivos_ok = 0;
                     let mut falhas = Vec::new();
-                    for (idx, url) in urls.iter().enumerate() {
+                    let mut pacotes = ingestion::tse_ckan::baixar_pacotes_tse(client, urls);
+                    let mut idx = 0;
+                    while let Some((url, download)) = pacotes.recv().await {
                         let nome = url.rsplit('/').next().unwrap_or("pacote.zip").to_string();
                         atualizar_job(
                             &pool_spawn,
@@ -1007,7 +1009,7 @@ pub async fn sincronizar_tse_handler(
                         )
                         .await;
                         let resultado =
-                            match ingestion::tse_ckan::baixar_pacote_tse(&client, url).await {
+                            match download {
                                 Ok(temporary) => {
                                     let pool = pool_spawn.clone();
                                     let nome_callback = nome.clone();
@@ -1060,6 +1062,7 @@ pub async fn sincronizar_tse_handler(
                             0,
                             start_instant,
                         );
+                        idx += 1;
                     }
                     let status = if falhas.is_empty() {
                         "CONCLUIDO"
@@ -1857,9 +1860,10 @@ pub async fn sincronizar_tudo_handler(
             match ingestion::tse_ckan::descobrir_urls_tse(ano_eleitoral as u32, &datasets).await {
                 Ok(urls) => {
                     let client = reqwest::Client::new();
-                    for url in urls {
+                    let mut pacotes = ingestion::tse_ckan::baixar_pacotes_tse(client, urls);
+                    while let Some((url, download)) = pacotes.recv().await {
                         let result =
-                            match ingestion::tse_ckan::baixar_pacote_tse(&client, &url).await {
+                            match download {
                                 Ok(temporary) => {
                                     let pool = pool_spawn.clone();
                                     tokio::task::spawn_blocking(move || -> Result<usize, String> {

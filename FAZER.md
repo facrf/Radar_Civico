@@ -2,6 +2,20 @@
 
 Documento de planejamento técnico com estratégias identificadas para acelerar as rotinas de ingestão e sincronização do TSE e outros módulos de dados do Radar Cívico.
 
+## Estado de execução recuperado em 10/10/2026
+
+- [x] Estratégia 1: filtros de recursos CKAN implementados em `tse_ckan.rs`.
+- [x] Estratégia 2: cabeçalhos suportados validados e redes sociais ignoradas.
+- [x] Estratégia 3: candidatos inseridos via tabela temporária de staging em `storage::batch`.
+- [x] Estratégia 4: cache de ingestão e checkpoint ajustados. `synchronous = NORMAL` foi preservado conforme `AGENTS.md`, em vez de aplicar o `OFF` proposto abaixo.
+- [x] Estratégia 5: pipeline produtor-consumidor integrado à sincronização TSE via CKAN e à etapa TSE de Sincronizar Tudo.
+
+O produtor baixa sequencialmente para arquivos temporários em disco enquanto o consumidor processa o pacote anterior em `spawn_blocking`. A fila tem capacidade dois e reserva espaço antes de baixar; há no máximo dois pacotes aguardando/em download e um em processamento. Os limites de tamanho existentes continuam aplicados. Erros mantêm a URL e a ordem dos pacotes, permitindo o resultado parcial existente; descartar o consumidor cancela o produtor e libera os temporários. Não há retomada automática de importações interrompidas.
+
+O teste `pipeline_antecipa_limita_preserva_erros_e_cancela` usa HTTP local para verificar antecipação, contrapressão, ordenação, propagação de falha e cancelamento. Este arquivo registra o ponto de retomada; o plano original permanece abaixo para referência.
+
+Validação da retomada: `cargo check --workspace --locked` aprovado; `cargo test --all --locked` com 173 testes aprovados na execução final. Uma execução intermediária falhou no teste preexistente `test_camara_sincronizar_modo_bulk_e_api`, que espera apenas 150 ms pelo histórico de jobs; a suíte completa passou na repetição. `docker compose up --build -d` concluído, contêiner `running/healthy`, logs de inicialização sem falhas e `/health` retornando `OK`. Imagem ativa: `sha256:03a39617eb86c65e6c8afc6a340b44b5cc09d67ab74e6e77195b62790ad025a7`.
+
 ---
 
 ## 1. Contexto e Diagnóstico
