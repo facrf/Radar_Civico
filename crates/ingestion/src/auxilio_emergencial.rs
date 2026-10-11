@@ -20,15 +20,6 @@ pub struct BeneficioCsvRecord {
     pub valor: f64,
 }
 
-fn parse_float_br(val: &str) -> f64 {
-    let clean = val.trim().replace("R$", "").replace(' ', "");
-    if clean.contains(',') {
-        clean.replace('.', "").replace(',', ".").parse::<f64>().unwrap_or(0.0)
-    } else {
-        clean.parse::<f64>().unwrap_or(0.0)
-    }
-}
-
 fn normalize_header(s: &str) -> String {
     s.trim()
         .to_uppercase()
@@ -66,11 +57,15 @@ pub async fn processar_stream_auxilio_com_delimitador<R: AsyncRead + Unpin + Sen
         .map_err(IngestionError::Csv)?
         .clone();
 
-    let col_cpf = find_col(&headers, |h| h == "CPF_BENEFICIARIO" || h == "CPF" || h == "NR_CPF")
-        .or_else(|| find_col(&headers, |h| h.contains("CPF")));
+    let col_cpf = find_col(&headers, |h| {
+        h == "CPF_BENEFICIARIO" || h == "CPF" || h == "NR_CPF"
+    })
+    .or_else(|| find_col(&headers, |h| h.contains("CPF")));
 
     let col_nome = find_col(&headers, |h| {
-        h == "NOME_BENEFICIARIO" || h == "NM_BENEFICIARIO" || (h.contains("NOME") && h.contains("BENEFICIARIO"))
+        h == "NOME_BENEFICIARIO"
+            || h == "NM_BENEFICIARIO"
+            || (h.contains("NOME") && h.contains("BENEFICIARIO"))
     })
     .or_else(|| find_col(&headers, |h| h == "NOME" || h.contains("NOME")));
 
@@ -83,7 +78,9 @@ pub async fn processar_stream_auxilio_com_delimitador<R: AsyncRead + Unpin + Sen
     });
     let col_parcela = find_col(&headers, |h| h.contains("PARCELA"));
     let col_valor = find_col(&headers, |h| h.contains("VALOR") || h.contains("VR_"));
-    let col_enquadramento = find_col(&headers, |h| h.contains("ENQUADRAMENTO") || h.contains("TIPO"));
+    let col_enquadramento = find_col(&headers, |h| {
+        h.contains("ENQUADRAMENTO") || h.contains("TIPO")
+    });
 
     let mut records = Vec::new();
     let mut records_stream = csv_reader.into_records();
@@ -124,8 +121,12 @@ pub async fn processar_stream_auxilio_com_delimitador<R: AsyncRead + Unpin + Sen
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let valor_str = col_valor.and_then(|i| record.get(i)).unwrap_or("0");
-        let valor = parse_float_br(valor_str);
+        let valor_str = col_valor.and_then(|i| record.get(i)).unwrap_or("");
+        let valor = crate::validation::money_field(
+            Some(valor_str),
+            record.position().map(|p| p.line()).unwrap_or(0),
+            "valor",
+        )?;
 
         let enquadramento = col_enquadramento
             .and_then(|i| record.get(i))
@@ -286,12 +287,16 @@ MÊS DISPONIBILIZAÇÃO;UF;NOME MUNICÍPIO;CPF BENEFICIÁRIO;NOME BENEFICIÁRIO;
         assert_eq!(total, 3);
 
         let count: i64 = conn
-            .query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count, 3);
 
         let soma: f64 = conn
-            .query_row("SELECT sum(valor) FROM beneficios_emergenciais", [], |r| r.get(0))
+            .query_row("SELECT sum(valor) FROM beneficios_emergenciais", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(soma, 1800.0);
     }

@@ -748,7 +748,8 @@ pub fn sincronizar_alertas_sistema_com_parametros(
 
         let contratos: Vec<auditor::ContratoEmpresaSocio> = rows.collect::<Result<Vec<_>, _>>()?;
         if !contratos.is_empty() {
-            let alertas = auditor::auditar_socios_comuns_contratos(&contratos);
+            let alertas = auditor::auditar_socios_comuns_contratos(&contratos)
+                .map_err(|e| storage::StorageError::Money(e.to_string()))?;
             for a in alertas {
                 {
                     let detalhes = serde_json::json!({
@@ -792,14 +793,14 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         let mut stmt = conn.prepare(
             "SELECT d.fornecedor_cnpj_cpf, d.fornecedor_nome,
                     COALESCE(MAX(q.capital_social), 0.0),
-                    SUM(d.valor_liquido),
+                    (SUM(d.valor_liquido_centavos)/100.0),
                     COUNT(d.id),
                     COALESCE(d.parlamentar_nome, 'PARLAMENTAR')
              FROM despesas_parlamentares d
              JOIN empresas_qsa q ON q.cnpj_basico = SUBSTR(REPLACE(REPLACE(REPLACE(d.fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', ''), 1, 8)
              WHERE d.fornecedor_cnpj_cpf IS NOT NULL AND length(d.fornecedor_cnpj_cpf) >= 14
              GROUP BY d.fornecedor_cnpj_cpf, d.fornecedor_nome
-             HAVING SUM(d.valor_liquido) >= 100000.0 AND COALESCE(MAX(q.capital_social), 0.0) <= 5000.0",
+             HAVING (SUM(d.valor_liquido_centavos)/100.0) >= 100000.0 AND COALESCE(MAX(q.capital_social), 0.0) <= 5000.0",
         )?;
 
         let rows = stmt.query_map([], |row| {

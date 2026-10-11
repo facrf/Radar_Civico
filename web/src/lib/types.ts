@@ -215,6 +215,8 @@ export interface CompradorCeapResumo {
 }
 
 export interface PainelCeap {
+	offset?: number;
+	limit?: number;
 	total_faturado: number;
 	total_notas: number;
 	compradores: CompradorCeapResumo[];
@@ -237,6 +239,8 @@ export interface OrgaoContratanteResumo {
 }
 
 export interface PainelPncp {
+	offset?: number;
+	limit?: number;
 	total_contratado: number;
 	total_contratos: number;
 	orgaos_contratantes: OrgaoContratanteResumo[];

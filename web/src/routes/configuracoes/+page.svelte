@@ -38,7 +38,7 @@
 		job_id: string;
 		fonte: string;
 		ano?: number;
-		status: 'PENDENTE' | 'PROCESSANDO' | 'CONCLUIDO' | 'PARCIAL' | 'ERRO';
+		status: 'PENDENTE' | 'PROCESSANDO' | 'CONCLUIDO' | 'PARCIAL' | 'INTERROMPIDO' | 'ERRO';
 		progresso: number;
 		mensagem: string;
 		logs: string[];
@@ -257,7 +257,7 @@
 		id: string;
 		name: string;
 		description: string;
-		stage: 'IDLE' | 'CONECTANDO' | 'BAIXANDO' | 'DESCOMPACTANDO' | 'PROCESSANDO' | 'FINALIZANDO' | 'CONCLUIDO' | 'CANCELADO' | 'ERRO';
+		stage: 'IDLE' | 'CONECTANDO' | 'BAIXANDO' | 'DESCOMPACTANDO' | 'PROCESSANDO' | 'FINALIZANDO' | 'CONCLUIDO' | 'CANCELADO' | 'INTERROMPIDO' | 'ERRO';
 		is_running: boolean;
 		current_file: string;
 		files_processed: number;
@@ -618,6 +618,7 @@
 	}
 
 	function iniciarPollingJob(jobId: string) {
+        try { localStorage.setItem('radar:lastJobId',jobId); } catch { /* Armazenamento do navegador pode estar desabilitado. */ }
 		if (pollingInterval) clearInterval(pollingInterval);
 
 		const verificar = async () => {
@@ -628,13 +629,17 @@
 				]);
 
 				if (resJob.ok) {
-					activeJob = await resJob.json();
-				}
+                    activeJob = await resJob.json();
+                } else if (resJob.status === 404) {
+                    try { localStorage.removeItem('radar:lastJobId'); } catch { /* Sem armazenamento local. */ }
+                    if (pollingInterval) clearInterval(pollingInterval);
+                    pollingInterval = null;
+                }
 				if (resProg.ok) {
 					importProgress = await resProg.json();
 				}
 
-				if (activeJob?.status === 'CONCLUIDO' || activeJob?.status === 'ERRO' || activeJob?.status === 'PARCIAL') {
+				if (activeJob?.status === 'CONCLUIDO' || activeJob?.status === 'ERRO' || activeJob?.status === 'PARCIAL' || activeJob?.status === 'INTERROMPIDO') {
 					clearInterval(pollingInterval);
 					pollingInterval = null;
 					carregarStatus();
@@ -852,6 +857,7 @@
 	}
 
 	onMount(() => {
+        try { const last=localStorage.getItem('radar:lastJobId'); if(last) iniciarPollingJob(last); } catch { /* Sem armazenamento local. */ }
 		carregarStatus();
 		carregarAuditRules();
 		carregarIdentidade();
@@ -2099,7 +2105,7 @@
 					</span>
 					<span class="text-xs font-semibold px-2 py-0.5 rounded uppercase
 						{activeJob.status === 'CONCLUIDO' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
-						 activeJob.status === 'PARCIAL' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
+						 (activeJob.status === 'PARCIAL' || activeJob.status === 'INTERROMPIDO') ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
 						 activeJob.status === 'ERRO' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' :
 						 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse'}">
 						{activeJob.status}
@@ -2191,7 +2197,7 @@
 							<span class="text-[11px] font-semibold px-2 py-0.5 rounded uppercase shrink-0
 								{imp.stage === 'CONCLUIDO' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
 								 imp.stage === 'ERRO' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' :
-								 imp.stage === 'CANCELADO' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
+								 (imp.stage === 'CANCELADO' || imp.stage === 'INTERROMPIDO') ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
 								 imp.is_running ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse' :
 								 'bg-slate-700/40 text-slate-400 border border-slate-700'}">
 								{imp.stage}
@@ -2209,7 +2215,7 @@
 									class="h-2 rounded-full transition-all duration-300
 										{imp.stage === 'CONCLUIDO' ? 'bg-emerald-500' :
 										 imp.stage === 'ERRO' ? 'bg-rose-500' :
-										 imp.stage === 'CANCELADO' ? 'bg-orange-500' : 'bg-indigo-500'}"
+										 (imp.stage === 'CANCELADO' || imp.stage === 'INTERROMPIDO') ? 'bg-orange-500' : 'bg-indigo-500'}"
 									style="width: {imp.percentage}%"
 								></div>
 							</div>

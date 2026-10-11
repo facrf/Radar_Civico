@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,10 @@ pub struct CompradorCeapResumo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PainelCeap {
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default)]
+    pub limit: usize,
     pub total_faturado: f64,
     pub total_notas: usize,
     pub compradores: Vec<CompradorCeapResumo>,
@@ -96,6 +100,10 @@ pub struct OrgaoContratanteResumo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PainelPncp {
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default)]
+    pub limit: usize,
     pub total_contratado: f64,
     pub total_contratos: usize,
     pub orgaos_contratantes: Vec<OrgaoContratanteResumo>,
@@ -307,9 +315,39 @@ fn calcular_score_risco(alertas: &[AlertaDossie]) -> String {
 // Endpoint: Dossiê Completo de CNPJ
 // ============================================================================
 
+#[derive(Debug, Default, Deserialize)]
+pub struct DossiePagination {
+    pub ceap_offset: Option<usize>,
+    pub ceap_limit: Option<usize>,
+    pub pncp_offset: Option<usize>,
+    pub pncp_limit: Option<usize>,
+}
+fn database_error(error: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"erro":error.to_string()})),
+    )
+}
+/// Agregados completos em centavos; limites das listas não alteram o total.
+fn supplier_totals(
+    conn: &rusqlite::Connection,
+    root: &str,
+) -> storage::Result<(f64, usize, f64, usize)> {
+    let pattern = format!("%{}%", root);
+    let (ceap,nceap):(i64,usize)=conn.query_row("SELECT COALESCE(SUM(valor_liquido_centavos),0),COUNT(*) FROM despesas_parlamentares WHERE fornecedor_cnpj_cpf LIKE ?1",[&pattern],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (pncp,npncp):(i64,usize)=conn.query_row("SELECT COALESCE(SUM(valor_contratado_centavos),0),COUNT(*) FROM contratos_publicos WHERE fornecedor_cnpj LIKE ?1",[&pattern],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    Ok((
+        storage::Money::from_cents(ceap).reais(),
+        nceap,
+        storage::Money::from_cents(pncp).reais(),
+        npncp,
+    ))
+}
+
 pub async fn dossie_cnpj_handler(
     Path(cnpj_param): Path<String>,
     State(pool): State<DbPool>,
+    Query(pagination): Query<DossiePagination>,
 ) -> Result<Json<DossieCnpjResponse>, (StatusCode, Json<serde_json::Value>)> {
     let conn = pool.get().map_err(|e| {
         (
@@ -480,9 +518,28 @@ pub async fn dossie_cnpj_handler(
 
     // 3. Gastos Parlamentares (CEAP)
     let mut notas_fiscais: Vec<NotaFiscalCeapItem> = Vec::new();
-    let mut total_faturado_ceap = 0.0;
+    let ceap_limit = pagination.ceap_limit.unwrap_or(150).clamp(1, 150);
+    let ceap_offset = pagination.ceap_offset.unwrap_or(0).min(i64::MAX as usize);
+    let pncp_limit = pagination.pncp_limit.unwrap_or(50).clamp(1, 50);
+    let pncp_offset = pagination.pncp_offset.unwrap_or(0).min(i64::MAX as usize);
+    let (total_faturado_ceap, total_notas_ceap, total_contratado_pncp, total_contratos_pncp) =
+        supplier_totals(&conn, &cnpj_basico).map_err(database_error)?;
     let mut compradores_map: std::collections::HashMap<String, (f64, usize)> =
         std::collections::HashMap::new();
+    let mut stmt=conn.prepare("SELECT parlamentar_nome,COALESCE(SUM(valor_liquido_centavos),0),COUNT(*) FROM despesas_parlamentares WHERE fornecedor_cnpj_cpf LIKE ?1 GROUP BY parlamentar_nome").map_err(database_error)?;
+    let rows = stmt
+        .query_map([format!("%{}%", cnpj_basico)], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                storage::Money::from_cents(r.get(1)?).reais(),
+                r.get::<_, usize>(2)?,
+            ))
+        })
+        .map_err(database_error)?;
+    for row in rows {
+        let (name, total, count) = row.map_err(database_error)?;
+        compradores_map.insert(name, (total, count));
+    }
 
     {
         let like_basico = format!("%{}%", cnpj_basico);
@@ -494,47 +551,45 @@ pub async fn dossie_cnpj_handler(
                         dp.detalhes_litros
                  FROM despesas_parlamentares dp
                  WHERE dp.fornecedor_cnpj_cpf LIKE ?1
-                 ORDER BY dp.data_emissao DESC
-                 LIMIT 150",
+                 ORDER BY dp.data_emissao DESC, dp.id DESC
+                 LIMIT ?2 OFFSET ?3",
             )
             .ok();
 
         if let Some(mut stmt) = stmt_ceap {
             let rows = stmt
-                .query_map([&like_basico], |row| {
-                    let cat: String = row.get(3)?;
-                    let val: f64 = row.get(4)?;
-                    let litros_opt: Option<f64> = row.get(9)?;
-                    let volume = params_auditoria.volume_combustivel(&cat, val, litros_opt);
-                    let volume_estimado = volume.is_some_and(|(_, estimated)| estimated);
-                    let volume_litros = volume.map(|(liters, _)| liters);
-                    let flag_anomalia = volume_litros
-                        .is_some_and(|liters| liters > params_auditoria.limite_combustivel_litros);
+                .query_map(
+                    rusqlite::params![like_basico, ceap_limit as i64, ceap_offset as i64],
+                    |row| {
+                        let cat: String = row.get(3)?;
+                        let val: f64 = row.get(4)?;
+                        let litros_opt: Option<f64> = row.get(9)?;
+                        let volume = params_auditoria.volume_combustivel(&cat, val, litros_opt);
+                        let volume_estimado = volume.is_some_and(|(_, estimated)| estimated);
+                        let volume_litros = volume.map(|(liters, _)| liters);
+                        let flag_anomalia = volume_litros.is_some_and(|liters| {
+                            liters > params_auditoria.limite_combustivel_litros
+                        });
 
-                    Ok(NotaFiscalCeapItem {
-                        id: row.get(0)?,
-                        parlamentar_nome: row.get(1)?,
-                        data_emissao: row.get(2)?,
-                        categoria_despesa: cat,
-                        valor_liquido: val,
-                        numero_documento: row.get(5)?,
-                        url_nota_fiscal: row.get(6)?,
-                        flag_anomalia,
-                        volume_estimado,
-                        volume_litros,
-                        politico_id: row.get(8)?,
-                    })
-                })
+                        Ok(NotaFiscalCeapItem {
+                            id: row.get(0)?,
+                            parlamentar_nome: row.get(1)?,
+                            data_emissao: row.get(2)?,
+                            categoria_despesa: cat,
+                            valor_liquido: val,
+                            numero_documento: row.get(5)?,
+                            url_nota_fiscal: row.get(6)?,
+                            flag_anomalia,
+                            volume_estimado,
+                            volume_litros,
+                            politico_id: row.get(8)?,
+                        })
+                    },
+                )
                 .ok();
 
             if let Some(r_iter) = rows {
                 for nf in r_iter.flatten() {
-                    total_faturado_ceap += nf.valor_liquido;
-                    let entry = compradores_map
-                        .entry(nf.parlamentar_nome.clone())
-                        .or_insert((0.0, 0));
-                    entry.0 += nf.valor_liquido;
-                    entry.1 += 1;
                     notas_fiscais.push(nf);
                 }
             }
@@ -568,10 +623,24 @@ pub async fn dossie_cnpj_handler(
 
     // 4. Contratos Públicos (PNCP)
     let mut contratos: Vec<ContratoPncpItem> = Vec::new();
-    let mut total_contratado_pncp = 0.0;
+
     let mut orgaos_map: std::collections::HashMap<String, (f64, usize)> =
         std::collections::HashMap::new();
 
+    let mut stmt=conn.prepare("SELECT orgao_contratante,COALESCE(SUM(valor_contratado_centavos),0),COUNT(*) FROM contratos_publicos WHERE fornecedor_cnpj LIKE ?1 GROUP BY orgao_contratante").map_err(database_error)?;
+    let rows = stmt
+        .query_map([format!("%{}%", cnpj_basico)], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                storage::Money::from_cents(r.get(1)?).reais(),
+                r.get::<_, usize>(2)?,
+            ))
+        })
+        .map_err(database_error)?;
+    for row in rows {
+        let (name, total, count) = row.map_err(database_error)?;
+        orgaos_map.insert(name, (total, count));
+    }
     {
         let like_basico = format!("%{}%", cnpj_basico);
         let stmt_pncp = conn
@@ -579,33 +648,30 @@ pub async fn dossie_cnpj_handler(
                 "SELECT id, orgao_contratante, valor_contratado, objeto, data_assinatura, data_termino
                  FROM contratos_publicos
                  WHERE fornecedor_cnpj LIKE ?1
-                 ORDER BY data_assinatura DESC
-                 LIMIT 50",
+                 ORDER BY data_assinatura DESC, id DESC
+                 LIMIT ?2 OFFSET ?3",
             )
             .ok();
 
         if let Some(mut stmt) = stmt_pncp {
             let rows = stmt
-                .query_map([&like_basico], |row| {
-                    Ok(ContratoPncpItem {
-                        id: row.get(0)?,
-                        orgao_contratante: row.get(1)?,
-                        valor_contratado: row.get(2)?,
-                        objeto: row.get(3)?,
-                        data_assinatura: row.get(4)?,
-                        data_termino: row.get(5)?,
-                    })
-                })
+                .query_map(
+                    rusqlite::params![like_basico, pncp_limit as i64, pncp_offset as i64],
+                    |row| {
+                        Ok(ContratoPncpItem {
+                            id: row.get(0)?,
+                            orgao_contratante: row.get(1)?,
+                            valor_contratado: row.get(2)?,
+                            objeto: row.get(3)?,
+                            data_assinatura: row.get(4)?,
+                            data_termino: row.get(5)?,
+                        })
+                    },
+                )
                 .ok();
 
             if let Some(r_iter) = rows {
                 for c in r_iter.flatten() {
-                    total_contratado_pncp += c.valor_contratado;
-                    let entry = orgaos_map
-                        .entry(c.orgao_contratante.clone())
-                        .or_insert((0.0, 0));
-                    entry.0 += c.valor_contratado;
-                    entry.1 += 1;
                     contratos.push(c);
                 }
             }
@@ -629,6 +695,8 @@ pub async fn dossie_cnpj_handler(
     // 5. Cruzamento Heurístico TSE para cada Sócio PF (Nome normalizado + 6 dígitos centrais do CPF)
     let mut doacoes_socios: Vec<DoacaoSocioTse> = Vec::new();
     let mut candidaturas_socios: Vec<CandidaturaSocioTse> = Vec::new();
+    let mut donation_conditions = Vec::new();
+    let mut donation_params = Vec::new();
 
     for socio in &socios {
         if socio.tipo != "PF" {
@@ -652,10 +720,14 @@ pub async fn dossie_cnpj_handler(
         if let Some(ref miolo) = miolo_opt {
             sql_doacoes.push_str("OR rc.doador_cpf_cnpj LIKE ? ");
             params_doacoes.push(format!("%{}%", miolo));
+            donation_conditions.push("rc.doador_cpf_cnpj LIKE ?");
+            donation_params.push(format!("%{}%", miolo));
         }
         if !nome_norm.is_empty() && nome_norm.len() >= 5 {
             sql_doacoes.push_str("OR rc.doador_nome LIKE ? ");
             params_doacoes.push(format!("%{}%", nome_norm));
+            donation_conditions.push("rc.doador_nome LIKE ?");
+            donation_params.push(format!("%{}%", nome_norm));
         }
         sql_doacoes.push_str("LIMIT 20");
 
@@ -898,7 +970,19 @@ pub async fn dossie_cnpj_handler(
     }
 
     let score_risco = calcular_score_risco(&alertas);
-    let total_doacoes_socios = doacoes_socios.iter().map(|d| d.valor).sum();
+    let total_doacoes_socios = if donation_conditions.is_empty() {
+        0.0
+    } else {
+        let sql=format!("SELECT COALESCE(SUM(rc.valor_centavos),0) FROM receitas_campanha rc JOIN candidaturas c ON c.id=rc.candidatura_id JOIN politicos p ON p.id=c.politico_id WHERE {}",donation_conditions.join(" OR "));
+        let cents: i64 = conn
+            .query_row(
+                &sql,
+                rusqlite::params_from_iter(donation_params.iter()),
+                |r| r.get(0),
+            )
+            .map_err(database_error)?;
+        storage::Money::from_cents(cents).reais()
+    };
 
     Ok(Json(DossieCnpjResponse {
         cnpj: cnpj_completo_digits,
@@ -915,14 +999,18 @@ pub async fn dossie_cnpj_handler(
             empresas_interligadas,
         },
         ceap: PainelCeap {
+            offset: ceap_offset,
+            limit: ceap_limit,
             total_faturado: total_faturado_ceap,
-            total_notas: notas_fiscais.len(),
+            total_notas: total_notas_ceap,
             compradores,
             notas_fiscais,
         },
         pncp: PainelPncp {
+            offset: pncp_offset,
+            limit: pncp_limit,
             total_contratado: total_contratado_pncp,
-            total_contratos: contratos.len(),
+            total_contratos: total_contratos_pncp,
             orgaos_contratantes,
             contratos,
         },
@@ -974,8 +1062,9 @@ pub async fn dossie_cpf_handler(
     let mut empresas_socio: Vec<EmpresaSocioItem> = Vec::new();
     let mut notas_ceap_empresas: Vec<NotaFiscalCeapItem> = Vec::new();
     let mut contratos_pncp_empresas: Vec<ContratoPncpItem> = Vec::new();
-    let mut total_ceap_global = 0.0;
-    let mut total_pncp_global = 0.0;
+    let mut total_ceap_global = storage::Money::ZERO;
+    let mut roots_seen = std::collections::HashSet::new();
+    let mut total_pncp_global = storage::Money::ZERO;
 
     {
         let mut qsa_cpf_candidates: Vec<String> = Vec::new();
@@ -1097,7 +1186,17 @@ pub async fn dossie_cpf_handler(
             }
 
             // Consulta CEAP da empresa
-            let mut total_ceap_emp = 0.0;
+            if !roots_seen.insert(r.0.clone()) {
+                continue;
+            }
+            let (total_ceap_emp, _, total_pncp_emp, _) =
+                supplier_totals(&conn, &r.0).map_err(database_error)?;
+            total_ceap_global = total_ceap_global
+                .checked_add(storage::Money::from_reais(total_ceap_emp).map_err(database_error)?)
+                .map_err(database_error)?;
+            total_pncp_global = total_pncp_global
+                .checked_add(storage::Money::from_reais(total_pncp_emp).map_err(database_error)?)
+                .map_err(database_error)?;
             let like_cnpj = format!("%{}%", r.0);
             if let Ok(mut stmt_c) = conn.prepare(
                             "SELECT id, parlamentar_nome, data_emissao, categoria_despesa, valor_liquido, numero_documento, url_nota_fiscal, flag_anomalia, detalhes_litros
@@ -1127,15 +1226,13 @@ pub async fn dossie_cpf_handler(
                                 })
                             }) {
                                 for nf in c_rows.flatten() {
-                                    total_ceap_emp += nf.valor_liquido;
-                                    total_ceap_global += nf.valor_liquido;
                                     notas_ceap_empresas.push(nf);
                                 }
                             }
                         }
 
             // Consulta PNCP da empresa
-            let mut total_pncp_emp = 0.0;
+
             if let Ok(mut stmt_p) = conn.prepare(
                             "SELECT id, orgao_contratante, valor_contratado, objeto, data_assinatura, data_termino
                              FROM contratos_publicos WHERE fornecedor_cnpj LIKE ?1 LIMIT 10"
@@ -1151,8 +1248,6 @@ pub async fn dossie_cpf_handler(
                                 })
                             }) {
                                 for cp in p_rows.flatten() {
-                                    total_pncp_emp += cp.valor_contratado;
-                                    total_pncp_global += cp.valor_contratado;
                                     contratos_pncp_empresas.push(cp);
                                 }
                             }
@@ -1439,7 +1534,8 @@ pub async fn dossie_cpf_handler(
     }
 
     // Benefício indevido
-    let total_beneficios: f64 = beneficios.iter().map(|b| b.valor).sum();
+    let total_beneficios =
+        storage::Money::sum_reais(beneficios.iter().map(|b| b.valor)).map_err(database_error)?;
     let total_bens_declarados: f64 = candidaturas
         .iter()
         .map(|c| c.total_bens)
@@ -1469,8 +1565,8 @@ pub async fn dossie_cpf_handler(
         total_alertas: alertas.len(),
         alertas,
         empresas_socio,
-        total_faturado_empresas_ceap: total_ceap_global,
-        total_contratado_empresas_pncp: total_pncp_global,
+        total_faturado_empresas_ceap: total_ceap_global.reais(),
+        total_contratado_empresas_pncp: total_pncp_global.reais(),
         doacoes_eleitorais,
         candidaturas,
         beneficios_emergenciais: beneficios,
@@ -1478,4 +1574,72 @@ pub async fn dossie_cpf_handler(
         notas_ceap_empresas,
         contratos_pncp_empresas,
     }))
+}
+
+#[cfg(test)]
+mod totals_regressions {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+        routing::get,
+        Router,
+    };
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn totais_completos_independem_da_pagina() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            storage::run_migrations(&mut conn).unwrap();
+            for i in 0..201 {
+                conn.execute("INSERT INTO despesas_parlamentares(casa_legislativa,parlamentar_nome,data_emissao,categoria_despesa,fornecedor_nome,fornecedor_cnpj_cpf,valor_liquido,numero_documento) VALUES ('CAMARA','Parlamentar','2024-01-01','OUTROS','Empresa','12345678000190',?1,?2)",rusqlite::params![(i%2+1) as f64/10.0,format!("NF{i}")]).unwrap();
+            }
+            for _ in 0..61 {
+                conn.execute("INSERT INTO contratos_publicos(orgao_contratante,fornecedor_cnpj,valor_contratado) VALUES ('Prefeitura','12345678000190',0.1)",[]).unwrap();
+            }
+        }
+        let app = Router::new()
+            .route("/cnpj/:id", get(dossie_cnpj_handler))
+            .with_state(pool);
+        let mut totals = None;
+        for offset in [0, 150, 201] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/cnpj/12345678000190?ceap_offset={offset}&pncp_offset=50"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let dossier: DossieCnpjResponse =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+                    .unwrap();
+            assert_eq!(dossier.ceap.total_notas, 201);
+            assert_eq!(dossier.pncp.total_contratos, 61);
+            assert_eq!(dossier.pncp.total_contratado, 6.1);
+            assert_eq!(
+                dossier.ceap.notas_fiscais.len(),
+                if offset == 0 {
+                    150
+                } else if offset == 150 {
+                    51
+                } else {
+                    0
+                }
+            );
+            assert_eq!(dossier.pncp.contratos.len(), 11);
+            assert_eq!(dossier.ceap.compradores[0].quantidade_notas, 201);
+            if let Some(total) = totals {
+                assert_eq!(dossier.ceap.total_faturado, total);
+            } else {
+                totals = Some(dossier.ceap.total_faturado);
+            }
+        }
+    }
 }

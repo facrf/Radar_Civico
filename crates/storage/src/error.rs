@@ -5,6 +5,9 @@ pub enum StorageError {
     #[error("Database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    #[error("Money error: {0}")]
+    Money(String),
+
     #[error("Pool error: {0}")]
     Pool(String),
 

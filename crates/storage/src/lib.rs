@@ -4,10 +4,10 @@ pub mod error;
 pub mod migrations;
 
 pub use batch::{
-    batch_insert_alertas_beneficio, batch_insert_autoridades, batch_insert_beneficios, batch_insert_bens_candidato,
-    batch_insert_candidatos_tse, batch_insert_despesas, batch_insert_despesas_parlamentares,
-    batch_insert_emendas_parlamentares, batch_insert_receitas, NovaAutoridade, NovaDespesa,
-    NovaDespesaParlamentar, NovaEmendaParlamentar, NovaReceita,
+    batch_insert_alertas_beneficio, batch_insert_autoridades, batch_insert_beneficios,
+    batch_insert_bens_candidato, batch_insert_candidatos_tse, batch_insert_despesas,
+    batch_insert_despesas_parlamentares, batch_insert_emendas_parlamentares, batch_insert_receitas,
+    NovaAutoridade, NovaDespesa, NovaDespesaParlamentar, NovaEmendaParlamentar, NovaReceita,
     NovoAlertaBeneficioIndevido, NovoBemCandidato, NovoBeneficio, NovoCandidatoTse,
 };
 pub use connection::{
@@ -18,3 +18,6 @@ pub use error::{Result, StorageError};
 pub use migrations::run_migrations;
 pub use rusqlite;
 
+pub mod jobs;
+pub mod money;
+pub use money::Money;

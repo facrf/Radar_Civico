@@ -17,7 +17,9 @@
 			const res = await fetch(`/api/v1/grafo/${id}?grau=${grau}`);
 			if (res.ok) {
 				subgrafo = await res.json();
-			} else if (res.status === 404) {
+			} else if (res.status === 413) {
+                erro = 'Esta rede é grande demais para exibir. Reduza o grau de conexão e tente novamente.';
+            } else if (res.status === 404) {
 				erro = 'Nó ou entidade não localizada no grafo relacional.';
 			} else {
 				erro = 'Falha ao processar extração de subgrafo.';

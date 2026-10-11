@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use graph::{ArestaRede, GrafoSincronizado, NoRede};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use storage::DbPool;
 
 #[derive(Debug, Deserialize)]
@@ -221,11 +221,19 @@ pub async fn grafo_subgrafo_handler(
 ) -> Result<Json<SubgrafoResponse>, StatusCode> {
     let grau = params.grau.unwrap_or(2).min(5);
 
-    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let grafo = GrafoSincronizado::carregar_do_sqlite(&conn)
+    let result = pool
+        .run_blocking(move |conn| {
+            let graph = GrafoSincronizado::carregar_vizinhanca(conn, &id, grau);
+            Ok(match graph {
+                Ok(graph) => formatar_subgrafo(&graph, &id, grau).ok_or(StatusCode::NOT_FOUND),
+                Err(graph::error::GraphError::NodeNotFound(_)) => Err(StatusCode::NOT_FOUND),
+                Err(graph::error::GraphError::TooLarge) => Err(StatusCode::PAYLOAD_TOO_LARGE),
+                Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            })
+        })
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let response = formatar_subgrafo(&grafo, &id, grau).ok_or(StatusCode::NOT_FOUND)?;
+    let response = result?;
 
     Ok(Json(response))
 }
@@ -292,7 +300,9 @@ mod tests {
         let resp1 = app.clone().oneshot(req1).await.unwrap();
         assert_eq!(resp1.status(), StatusCode::OK);
 
-        let body1 = axum::body::to_bytes(resp1.into_body(), 1024 * 1024).await.unwrap();
+        let body1 = axum::body::to_bytes(resp1.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
         let sub1: SubgrafoResponse = serde_json::from_slice(&body1).unwrap();
         assert_eq!(sub1.raiz_id, "pol-100");
         assert_eq!(sub1.grau, 1);
@@ -311,7 +321,9 @@ mod tests {
         let resp2 = app.clone().oneshot(req2).await.unwrap();
         assert_eq!(resp2.status(), StatusCode::OK);
 
-        let body2 = axum::body::to_bytes(resp2.into_body(), 1024 * 1024).await.unwrap();
+        let body2 = axum::body::to_bytes(resp2.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
         let sub2: SubgrafoResponse = serde_json::from_slice(&body2).unwrap();
         assert_eq!(sub2.grau, 2);
         assert_eq!(sub2.total_nos, 3);

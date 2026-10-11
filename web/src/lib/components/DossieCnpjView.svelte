@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import type { DossieCnpj } from '$lib/types';
 
 	export let dossie: DossieCnpj;
@@ -34,6 +35,23 @@
 				return { bg: 'bg-slate-700/30', text: 'text-slate-300', border: 'border-slate-700', pulse: false };
 		}
 	}
+
+    let pageLoading=false;
+    let pageError='';
+    let pageRequest: AbortController | null=null;
+    onDestroy(()=>pageRequest?.abort());
+    async function changePage(section: 'ceap' | 'pncp', offset: number) {
+        pageRequest?.abort(); const controller=new AbortController(); pageRequest=controller;
+        pageLoading=true; pageError=''; const cnpj=dossie.cnpj;
+        const query=new URLSearchParams({ceap_offset:String(section==='ceap'?offset:(dossie.ceap.offset??0)),pncp_offset:String(section==='pncp'?offset:(dossie.pncp.offset??0))});
+        try {
+            const response=await fetch(`/api/v1/dossie/cnpj/${encodeURIComponent(cnpj)}?${query}`,{signal:controller.signal});
+            if(!response.ok) throw new Error('Não foi possível carregar a página.');
+            const next:DossieCnpj=await response.json();
+            if(!controller.signal.aborted && dossie.cnpj===cnpj) dossie=next;
+        } catch(error) { if(!controller.signal.aborted) pageError=error instanceof Error?error.message:'Falha ao carregar página.'; }
+        finally { if(pageRequest===controller) pageLoading=false; }
+    }
 </script>
 
 <div class="space-y-8">
@@ -297,8 +315,17 @@
 
 					<div class="pt-3 border-t border-slate-700/50">
 						<h3 class="text-xs font-semibold text-slate-300 mb-2">Últimas Notas Fiscais Faturadas:</h3>
+<div class="flex flex-wrap justify-between gap-2 text-xs text-slate-400 mb-3">
+<span>Exibindo {dossie.ceap.notas_fiscais.length} de {dossie.ceap.total_notas}. Totais incluem todos os registros.</span>
+<div class="flex gap-2">
+<button class="px-2 py-1 border border-slate-600 rounded disabled:opacity-40" disabled={pageLoading || (dossie.ceap.offset??0)===0} on:click={()=>changePage('ceap',Math.max(0,(dossie.ceap.offset??0)-(dossie.ceap.limit??150)))}>Anterior</button>
+<button class="px-2 py-1 border border-slate-600 rounded disabled:opacity-40" disabled={pageLoading || (dossie.ceap.offset??0)+dossie.ceap.notas_fiscais.length>=dossie.ceap.total_notas} on:click={()=>changePage('ceap',(dossie.ceap.offset??0)+(dossie.ceap.limit??150))}>Próxima</button>
+</div>
+</div>
+{#if pageError}<p role="alert" class="text-xs text-red-400 mb-2">{pageError}</p>{/if}
+
 						<div class="space-y-1.5 max-h-40 overflow-y-auto pr-1 text-xs">
-							{#each dossie.ceap.notas_fiscais.slice(0, 8) as nf}
+							{#each dossie.ceap.notas_fiscais as nf}
 								<div class="p-2 rounded bg-slate-900/40 border border-slate-800 flex items-center justify-between gap-2">
 									<div class="truncate">
 										<span class="text-slate-400 text-[11px]">{formatarData(nf.data_emissao)}</span>
@@ -345,7 +372,15 @@
 					</span>
 				</div>
 
-				{#if dossie.pncp.contratos.length === 0}
+				<div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400 mb-3">
+<span>Exibindo {dossie.pncp.contratos.length} de {dossie.pncp.total_contratos}. Totais incluem todos os registros.</span>
+<div class="flex gap-2">
+<button class="px-2 py-1 border border-slate-600 rounded disabled:opacity-40" disabled={pageLoading || (dossie.pncp.offset ?? 0) === 0} on:click={()=>changePage('pncp',Math.max(0,(dossie.pncp.offset??0)-(dossie.pncp.limit??50)))}>Anterior</button>
+<button class="px-2 py-1 border border-slate-600 rounded disabled:opacity-40" disabled={pageLoading || (dossie.pncp.offset??0)+dossie.pncp.contratos.length>=dossie.pncp.total_contratos} on:click={()=>changePage('pncp',(dossie.pncp.offset??0)+(dossie.pncp.limit??50))}>Próxima</button>
+</div>
+</div>
+{#if pageError}<p role="alert" class="text-xs text-red-400 mb-2">{pageError}</p>{/if}
+{#if dossie.pncp.contratos.length === 0}
 					<p class="text-xs text-slate-500 py-4 italic">Nenhum contrato público registrado no PNCP para este fornecedor.</p>
 				{:else}
 					<div>

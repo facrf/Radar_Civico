@@ -1,4 +1,3 @@
-use std::sync::{Arc, RwLock};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -8,6 +7,7 @@ use ingestion::importers::{
     QueridoDiarioImporter, ReceitaFederalImporter, TseImporter,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, RwLock};
 use storage::DbPool;
 
 static GLOBAL_IMPORTER_MANAGER: RwLock<Option<Arc<ImporterManager>>> = RwLock::new(None);
@@ -18,12 +18,17 @@ pub fn get_or_init_importer_manager(pool: &DbPool) -> Arc<ImporterManager> {
             return m.clone();
         }
     }
-    let mut guard = GLOBAL_IMPORTER_MANAGER.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = GLOBAL_IMPORTER_MANAGER
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(ref m) = *guard {
         return m.clone();
     }
     let sink = Arc::new(BatchSink::new(pool.clone()));
     let manager = ImporterManager::new(sink);
+    if let Err(error) = manager.restore() {
+        tracing::error!("Falha ao restaurar importadores: {error}");
+    }
     manager.register(Arc::new(TseImporter::new_with_id(
         2024,
         "tse",
@@ -45,7 +50,9 @@ pub fn get_or_init_importer_manager(pool: &DbPool) -> Arc<ImporterManager> {
 }
 
 pub fn set_importer_manager(manager: Arc<ImporterManager>) {
-    let mut guard = GLOBAL_IMPORTER_MANAGER.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = GLOBAL_IMPORTER_MANAGER
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     *guard = Some(manager);
 }
 
@@ -61,9 +68,7 @@ pub struct ApiErrorResponse {
     pub erro: String,
 }
 
-pub async fn listar_importers_handler(
-    State(pool): State<DbPool>,
-) -> Json<Vec<ImporterSummary>> {
+pub async fn listar_importers_handler(State(pool): State<DbPool>) -> Json<Vec<ImporterSummary>> {
     let manager = get_or_init_importer_manager(&pool);
     Json(manager.list())
 }
@@ -174,7 +179,10 @@ pub mod tests {
             ctx: Arc<ImportContext>,
             _sink: Arc<BatchSink>,
         ) -> ingestion::error::Result<()> {
-            ctx.set_stage(ingestion::importers::ImportStage::Processando, "Rodando dummy");
+            ctx.set_stage(
+                ingestion::importers::ImportStage::Processando,
+                "Rodando dummy",
+            );
             for _ in 0..10 {
                 if ctx.is_cancelled() {
                     break;

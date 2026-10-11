@@ -20,6 +20,13 @@ pub enum IngestionError {
     #[error("Zip error: {0}")]
     Zip(String),
 
+    #[error("Linha {line}, campo {field}: {reason}")]
+    InvalidField {
+        line: u64,
+        field: String,
+        reason: String,
+    },
+
     #[error("Parse error: {0}")]
     Parse(String),
 

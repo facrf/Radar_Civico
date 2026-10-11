@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet, VecDeque};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::builder::GrafoSincronizado;
 
@@ -25,11 +25,8 @@ pub struct FornecedorHubAlerta {
 impl GrafoSincronizado {
     /// Calcula a Betweenness Centrality de todos os nós no grafo utilizando o algoritmo de Brandes
     pub fn calcular_betweenness_centrality(&self) -> HashMap<NodeIndex, f64> {
-        let mut cb: HashMap<NodeIndex, f64> = self
-            .grafo
-            .node_indices()
-            .map(|idx| (idx, 0.0))
-            .collect();
+        let mut cb: HashMap<NodeIndex, f64> =
+            self.grafo.node_indices().map(|idx| (idx, 0.0)).collect();
 
         let node_indices: Vec<NodeIndex> = self.grafo.node_indices().collect();
 
@@ -71,10 +68,8 @@ impl GrafoSincronizado {
                 }
             }
 
-            let mut delta: HashMap<NodeIndex, f64> = node_indices
-                .iter()
-                .map(|&idx| (idx, 0.0))
-                .collect();
+            let mut delta: HashMap<NodeIndex, f64> =
+                node_indices.iter().map(|&idx| (idx, 0.0)).collect();
 
             while let Some(w) = stack.pop() {
                 for &v in &p[&w] {
@@ -91,12 +86,15 @@ impl GrafoSincronizado {
     }
 
     /// Detecta fornecedores do tipo "Hub" com concentração > 70% em um único grupo/coligação
-    pub fn detectar_fornecedores_hub(&self) -> Vec<FornecedorHubAlerta> {
+    pub fn detectar_fornecedores_hub(&self) -> crate::Result<Vec<FornecedorHubAlerta>> {
         self.detectar_fornecedores_hub_com_limite(LIMITE_CONCENTRACAO_COLIGACAO)
     }
 
     /// Detecta fornecedores do tipo "Hub" com concentração >= limite configurado em um único grupo/coligação
-    pub fn detectar_fornecedores_hub_com_limite(&self, limite_concentracao: f64) -> Vec<FornecedorHubAlerta> {
+    pub fn detectar_fornecedores_hub_com_limite(
+        &self,
+        limite_concentracao: f64,
+    ) -> crate::Result<Vec<FornecedorHubAlerta>> {
         let betweenness = self.calcular_betweenness_centrality();
         let mut alertas = Vec::new();
 
@@ -111,8 +109,8 @@ impl GrafoSincronizado {
             }
 
             // Agrupa faturamento por grupo/coligação/partido dos pagadores
-            let mut faturamento_por_grupo: HashMap<String, f64> = HashMap::new();
-            let mut total_faturamento = 0.0;
+            let mut faturamento_por_grupo: HashMap<String, storage::Money> = HashMap::new();
+            let mut total_faturamento = storage::Money::ZERO;
             let mut agentes_conectados = HashSet::new();
 
             for edge in self.grafo.edges_directed(node_idx, Direction::Incoming) {
@@ -138,10 +136,15 @@ impl GrafoSincronizado {
                     })
                     .unwrap_or_else(|| "GRUPO_INDEFINIDO".to_string());
 
-                *faturamento_por_grupo.entry(grupo).or_insert(0.0) += aresta.valor;
-                total_faturamento += aresta.valor;
+                let amount = storage::Money::from_reais(aresta.valor)?;
+                let subtotal = faturamento_por_grupo
+                    .entry(grupo)
+                    .or_insert(storage::Money::ZERO);
+                *subtotal = subtotal.checked_add(amount)?;
+                total_faturamento = total_faturamento.checked_add(amount)?;
             }
 
+            let total_faturamento = total_faturamento.reais();
             if total_faturamento <= 0.0 || agentes_conectados.len() < 2 {
                 continue;
             }
@@ -151,6 +154,7 @@ impl GrafoSincronizado {
                 .iter()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             {
+                let faturamento_grupo = faturamento_grupo.reais();
                 let percentual = (faturamento_grupo / total_faturamento) * 100.0;
                 let score = *betweenness.get(&node_idx).unwrap_or(&0.0);
 
@@ -174,7 +178,7 @@ impl GrafoSincronizado {
             }
         }
 
-        alertas
+        Ok(alertas)
     }
 }
 
@@ -218,7 +222,7 @@ mod tests {
         conn.execute("INSERT INTO conexoes_rede (origem_id, destino_id, tipo_relacao, valor, ano, fonte_dado) VALUES (?1, ?2, 'DESPESA', 10000.0, 2024, 'TSE')", storage::rusqlite::params![c4, emp_id]).unwrap();
 
         let grafo = GrafoSincronizado::carregar_do_sqlite(&conn).unwrap();
-        let alertas = grafo.detectar_fornecedores_hub();
+        let alertas = grafo.detectar_fornecedores_hub().unwrap();
 
         assert_eq!(alertas.len(), 1);
         let a = &alertas[0];
@@ -237,7 +241,8 @@ mod tests {
         conn.execute(
             "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('emp-div', 'EMPRESA', 'POSTO COMUM')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let emp_id = conn.last_insert_rowid();
 
         // 3 candidatos de grupos diferentes com repasses equilibrados
@@ -258,7 +263,7 @@ mod tests {
         conn.execute("INSERT INTO conexoes_rede (origem_id, destino_id, tipo_relacao, valor, ano, fonte_dado) VALUES (?1, ?2, 'DESPESA', 1000.0, 2024, 'TSE')", storage::rusqlite::params![g3, emp_id]).unwrap();
 
         let grafo = GrafoSincronizado::carregar_do_sqlite(&conn).unwrap();
-        let alertas = grafo.detectar_fornecedores_hub();
+        let alertas = grafo.detectar_fornecedores_hub().unwrap();
 
         assert!(alertas.is_empty());
     }

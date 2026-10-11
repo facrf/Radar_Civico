@@ -45,24 +45,6 @@ pub struct CkanResource {
     pub description: Option<String>,
 }
 
-fn parse_float_br(val: &str) -> f64 {
-    let clean = val.trim().replace("R$", "").replace(' ', "");
-    if clean.is_empty() {
-        return 0.0;
-    }
-    if clean.contains(',') && clean.contains('.') {
-        clean
-            .replace('.', "")
-            .replace(',', ".")
-            .parse::<f64>()
-            .unwrap_or(0.0)
-    } else if clean.contains(',') {
-        clean.replace(',', ".").parse::<f64>().unwrap_or(0.0)
-    } else {
-        clean.parse::<f64>().unwrap_or(0.0)
-    }
-}
-
 pub fn selecionar_arquivos_zip(nomes: &[String]) -> Vec<String> {
     let mut brasil_files = Vec::new();
     let mut outros_csvs = Vec::new();
@@ -381,10 +363,11 @@ pub fn processar_csv_tse_reader_com_progresso<R: Read, F: FnMut(usize)>(
                 .and_then(|i| record.get(i))
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
-            let valor = col_valor
-                .and_then(|i| record.get(i))
-                .map(parse_float_br)
-                .unwrap_or(0.0);
+            let valor = crate::validation::money_field(
+                col_valor.and_then(|i| record.get(i)),
+                record.position().map(|p| p.line()).unwrap_or(0),
+                "valor",
+            )?;
 
             let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
             let cand_id = buscar_candidatura_id(conn, &mut sq_cache, sq);
@@ -439,10 +422,11 @@ pub fn processar_csv_tse_reader_com_progresso<R: Read, F: FnMut(usize)>(
                 .unwrap_or("DOADOR")
                 .trim()
                 .to_string();
-            let valor = col_valor
-                .and_then(|i| record.get(i))
-                .map(parse_float_br)
-                .unwrap_or(0.0);
+            let valor = crate::validation::money_field(
+                col_valor.and_then(|i| record.get(i)),
+                record.position().map(|p| p.line()).unwrap_or(0),
+                "valor",
+            )?;
             let data = col_data
                 .and_then(|i| record.get(i))
                 .map(|s| s.trim().to_string())
@@ -524,10 +508,11 @@ pub fn processar_csv_tse_reader_com_progresso<R: Read, F: FnMut(usize)>(
                 .unwrap_or("FORNECEDOR")
                 .trim()
                 .to_string();
-            let valor = col_valor
-                .and_then(|i| record.get(i))
-                .map(parse_float_br)
-                .unwrap_or(0.0);
+            let valor = crate::validation::money_field(
+                col_valor.and_then(|i| record.get(i)),
+                record.position().map(|p| p.line()).unwrap_or(0),
+                "valor",
+            )?;
             let data = col_data
                 .and_then(|i| record.get(i))
                 .map(|s| s.trim().to_string())

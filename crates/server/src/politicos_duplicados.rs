@@ -136,7 +136,10 @@ fn carregar_itens_politicos(conn: &Connection, ids: &[i64]) -> Vec<ItemPoliticoD
         Err(_) => return Vec::new(),
     };
 
-    let params: Vec<&dyn storage::rusqlite::ToSql> = ids.iter().map(|id| id as &dyn storage::rusqlite::ToSql).collect();
+    let params: Vec<&dyn storage::rusqlite::ToSql> = ids
+        .iter()
+        .map(|id| id as &dyn storage::rusqlite::ToSql)
+        .collect();
 
     let rows = match stmt.query_map(params.as_slice(), |row| {
         let id: i64 = row.get(0)?;
@@ -183,7 +186,7 @@ fn carregar_itens_politicos(conn: &Connection, ids: &[i64]) -> Vec<ItemPoliticoD
     // Preenche despesas CEAP indexadas
     for item in &mut itens {
         if let Ok((tot, qtd)) = conn.query_row(
-            "SELECT COALESCE(SUM(valor_liquido), 0.0), COUNT(id)
+            "SELECT COALESCE((SUM(valor_liquido_centavos)/100.0), 0.0), COUNT(id)
              FROM despesas_parlamentares
              WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2",
             [&item.nome_urna, &item.nome_completo],
@@ -209,7 +212,9 @@ pub async fn resumo_politicos_duplicados_handler(
         }
     }
 
-    let conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let conn = pool
+        .get()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // 1. Grupos com mesmo Nome Completo e Data de Nascimento (100% de certeza)
     let grupos_nascimento: usize = conn
@@ -283,7 +288,9 @@ pub async fn listar_politicos_duplicados_handler(
     State(pool): State<DbPool>,
     Query(params): Query<ParametrosConsultaDuplicados>,
 ) -> Result<Json<RelatorioDuplicadosResponse>, (StatusCode, String)> {
-    let conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let conn = pool
+        .get()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let page = params.page.unwrap_or(1).max(1);
     let limit = params.limit.unwrap_or(15).clamp(1, 50);
@@ -354,7 +361,11 @@ pub async fn listar_politicos_duplicados_handler(
                     .map(|p| p.id)
                     .unwrap_or(politicos[0].id);
 
-                let id_grupo = format!("NASC-{}-{}", nome_norm.replace(' ', "_"), data_nasc.replace('/', ""));
+                let id_grupo = format!(
+                    "NASC-{}-{}",
+                    nome_norm.replace(' ', "_"),
+                    data_nasc.replace('/', "")
+                );
 
                 grupos.push(GrupoPoliticosDuplicados {
                     id_grupo,
@@ -449,9 +460,8 @@ pub fn mesclar_politicos_db(
 
     // 1. Migra candidaturas: para candidaturas que coincidem no mesmo (ano_eleicao, cargo), transfere bens e apaga a redundante
     {
-        let mut stmt_cands = tx.prepare(
-            "SELECT id, ano_eleicao, cargo FROM candidaturas WHERE politico_id = ?1",
-        )?;
+        let mut stmt_cands =
+            tx.prepare("SELECT id, ano_eleicao, cargo FROM candidaturas WHERE politico_id = ?1")?;
 
         let cands_duplicadas = stmt_cands
             .query_map([id_duplicado], |row| {
@@ -489,7 +499,7 @@ pub fn mesclar_politicos_db(
                 )?;
                 let total_bens: f64 = tx
                     .query_row(
-                        "SELECT COALESCE(SUM(valor_declarado), 0.0) FROM bens_candidato WHERE candidatura_id = ?1",
+                        "SELECT COALESCE((SUM(valor_declarado_centavos)/100.0), 0.0) FROM bens_candidato WHERE candidatura_id = ?1",
                         [cand_existente_id],
                         |r| r.get(0),
                     )
@@ -516,7 +526,11 @@ pub fn mesclar_politicos_db(
     )?;
 
     // 3. Copia foto se o canônico não possuir
-    let (foto_blob_dup, foto_mime_dup, foto_url_dup): (Option<Vec<u8>>, Option<String>, Option<String>) = tx
+    let (foto_blob_dup, foto_mime_dup, foto_url_dup): (
+        Option<Vec<u8>>,
+        Option<String>,
+        Option<String>,
+    ) = tx
         .query_row(
             "SELECT foto_blob, foto_mime, foto_url FROM politicos WHERE id = ?1",
             [id_duplicado],
@@ -619,7 +633,9 @@ pub async fn mesclar_politicos_handler(
         ));
     }
 
-    let mut conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match mesclar_politicos_db(&mut conn, payload.id_canonico, payload.id_duplicado) {
         Ok(qtd) => {
@@ -636,7 +652,10 @@ pub async fn mesclar_politicos_handler(
             }))
         }
         Err(storage::StorageError::NotFound(msg)) => Err((StatusCode::NOT_FOUND, msg)),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Falha ao mesclar políticos: {e}"))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Falha ao mesclar políticos: {e}"),
+        )),
     }
 }
 
@@ -645,7 +664,9 @@ pub async fn mesclar_automatico_handler(
     State(pool): State<DbPool>,
     Query(params): Query<MesclarAutomaticoQueryParams>,
 ) -> Result<Json<MesclarAutomaticoResponse>, (StatusCode, String)> {
-    let mut conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let limite_grupos = params.limite.unwrap_or(100).clamp(1, 2000);
 
     // Busca grupos com mesmo nome civil e data de nascimento
@@ -733,30 +754,45 @@ pub async fn mesclar_automatico_job_handler(
         ano: None,
         status: "PROCESSANDO".to_string(),
         progresso: 5,
-        mensagem: format!("Iniciando deduplicação em massa de até {} grupos...", limite_grupos),
-        logs: vec![format!("[{now}] Job de deduplicação em massa iniciado (limite: {limite_grupos} grupos)")],
+        mensagem: format!(
+            "Iniciando deduplicação em massa de até {} grupos...",
+            limite_grupos
+        ),
+        logs: vec![format!(
+            "[{now}] Job de deduplicação em massa iniciado (limite: {limite_grupos} grupos)"
+        )],
         criado_em: now,
         concluido_em: None,
     };
 
-    {
-        let jobs = crate::config::get_jobs();
-        if let Ok(mut map) = jobs.write() {
-            map.insert(job_id.clone(), job);
-        }
-    }
+    crate::config::registrar_job(&pool, job)
+        .await
+        .map_err(|(status, body)| (status, body.0.to_string()))?;
 
     let job_id_spawn = job_id.clone();
     let pool_spawn = pool.clone();
 
     tokio::spawn(async move {
-        crate::config::atualizar_job(&job_id_spawn, 15, "Localizando grupos redundantes por nome e data de nascimento no SQLite...").await;
+        crate::config::atualizar_job(
+            &pool_spawn,
+            &job_id_spawn,
+            15,
+            "Localizando grupos redundantes por nome e data de nascimento no SQLite...",
+        )
+        .await;
 
         let grupos = {
             let conn = match pool_spawn.get() {
                 Ok(c) => c,
                 Err(e) => {
-                    crate::config::atualizar_job_concluido(&job_id_spawn, 100, "ERRO", &format!("Erro de conexão: {e}")).await;
+                    crate::config::atualizar_job_concluido(
+                        &pool_spawn,
+                        &job_id_spawn,
+                        100,
+                        "ERRO",
+                        &format!("Erro de conexão: {e}"),
+                    )
+                    .await;
                     return;
                 }
             };
@@ -787,7 +823,14 @@ pub async fn mesclar_automatico_job_handler(
             match res {
                 Ok(list) => list,
                 Err(e) => {
-                    crate::config::atualizar_job_concluido(&job_id_spawn, 100, "ERRO", &format!("Erro na consulta de grupos: {e}")).await;
+                    crate::config::atualizar_job_concluido(
+                        &pool_spawn,
+                        &job_id_spawn,
+                        100,
+                        "ERRO",
+                        &format!("Erro na consulta de grupos: {e}"),
+                    )
+                    .await;
                     return;
                 }
             }
@@ -795,19 +838,26 @@ pub async fn mesclar_automatico_job_handler(
 
         let total_encontrados = grupos.len();
         if total_encontrados == 0 {
-            crate::config::atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", "Nenhum grupo de duplicados pendente encontrado.").await;
+            crate::config::atualizar_job_concluido(
+                &pool_spawn,
+                &job_id_spawn,
+                100,
+                "CONCLUIDO",
+                "Nenhum grupo de duplicados pendente encontrado.",
+            )
+            .await;
             return;
         }
 
-        crate::config::atualizar_job(
-            &job_id_spawn,
+        crate::config::atualizar_job(&pool_spawn, &job_id_spawn,
             25,
             &format!("Encontrados {total_encontrados} grupos. Iniciando unificação com consolidação de bens e mandatos..."),
         ).await;
 
         let mut processados = 0;
         let mut unificados = 0;
-        let chunks: Vec<Vec<(String, String, String)>> = grupos.chunks(100).map(|c| c.to_vec()).collect();
+        let chunks: Vec<Vec<(String, String, String)>> =
+            grupos.chunks(100).map(|c| c.to_vec()).collect();
 
         for chunk in chunks {
             if let Ok(mut conn) = pool_spawn.get() {
@@ -833,9 +883,9 @@ pub async fn mesclar_automatico_job_handler(
                 }
             }
 
-            let progresso = 25 + (((processados as f64 / total_encontrados as f64) * 70.0) as u8).min(70);
-            crate::config::atualizar_job(
-                &job_id_spawn,
+            let progresso =
+                25 + (((processados as f64 / total_encontrados as f64) * 70.0) as u8).min(70);
+            crate::config::atualizar_job(&pool_spawn, &job_id_spawn,
                 progresso,
                 &format!("Processando grupos ({processados}/{total_encontrados} - {unificados} registros unificados)..."),
             ).await;
@@ -846,7 +896,14 @@ pub async fn mesclar_automatico_job_handler(
         let msg_final = format!(
             "Deduplicação em massa concluída com sucesso: {processados} grupos resolvidos e {unificados} registros consolidados."
         );
-        crate::config::atualizar_job_concluido(&job_id_spawn, 100, "CONCLUIDO", &msg_final).await;
+        crate::config::atualizar_job_concluido(
+            &pool_spawn,
+            &job_id_spawn,
+            100,
+            "CONCLUIDO",
+            &msg_final,
+        )
+        .await;
     });
 
     Ok((
@@ -854,7 +911,8 @@ pub async fn mesclar_automatico_job_handler(
         Json(crate::config::ExecutarIngestaoResponse {
             status: "PROCESSANDO".to_string(),
             job_id,
-            mensagem: "Processo de deduplicação em massa iniciado com sucesso em segundo plano.".to_string(),
+            mensagem: "Processo de deduplicação em massa iniciado com sucesso em segundo plano."
+                .to_string(),
         }),
     ))
 }
@@ -909,9 +967,18 @@ mod tests {
         .unwrap();
 
         let app = Router::new()
-            .route("/api/politicos/duplicados", get(listar_politicos_duplicados_handler))
-            .route("/api/politicos/duplicados/resumo", get(resumo_politicos_duplicados_handler))
-            .route("/api/politicos/duplicados/mesclar", post(mesclar_politicos_handler))
+            .route(
+                "/api/politicos/duplicados",
+                get(listar_politicos_duplicados_handler),
+            )
+            .route(
+                "/api/politicos/duplicados/resumo",
+                get(resumo_politicos_duplicados_handler),
+            )
+            .route(
+                "/api/politicos/duplicados/mesclar",
+                post(mesclar_politicos_handler),
+            )
             .with_state(pool.clone());
 
         // 2. Testa detecção via endpoint
@@ -922,12 +989,17 @@ mod tests {
 
         let res_dup = app.clone().oneshot(req_dup).await.unwrap();
         assert_eq!(res_dup.status(), StatusCode::OK);
-        let bytes_dup = axum::body::to_bytes(res_dup.into_body(), usize::MAX).await.unwrap();
+        let bytes_dup = axum::body::to_bytes(res_dup.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let relatorio: RelatorioDuplicadosResponse = serde_json::from_slice(&bytes_dup).unwrap();
 
         assert_eq!(relatorio.total_grupos, 1);
         assert_eq!(relatorio.grupos[0].politicos.len(), 2);
-        assert_eq!(relatorio.grupos[0].politicos[0].nome_completo, "ADIEL DOS SANTOS TAVARES");
+        assert_eq!(
+            relatorio.grupos[0].politicos[0].nome_completo,
+            "ADIEL DOS SANTOS TAVARES"
+        );
 
         // 3. Testa mesclagem: unifica id2 em id1
         let payload = MesclarPoliticosRequest {
@@ -947,12 +1019,18 @@ mod tests {
 
         // 4. Verifica no banco: id2 deve ter sido removido e id1 agora possui 2 candidaturas (Vice e Vereador)
         let count_id2: usize = conn
-            .query_row("SELECT count(*) FROM politicos WHERE id = ?1", [id2], |r| r.get(0))
+            .query_row("SELECT count(*) FROM politicos WHERE id = ?1", [id2], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count_id2, 0);
 
         let cands_id1: usize = conn
-            .query_row("SELECT count(*) FROM candidaturas WHERE politico_id = ?1", [id1], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM candidaturas WHERE politico_id = ?1",
+                [id1],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(cands_id1, 2);
     }
@@ -995,7 +1073,10 @@ mod tests {
         .unwrap();
 
         let app = Router::new()
-            .route("/api/politicos/duplicados/mesclar-automatico", post(mesclar_automatico_handler))
+            .route(
+                "/api/politicos/duplicados/mesclar-automatico",
+                post(mesclar_automatico_handler),
+            )
             .with_state(pool.clone());
 
         let req = Request::builder()
@@ -1009,12 +1090,18 @@ mod tests {
 
         // id2 deve ter sido mesclado em id1
         let count_id2: usize = conn
-            .query_row("SELECT count(*) FROM politicos WHERE id = ?1", [id2], |r| r.get(0))
+            .query_row("SELECT count(*) FROM politicos WHERE id = ?1", [id2], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count_id2, 0);
 
         let count_cands_id1: usize = conn
-            .query_row("SELECT count(*) FROM candidaturas WHERE politico_id = ?1", [id1], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM candidaturas WHERE politico_id = ?1",
+                [id1],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count_cands_id1, 2);
     }
@@ -1028,7 +1115,10 @@ mod tests {
         }
 
         let app = Router::new()
-            .route("/api/politicos/duplicados/mesclar", post(mesclar_politicos_handler))
+            .route(
+                "/api/politicos/duplicados/mesclar",
+                post(mesclar_politicos_handler),
+            )
             .with_state(pool.clone());
 
         let payload = serde_json::json!({
@@ -1149,17 +1239,27 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::ACCEPTED);
 
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp: crate::config::ExecutarIngestaoResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(resp.status, "PROCESSANDO");
         assert!(!resp.job_id.is_empty());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-        let total_politicos: i64 = pool.get().unwrap()
-            .query_row("SELECT count(*) FROM politicos WHERE nome_completo = 'MARIA SILVA SOUZA'", [], |r| r.get(0))
+        let total_politicos: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM politicos WHERE nome_completo = 'MARIA SILVA SOUZA'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(total_politicos, 1, "Deveria ter unificado para 1 registro canônico");
+        assert_eq!(
+            total_politicos, 1,
+            "Deveria ter unificado para 1 registro canônico"
+        );
     }
 }
-

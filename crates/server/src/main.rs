@@ -1,7 +1,7 @@
-use std::env;
-use std::path::Path;
 use anyhow::{Context, Result};
 use server::criar_router;
+use std::env;
+use std::path::Path;
 use storage::{run_migrations, DbPool};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -15,14 +15,19 @@ async fn main() -> Result<()> {
         println!("Uso: server [COMANDO | OPÇÕES]\n");
         println!("Comandos:");
         println!("  servidor (padrão)    Inicia a API HTTP Axum e servidor web");
-        println!("  auditar              Executa varredura do motor de auditoria e sincroniza alertas\n");
+        println!(
+            "  auditar              Executa varredura do motor de auditoria e sincroniza alertas\n"
+        );
         println!("Opções:");
         println!("  -v, --version        Exibe a versão do radar-civico");
         println!("  -h, --help           Exibe esta mensagem de ajuda");
         return Ok(());
     }
 
-    if args.iter().any(|arg| arg == "--version" || arg == "-v" || arg == "-V") {
+    if args
+        .iter()
+        .any(|arg| arg == "--version" || arg == "-v" || arg == "-V")
+    {
         println!("radar-civico server {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
@@ -52,8 +57,9 @@ async fn main() -> Result<()> {
         let db_path = Path::new(&db_path_str);
         if let Some(parent) = db_path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("Falha ao criar diretório para banco: {:?}", parent))?;
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Falha ao criar diretório para banco: {:?}", parent)
+                })?;
             }
         }
         DbPool::open(db_path)
@@ -62,10 +68,20 @@ async fn main() -> Result<()> {
 
     // Executa migrações no arranque
     {
-        let mut conn = pool.get().context("Falha ao obter conexão para migrações")?;
+        let mut conn = pool
+            .get()
+            .context("Falha ao obter conexão para migrações")?;
         run_migrations(&mut conn).context("Falha ao executar migrações no arranque")?;
+        let interrupted =
+            storage::jobs::recover_interrupted(&conn).context("Falha ao recuperar tarefas")?;
+        info!("Tarefas interrompidas pelo reinício: {interrupted}");
+        ingestion::progress::restore_import_progress(&pool)
+            .context("Falha ao restaurar progresso de importação")?;
         if let Err(e) = ingestion::sincronizar_autoridades_cupula(&mut conn) {
-            tracing::warn!("Aviso ao sincronizar autoridades de cúpula no arranque: {}", e);
+            tracing::warn!(
+                "Aviso ao sincronizar autoridades de cúpula no arranque: {}",
+                e
+            );
         } else {
             info!("Autoridades de cúpula (STF, PGR, Embaixadores, Secretários) sincronizadas com sucesso.");
         }
@@ -86,7 +102,10 @@ async fn main() -> Result<()> {
             offset: Some(0),
         };
         let relatorio = server::alertas::carregar_alertas(&conn, &filtros)?;
-        println!("Total de anomalias registradas no sistema: {}\n", relatorio.total);
+        println!(
+            "Total de anomalias registradas no sistema: {}\n",
+            relatorio.total
+        );
         for (i, alerta) in relatorio.alertas.iter().enumerate() {
             println!(
                 "[{}] [{}] {} - {}",
@@ -104,6 +123,8 @@ async fn main() -> Result<()> {
         println!("Varredura concluída com sucesso.");
         return Ok(());
     }
+
+    tokio::spawn(ingestion::progress::persist_progress_loop(pool.clone()));
 
     let app = criar_router(pool);
 

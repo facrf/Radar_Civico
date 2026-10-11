@@ -1,8 +1,8 @@
-use std::collections::{HashSet, VecDeque};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashSet, VecDeque};
 
 use crate::builder::{ArestaRede, GrafoSincronizado, NoRede};
 
@@ -37,15 +37,15 @@ impl GrafoSincronizado {
         inicio_uuid: &str,
         destino_uuid: &str,
         max_graus: usize,
-    ) -> Vec<CaminhoRede> {
+    ) -> crate::Result<Vec<CaminhoRede>> {
         let inicio_idx = match self.uuid_map.get(inicio_uuid) {
             Some(&idx) => idx,
-            None => return Vec::new(),
+            None => return Ok(Vec::new()),
         };
 
         let destino_idx = match self.uuid_map.get(destino_uuid) {
             Some(&idx) => idx,
-            None => return Vec::new(),
+            None => return Ok(Vec::new()),
         };
 
         let mut caminhos_encontrados = Vec::new();
@@ -62,9 +62,9 @@ impl GrafoSincronizado {
             &mut caminho_atual_nos,
             &mut caminho_atual_arestas,
             &mut caminhos_encontrados,
-        );
+        )?;
 
-        caminhos_encontrados
+        Ok(caminhos_encontrados)
     }
 
     fn dfs_caminhos(
@@ -76,13 +76,13 @@ impl GrafoSincronizado {
         caminho_nos: &mut Vec<NodeIndex>,
         caminho_arestas: &mut Vec<ArestaRede>,
         resultados: &mut Vec<CaminhoRede>,
-    ) {
+    ) -> crate::Result<()> {
         if atual == destino && caminho_arestas.len() > 0 {
             let nos = caminho_nos
                 .iter()
                 .filter_map(|&idx| self.grafo.node_weight(idx).cloned())
                 .collect();
-            let valor_total = caminho_arestas.iter().map(|a| a.valor).sum();
+            let valor_total = storage::Money::sum_reais(caminho_arestas.iter().map(|a| a.valor))?;
 
             resultados.push(CaminhoRede {
                 nos,
@@ -90,11 +90,11 @@ impl GrafoSincronizado {
                 graus: caminho_arestas.len(),
                 valor_total,
             });
-            return;
+            return Ok(());
         }
 
         if caminho_arestas.len() >= max_graus {
-            return;
+            return Ok(());
         }
 
         for edge in self.grafo.edges_directed(atual, Direction::Outgoing) {
@@ -112,13 +112,14 @@ impl GrafoSincronizado {
                     caminho_nos,
                     caminho_arestas,
                     resultados,
-                );
+                )?;
 
                 caminho_arestas.pop();
                 caminho_nos.pop();
                 visitados.remove(&proximo);
             }
         }
+        Ok(())
     }
 
     pub fn detectar_ciclos_ate_graus(&self, max_graus: usize) -> Vec<CicloDetectado> {
@@ -302,7 +303,8 @@ mod tests {
         conn.execute(
             "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('p-1', 'POLITICO', 'POLITICO 1')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let p1 = conn.last_insert_rowid();
 
         conn.execute(
@@ -320,7 +322,8 @@ mod tests {
         conn.execute(
             "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('p-2', 'POLITICO', 'POLITICO 2')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let p2 = conn.last_insert_rowid();
 
         // Conexões: p1 -> d1 (1), d1 -> e1 (2), e1 -> p2 (3)
@@ -345,7 +348,7 @@ mod tests {
         let grafo = GrafoSincronizado::carregar_do_sqlite(&conn).unwrap();
 
         // Busca caminhos em até 3 graus
-        let caminhos = grafo.buscar_caminhos_ate_graus("p-1", "p-2", 3);
+        let caminhos = grafo.buscar_caminhos_ate_graus("p-1", "p-2", 3).unwrap();
         assert_eq!(caminhos.len(), 1);
         let c = &caminhos[0];
         assert_eq!(c.graus, 3);
@@ -353,7 +356,7 @@ mod tests {
         assert_eq!(c.valor_total, 600.0);
 
         // Se limitar a 2 graus, não deve encontrar
-        let caminhos_2 = grafo.buscar_caminhos_ate_graus("p-1", "p-2", 2);
+        let caminhos_2 = grafo.buscar_caminhos_ate_graus("p-1", "p-2", 2).unwrap();
         assert!(caminhos_2.is_empty());
     }
 
@@ -364,13 +367,25 @@ mod tests {
         run_migrations(&mut conn).unwrap();
 
         // Ciclo triangular: A -> B -> C -> A
-        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('a', 'POLITICO', 'A')", []).unwrap();
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('a', 'POLITICO', 'A')",
+            [],
+        )
+        .unwrap();
         let a = conn.last_insert_rowid();
 
-        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('b', 'EMPRESA', 'B')", []).unwrap();
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('b', 'EMPRESA', 'B')",
+            [],
+        )
+        .unwrap();
         let b = conn.last_insert_rowid();
 
-        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('c', 'PESSOA_FISICA', 'C')", []).unwrap();
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('c', 'PESSOA_FISICA', 'C')",
+            [],
+        )
+        .unwrap();
         let c = conn.last_insert_rowid();
 
         conn.execute("INSERT INTO conexoes_rede (origem_id, destino_id, tipo_relacao, ano, fonte_dado) VALUES (?1, ?2, 'REL', 2024, 'TSE')", storage::rusqlite::params![a, b]).unwrap();
@@ -391,13 +406,29 @@ mod tests {
         run_migrations(&mut conn).unwrap();
 
         // N1 -> N2 -> N3 -> N4
-        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n1', 'POLITICO', 'N1')", []).unwrap();
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n1', 'POLITICO', 'N1')",
+            [],
+        )
+        .unwrap();
         let n1 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n2', 'EMPRESA', 'N2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n2', 'EMPRESA', 'N2')",
+            [],
+        )
+        .unwrap();
         let n2 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n3', 'PESSOA_FISICA', 'N3')", []).unwrap();
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n3', 'PESSOA_FISICA', 'N3')",
+            [],
+        )
+        .unwrap();
         let n3 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n4', 'PARTIDO', 'N4')", []).unwrap();
+        conn.execute(
+            "INSERT INTO nos_rede (uuid, tipo, nome) VALUES ('n4', 'PARTIDO', 'N4')",
+            [],
+        )
+        .unwrap();
         let n4 = conn.last_insert_rowid();
 
         conn.execute("INSERT INTO conexoes_rede (origem_id, destino_id, tipo_relacao, ano, fonte_dado) VALUES (?1, ?2, 'REL_1', 2024, 'TSE')", storage::rusqlite::params![n1, n2]).unwrap();
@@ -417,7 +448,9 @@ mod tests {
         assert_eq!(sub2.arestas.len(), 2);
 
         // Também deve funcionar buscando pelo db_id em formato string
-        let sub_id = grafo.extrair_subgrafo_vizinhanca(&n1.to_string(), 2).unwrap();
+        let sub_id = grafo
+            .extrair_subgrafo_vizinhanca(&n1.to_string(), 2)
+            .unwrap();
         assert_eq!(sub_id.nos.len(), 3);
     }
 }

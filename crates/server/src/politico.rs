@@ -450,10 +450,7 @@ pub fn sincronizar_parlamentares_ceap(conn: &Connection) -> Result<usize, storag
 
     let parlamentares = stmt
         .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })?
         .filter_map(|r| r.ok())
         .collect::<Vec<_>>();
@@ -495,7 +492,10 @@ pub fn sincronizar_parlamentares_ceap(conn: &Connection) -> Result<usize, storag
     Ok(novos)
 }
 
-pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossiePolitico>, storage::StorageError> {
+pub fn carregar_dossie(
+    pool: &DbPool,
+    politico_id: i64,
+) -> Result<Option<DossiePolitico>, storage::StorageError> {
     let conn = pool.get()?;
 
     let mut stmt = conn.prepare(
@@ -797,15 +797,21 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
                AND q.socio_nome IS NOT NULL AND length(q.socio_nome) > 4
              LIMIT 100",
         ) {
-            let uf_base = dossie.candidaturas.first().map(|c| c.uf.as_str()).unwrap_or("BR");
+            let uf_base = dossie
+                .candidaturas
+                .first()
+                .map(|c| c.uf.as_str())
+                .unwrap_or("BR");
             if let Ok(rows) = stmt_socios.query_map(
                 params![dossie.nome_urna, uf_base, dossie.nome_completo],
-                |r| Ok(auditor::AlvoAuditoriaParentesco {
-                    nome: r.get(0)?,
-                    cnpj_cpf: r.get(1)?,
-                    uf: r.get(2)?,
-                    tipo_vinculo: "SOCIO_FORNECEDOR_CEAP".to_string(),
-                }),
+                |r| {
+                    Ok(auditor::AlvoAuditoriaParentesco {
+                        nome: r.get(0)?,
+                        cnpj_cpf: r.get(1)?,
+                        uf: r.get(2)?,
+                        tipo_vinculo: "SOCIO_FORNECEDOR_CEAP".to_string(),
+                    })
+                },
             ) {
                 for item in rows.flatten() {
                     alvos_parentesco.push(item);
@@ -814,7 +820,11 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
         }
 
         // 2. Doadores de campanha
-        let uf_base_doador = dossie.candidaturas.first().map(|c| c.uf.clone()).unwrap_or_else(|| "BR".to_string());
+        let uf_base_doador = dossie
+            .candidaturas
+            .first()
+            .map(|c| c.uf.clone())
+            .unwrap_or_else(|| "BR".to_string());
         for d in &dossie.doadores {
             if d.doador_nome.len() > 4 {
                 alvos_parentesco.push(auditor::AlvoAuditoriaParentesco {
@@ -826,8 +836,13 @@ pub fn carregar_dossie(pool: &DbPool, politico_id: i64) -> Result<Option<DossieP
             }
         }
 
-        let uf_pol = dossie.candidaturas.first().map(|c| c.uf.as_str()).unwrap_or("BR");
-        dossie.alertas_parentesco = auditor::auditar_possivel_parentesco(&dossie.nome_completo, uf_pol, &alvos_parentesco);
+        let uf_pol = dossie
+            .candidaturas
+            .first()
+            .map(|c| c.uf.as_str())
+            .unwrap_or("BR");
+        dossie.alertas_parentesco =
+            auditor::auditar_possivel_parentesco(&dossie.nome_completo, uf_pol, &alvos_parentesco);
     }
 
     // Score de Integridade Cívica
@@ -868,17 +883,18 @@ pub async fn politico_emendas_handler(
         )
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let mut stmt = conn.prepare(
-        "SELECT id, ano, numero_emenda, tipo_emenda, localidade_destino, uf,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, ano, numero_emenda, tipo_emenda, localidade_destino, uf,
                 beneficiario, valor_empenhado, valor_pago
          FROM emendas_parlamentares
          WHERE politico_id = ?1 OR UPPER(autor_nome) = UPPER(?2) OR UPPER(autor_nome) = UPPER(?3)
          ORDER BY ano DESC, valor_empenhado DESC",
-    ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let rows = stmt.query_map(
-        params![id, nome_urna, nome_completo],
-        |row| {
+    let rows = stmt
+        .query_map(params![id, nome_urna, nome_completo], |row| {
             Ok(EmendaItem {
                 id: row.get(0)?,
                 ano: row.get(1)?,
@@ -890,19 +906,31 @@ pub async fn politico_emendas_handler(
                 valor_empenhado: row.get(7)?,
                 valor_pago: row.get(8)?,
             })
-        },
-    ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut emendas = Vec::new();
-    let mut total_empenhado = 0.0;
-    let mut total_pago = 0.0;
+    let mut total_empenhado = storage::Money::ZERO;
+    let mut total_pago = storage::Money::ZERO;
 
     for r in rows.flatten() {
-        total_empenhado += r.valor_empenhado;
-        total_pago += r.valor_pago;
+        total_empenhado = total_empenhado
+            .checked_add(
+                storage::Money::from_reais(r.valor_empenhado)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        total_pago = total_pago
+            .checked_add(
+                storage::Money::from_reais(r.valor_pago)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         emendas.push(r);
     }
 
+    let total_empenhado = total_empenhado.reais();
+    let total_pago = total_pago.reais();
     Ok(Json(PoliticoEmendasResponse {
         politico_id: id,
         autor_nome: nome_urna,
@@ -941,7 +969,9 @@ pub async fn listar_politicos_handler(
     State(pool): State<DbPool>,
     Query(params): Query<ListarPoliticosQueryParams>,
 ) -> Result<Json<ListarPoliticosResponse>, (StatusCode, String)> {
-    let conn = pool.get().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let conn = pool
+        .get()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let page = params.page.unwrap_or(1).max(1);
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
@@ -1057,10 +1087,8 @@ pub async fn listar_politicos_handler(
             sql_params.push(Box::new(q_like));
             sql_params.push(Box::new(format!("%{}%", q_clean)));
         } else {
-            where_clauses.push(
-                "(UPPER(p.nome_completo) LIKE ? OR UPPER(p.nome_urna) LIKE ?)"
-                    .to_string(),
-            );
+            where_clauses
+                .push("(UPPER(p.nome_completo) LIKE ? OR UPPER(p.nome_urna) LIKE ?)".to_string());
             let q_like = format!("%{}%", q_term.to_uppercase());
             sql_params.push(Box::new(q_like.clone()));
             sql_params.push(Box::new(q_like));
@@ -1069,14 +1097,18 @@ pub async fn listar_politicos_handler(
 
     // 2. Filtro por Partido ou Órgão
     if !filtro_partido.is_empty() {
-        where_clauses.push("(UPPER(COALESCE(c.sigla_partido, '')) = ? OR UPPER(COALESCE(ca.orgao, '')) = ?)".to_string());
+        where_clauses.push(
+            "(UPPER(COALESCE(c.sigla_partido, '')) = ? OR UPPER(COALESCE(ca.orgao, '')) = ?)"
+                .to_string(),
+        );
         sql_params.push(Box::new(filtro_partido.to_uppercase()));
         sql_params.push(Box::new(filtro_partido.to_uppercase()));
     }
 
     // 3. Filtro por UF
     if !filtro_uf.is_empty() {
-        where_clauses.push("(UPPER(COALESCE(c.uf, '')) = ? OR UPPER(COALESCE(ca.uf, '')) = ?)".to_string());
+        where_clauses
+            .push("(UPPER(COALESCE(c.uf, '')) = ? OR UPPER(COALESCE(ca.uf, '')) = ?)".to_string());
         sql_params.push(Box::new(filtro_uf.to_uppercase()));
         sql_params.push(Box::new(filtro_uf.to_uppercase()));
     }
@@ -1088,32 +1120,43 @@ pub async fn listar_politicos_handler(
             where_clauses.push("(ca.cargo LIKE '%Ministr%' OR ca.cargo LIKE '%MINISTR%' OR ca.orgao LIKE '%STF%' OR ca.orgao LIKE '%Supremo%')".to_string());
         } else if cargo_upper == "MINISTRO DO TCU" || cargo_upper.contains("TCU") {
             where_clauses.push("(ca.cargo LIKE '%Ministr%' OR ca.cargo LIKE '%MINISTR%' OR ca.orgao LIKE '%TCU%' OR ca.orgao LIKE '%Tribunal de Contas da União%' OR ca.orgao LIKE '%MPTCU%')".to_string());
-        } else if cargo_upper == "PROCURADOR-GERAL DA REPÚBLICA" || cargo_upper == "PROCURADOR-GERAL DA REPUBLICA" || cargo_upper.contains("PGR") {
+        } else if cargo_upper == "PROCURADOR-GERAL DA REPÚBLICA"
+            || cargo_upper == "PROCURADOR-GERAL DA REPUBLICA"
+            || cargo_upper.contains("PGR")
+        {
             where_clauses.push("(ca.cargo LIKE '%Procurador%' OR ca.cargo LIKE '%PROCURADOR%' OR ca.orgao LIKE '%PGR%' OR ca.orgao LIKE '%Procuradoria%')".to_string());
         } else if cargo_upper == "EMBAIXADOR" || cargo_upper.contains("EMBAIXAD") {
             where_clauses.push("(ca.cargo LIKE '%Embaixad%' OR ca.cargo LIKE '%EMBAIXAD%' OR ca.orgao LIKE '%Embaixada%')".to_string());
-        } else if cargo_upper == "SECRETÁRIO DE ESTADO" || cargo_upper == "SECRETARIO DE ESTADO" || cargo_upper.contains("SECRET") {
+        } else if cargo_upper == "SECRETÁRIO DE ESTADO"
+            || cargo_upper == "SECRETARIO DE ESTADO"
+            || cargo_upper.contains("SECRET")
+        {
             where_clauses.push("(ca.cargo LIKE '%Secret%' OR ca.cargo LIKE '%SECRET%' OR ca.orgao LIKE '%Secretaria%' OR ca.orgao LIKE '%SECRETARIA%')".to_string());
         } else if cargo_upper == "PRESIDENTE" {
             where_clauses.push("(((UPPER(c.cargo) LIKE '%PRESIDENTE%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '1') AND UPPER(COALESCE(ca.cargo, '')) NOT LIKE '%STF%' AND UPPER(COALESCE(ca.cargo, '')) NOT LIKE '%TCU%')".to_string());
         } else if cargo_upper == "VICE-PRESIDENTE" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-PRESIDENTE%' OR c.cargo = '2')".to_string());
+            where_clauses
+                .push("(UPPER(c.cargo) LIKE '%VICE-PRESIDENTE%' OR c.cargo = '2')".to_string());
         } else if cargo_upper == "GOVERNADOR" {
             where_clauses.push("((UPPER(c.cargo) LIKE '%GOVERNADOR%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '3')".to_string());
         } else if cargo_upper == "VICE-GOVERNADOR" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-GOVERNADOR%' OR c.cargo = '4')".to_string());
+            where_clauses
+                .push("(UPPER(c.cargo) LIKE '%VICE-GOVERNADOR%' OR c.cargo = '4')".to_string());
         } else if cargo_upper == "SENADOR" {
             where_clauses.push("(UPPER(c.cargo) LIKE '%SENADOR%' OR c.cargo = '5')".to_string());
         } else if cargo_upper == "DEPUTADO FEDERAL" {
             where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO FEDERAL%' OR c.cargo = '6' OR UPPER(c.cargo) = 'DEPUTADO')".to_string());
         } else if cargo_upper == "DEPUTADO ESTADUAL" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO ESTADUAL%' OR c.cargo = '7')".to_string());
+            where_clauses
+                .push("(UPPER(c.cargo) LIKE '%DEPUTADO ESTADUAL%' OR c.cargo = '7')".to_string());
         } else if cargo_upper == "DEPUTADO DISTRITAL" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%DEPUTADO DISTRITAL%' OR c.cargo = '8')".to_string());
+            where_clauses
+                .push("(UPPER(c.cargo) LIKE '%DEPUTADO DISTRITAL%' OR c.cargo = '8')".to_string());
         } else if cargo_upper == "PREFEITO" {
             where_clauses.push("((UPPER(c.cargo) LIKE '%PREFEITO%' AND UPPER(c.cargo) NOT LIKE '%VICE%') OR c.cargo = '11')".to_string());
         } else if cargo_upper == "VICE-PREFEITO" {
-            where_clauses.push("(UPPER(c.cargo) LIKE '%VICE-PREFEITO%' OR c.cargo = '12')".to_string());
+            where_clauses
+                .push("(UPPER(c.cargo) LIKE '%VICE-PREFEITO%' OR c.cargo = '12')".to_string());
         } else if cargo_upper == "VEREADOR" {
             where_clauses.push("(UPPER(c.cargo) LIKE '%VEREADOR%' OR c.cargo = '13')".to_string());
         } else {
@@ -1276,7 +1319,7 @@ pub async fn listar_politicos_handler(
     for pol in &mut politicos {
         let ceap_res: Option<(f64, i64)> = conn
             .query_row(
-                "SELECT COALESCE(SUM(valor_liquido), 0.0), COUNT(id)
+                "SELECT COALESCE((SUM(valor_liquido_centavos)/100.0), 0.0), COUNT(id)
                   FROM despesas_parlamentares
                   WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2",
                 [&pol.nome_urna, &pol.nome_completo],
@@ -1296,14 +1339,14 @@ pub async fn listar_politicos_handler(
     }
 
     if apenas_gastos {
-        politicos.sort_by(|a, b| b.total_despesas_ceap.partial_cmp(&a.total_despesas_ceap).unwrap_or(std::cmp::Ordering::Equal));
+        politicos.sort_by(|a, b| {
+            b.total_despesas_ceap
+                .partial_cmp(&a.total_despesas_ceap)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
-    let total_paginas = if total == 0 {
-        1
-    } else {
-        total.div_ceil(limit)
-    };
+    let total_paginas = if total == 0 { 1 } else { total.div_ceil(limit) };
 
     Ok(Json(ListarPoliticosResponse {
         total,
@@ -1334,26 +1377,38 @@ pub async fn politico_detalhe_handler(
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let (id_pol, sq, cpf_masc, nome_completo, nome_urna, dt_nasc, grau, ocup, foto_blob, foto_mime, foto_url, tipo_agente) =
-        match stmt.query_row([id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, Option<String>>(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, Option<Vec<u8>>>(8)?,
-                r.get::<_, Option<String>>(9)?,
-                r.get::<_, Option<String>>(10)?,
-                r.get::<_, Option<String>>(11).ok().flatten(),
-            ))
-        }) {
-            Ok(tuple) => tuple,
-            Err(_) => return Err(StatusCode::NOT_FOUND),
-        };
+    let (
+        id_pol,
+        sq,
+        cpf_masc,
+        nome_completo,
+        nome_urna,
+        dt_nasc,
+        grau,
+        ocup,
+        foto_blob,
+        foto_mime,
+        foto_url,
+        tipo_agente,
+    ) = match stmt.query_row([id], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, Option<String>>(5)?,
+            r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<String>>(7)?,
+            r.get::<_, Option<Vec<u8>>>(8)?,
+            r.get::<_, Option<String>>(9)?,
+            r.get::<_, Option<String>>(10)?,
+            r.get::<_, Option<String>>(11).ok().flatten(),
+        ))
+    }) {
+        Ok(tuple) => tuple,
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
 
     let foto_base64 = foto_blob.map(|b| BASE64.encode(b));
 
@@ -1403,11 +1458,12 @@ pub async fn politico_detalhe_handler(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut despesas_recentes = Vec::new();
-    let mut total_gasto_ceap = 0.0;
+    let mut total_gasto_ceap = storage::Money::ZERO;
     let mut total_notas_ceap = 0;
-    let mut total_fora_uf = 0.0;
+    let mut total_fora_uf = storage::Money::ZERO;
     let mut notas_fora_uf = 0;
-    let mut map_categorias: std::collections::HashMap<String, (f64, i64)> = std::collections::HashMap::new();
+    let mut map_categorias: std::collections::HashMap<String, (storage::Money, i64)> =
+        std::collections::HashMap::new();
 
     let rows_ceap = stmt_ceap
         .query_map([&nome_completo, &nome_urna], |r| {
@@ -1427,13 +1483,24 @@ pub async fn politico_detalhe_handler(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     for r in rows_ceap.flatten() {
-        total_gasto_ceap += r.valor_liquido;
+        total_gasto_ceap = total_gasto_ceap
+            .checked_add(
+                storage::Money::from_reais(r.valor_liquido)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         total_notas_ceap += 1;
 
         let entry = map_categorias
             .entry(r.categoria_despesa.clone())
-            .or_insert((0.0, 0));
-        entry.0 += r.valor_liquido;
+            .or_insert((storage::Money::ZERO, 0));
+        entry.0 = entry
+            .0
+            .checked_add(
+                storage::Money::from_reais(r.valor_liquido)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         entry.1 += 1;
 
         let geo = resolver_coordenadas_despesa(
@@ -1446,7 +1513,12 @@ pub async fn politico_detalhe_handler(
         );
 
         if geo.fora_uf_origem {
-            total_fora_uf += r.valor_liquido;
+            total_fora_uf = total_fora_uf
+                .checked_add(
+                    storage::Money::from_reais(r.valor_liquido)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                )
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             notas_fora_uf += 1;
         }
 
@@ -1455,11 +1527,14 @@ pub async fn politico_detalhe_handler(
         }
     }
 
+    let total_gasto_ceap = total_gasto_ceap.reais();
+    let total_fora_uf = total_fora_uf.reais();
     let mut gastos_por_categoria = Vec::new();
     let mut cat_mais_gasta = None;
     let mut val_cat_mais_gasta = 0.0;
 
     for (cat, (val, qtd)) in map_categorias {
+        let val = val.reais();
         let pct = if total_gasto_ceap > 0.0 {
             ((val / total_gasto_ceap) * 1000.0).round() / 10.0
         } else {
@@ -1479,7 +1554,11 @@ pub async fn politico_detalhe_handler(
         });
     }
 
-    gastos_por_categoria.sort_by(|a, b| b.total.partial_cmp(&a.total).unwrap_or(std::cmp::Ordering::Equal));
+    gastos_por_categoria.sort_by(|a, b| {
+        b.total
+            .partial_cmp(&a.total)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let media_mensal_ceap = if total_gasto_ceap > 0.0 {
         ((total_gasto_ceap / 12.0) * 100.0).round() / 100.0
@@ -1490,7 +1569,7 @@ pub async fn politico_detalhe_handler(
     // Carrega doações recebidas de campanha
     let total_doacoes_campanha: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(r.valor), 0.0)
+            "SELECT COALESCE((SUM(r.valor_centavos)/100.0), 0.0)
              FROM receitas_campanha r
              JOIN candidaturas c ON r.candidatura_id = c.id
              WHERE c.politico_id = ?1",
@@ -1615,9 +1694,9 @@ pub async fn politico_despesas_geo_handler(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut pontos = Vec::new();
-    let mut total_valor_geo = 0.0;
+    let mut total_valor_geo = storage::Money::ZERO;
     let mut despesas_fora_uf_total = 0;
-    let mut despesas_fora_uf_valor = 0.0;
+    let mut despesas_fora_uf_valor = storage::Money::ZERO;
 
     let rows = stmt
         .query_map([&nome_completo, &nome_urna], |r| {
@@ -1637,13 +1716,23 @@ pub async fn politico_despesas_geo_handler(
 
     for r in rows.flatten() {
         let (id_desp, dt, cat, forn_nome, forn_cnpj, val, litros, num_doc, url_doc) = r;
-        total_valor_geo += val;
+        total_valor_geo = total_valor_geo
+            .checked_add(
+                storage::Money::from_reais(val).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        let geo = resolver_coordenadas_despesa(&conn, &forn_nome, &forn_cnpj, &cat, val, &uf_politico);
+        let geo =
+            resolver_coordenadas_despesa(&conn, &forn_nome, &forn_cnpj, &cat, val, &uf_politico);
 
         if geo.fora_uf_origem {
             despesas_fora_uf_total += 1;
-            despesas_fora_uf_valor += val;
+            despesas_fora_uf_valor = despesas_fora_uf_valor
+                .checked_add(
+                    storage::Money::from_reais(val)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                )
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         }
 
         pontos.push(PontoDespesaGeo {
@@ -1667,6 +1756,8 @@ pub async fn politico_despesas_geo_handler(
         });
     }
 
+    let total_valor_geo = total_valor_geo.reais();
+    let despesas_fora_uf_valor = despesas_fora_uf_valor.reais();
     Ok(Json(PoliticoDespesasGeoResponse {
         politico_id: id,
         politico_nome: nome_completo,
@@ -1726,8 +1817,8 @@ pub async fn buscar_foto_tse_handler(
     }
 
     // 2. Consulta dados do político e suas candidaturas
-    let dados_politico: Option<(Option<String>, String, String, Option<String>, String, i32)> = conn
-        .query_row(
+    let dados_politico: Option<(Option<String>, String, String, Option<String>, String, i32)> =
+        conn.query_row(
             "SELECT p.sq_candidato, p.nome_completo, p.nome_urna, p.ocupacao,
                     COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), COALESCE(c.ano_eleicao, 2024)
              FROM politicos p
@@ -1775,7 +1866,9 @@ pub async fn buscar_foto_tse_handler(
 
     // 2.5 Se tiver foto_url já cadastrada, tenta baixar diretamente dela primeiro
     let foto_url_cadastrada: Option<String> = conn
-        .query_row("SELECT foto_url FROM politicos WHERE id = ?1", [id], |r| r.get(0))
+        .query_row("SELECT foto_url FROM politicos WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
         .ok()
         .flatten();
 
@@ -1784,7 +1877,11 @@ pub async fn buscar_foto_tse_handler(
             if resp_img.status().is_success() {
                 if let Ok(bytes) = resp_img.bytes().await {
                     if !bytes.is_empty() {
-                        foto_baixada = Some((bytes.to_vec(), "image/jpeg".to_string(), "CAMARA_DEPUTADOS".to_string()));
+                        foto_baixada = Some((
+                            bytes.to_vec(),
+                            "image/jpeg".to_string(),
+                            "CAMARA_DEPUTADOS".to_string(),
+                        ));
                     }
                 }
             }
@@ -1792,7 +1889,11 @@ pub async fn buscar_foto_tse_handler(
     }
 
     // 3. Se for Deputado Federal (ou Câmara), consulta API da Câmara dos Deputados
-    if foto_baixada.is_none() && (cargo.to_uppercase().contains("DEPUTADO") || cargo.to_uppercase().contains("PARLAMENTAR") || sq_opt.is_none()) {
+    if foto_baixada.is_none()
+        && (cargo.to_uppercase().contains("DEPUTADO")
+            || cargo.to_uppercase().contains("PARLAMENTAR")
+            || sq_opt.is_none())
+    {
         let nomes_para_buscar = vec![nome_urna.clone(), nome_completo.clone()];
         for n in nomes_para_buscar {
             if foto_baixada.is_some() {
@@ -1803,7 +1904,8 @@ pub async fn buscar_foto_tse_handler(
                 urlencoding::encode(&n)
             );
 
-            match client.get(&url_camara_api)
+            match client
+                .get(&url_camara_api)
                 .header("User-Agent", "RadarCivico/0.1.0")
                 .header("Accept", "application/json")
                 .send()
@@ -1813,12 +1915,18 @@ pub async fn buscar_foto_tse_handler(
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                         if let Some(dados) = json.get("dados").and_then(|d| d.as_array()) {
                             if let Some(primeiro) = dados.first() {
-                                if let Some(url_foto) = primeiro.get("urlFoto").and_then(|u| u.as_str()) {
+                                if let Some(url_foto) =
+                                    primeiro.get("urlFoto").and_then(|u| u.as_str())
+                                {
                                     if let Ok(resp_img) = client.get(url_foto).send().await {
                                         if resp_img.status().is_success() {
                                             if let Ok(bytes) = resp_img.bytes().await {
                                                 if !bytes.is_empty() {
-                                                    foto_baixada = Some((bytes.to_vec(), "image/jpeg".to_string(), "CAMARA_DEPUTADOS".to_string()));
+                                                    foto_baixada = Some((
+                                                        bytes.to_vec(),
+                                                        "image/jpeg".to_string(),
+                                                        "CAMARA_DEPUTADOS".to_string(),
+                                                    ));
                                                     break;
                                                 }
                                             }
@@ -1877,7 +1985,8 @@ pub async fn buscar_foto_tse_handler(
                 }
             }
         } else {
-            erros_detalhados.push("Candidato não possui código SQ_CANDIDATO cadastrado no banco.".to_string());
+            erros_detalhados
+                .push("Candidato não possui código SQ_CANDIDATO cadastrado no banco.".to_string());
         }
     }
 
@@ -1891,7 +2000,10 @@ pub async fn buscar_foto_tse_handler(
         let b64 = BASE64.encode(&bytes);
         return Ok(Json(BuscarFotoResponse {
             sucesso: true,
-            mensagem: format!("Foto oficial obtida via {} e salva com sucesso no banco de dados!", origem),
+            mensagem: format!(
+                "Foto oficial obtida via {} e salva com sucesso no banco de dados!",
+                origem
+            ),
             foto_base64: Some(b64),
             foto_mime: Some(mime),
             origem: Some(origem),
@@ -1900,7 +2012,8 @@ pub async fn buscar_foto_tse_handler(
 
     // 6. Caso não tenha encontrado ou tenha falhado, retorna mensagem explicativa de erro
     let mensagem_erro = if erros_detalhados.is_empty() {
-        "Não foi possível localizar a foto oficial no TSE ou Câmara para este parlamentar.".to_string()
+        "Não foi possível localizar a foto oficial no TSE ou Câmara para este parlamentar."
+            .to_string()
     } else {
         format!(
             "Não foi possível obter a foto oficial: {}. Você pode utilizar a opção de upload manual ou fornecer uma URL direta de imagem.",
@@ -1940,7 +2053,9 @@ pub async fn salvar_foto_manual_handler(
     })?;
 
     let mut bytes_finais = Vec::new();
-    let mut mime_final = payload.foto_mime.unwrap_or_else(|| "image/jpeg".to_string());
+    let mut mime_final = payload
+        .foto_mime
+        .unwrap_or_else(|| "image/jpeg".to_string());
 
     if let Some(b64) = payload.foto_base64 {
         let clean_b64 = if let Some(pos) = b64.find("base64,") {
@@ -1973,7 +2088,11 @@ pub async fn salvar_foto_manual_handler(
 
         match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                if let Some(ct) = resp.headers().get("content-type").and_then(|c| c.to_str().ok()) {
+                if let Some(ct) = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|c| c.to_str().ok())
+                {
                     mime_final = ct.to_string();
                 }
                 if let Ok(b) = resp.bytes().await {
@@ -2092,7 +2211,9 @@ pub async fn obter_foto_handler(
         _ => {
             use axum::response::IntoResponse;
             let url_opt: Option<String> = conn
-                .query_row("SELECT foto_url FROM politicos WHERE id = ?1", [id], |r| r.get(0))
+                .query_row("SELECT foto_url FROM politicos WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
                 .ok()
                 .flatten();
 
@@ -2147,15 +2268,28 @@ pub async fn sincronizar_fotos_camara(pool: &DbPool) -> Result<usize, String> {
 
     let mut total_atualizados = 0;
     for leg in [57, 56] {
-        let url = format!("https://dadosabertos.camara.leg.br/api/v2/deputados?idLegislatura={}", leg);
-        if let Ok(resp) = client.get(&url).header("User-Agent", "RadarCivico/0.1.0").send().await {
+        let url = format!(
+            "https://dadosabertos.camara.leg.br/api/v2/deputados?idLegislatura={}",
+            leg
+        );
+        if let Ok(resp) = client
+            .get(&url)
+            .header("User-Agent", "RadarCivico/0.1.0")
+            .send()
+            .await
+        {
             if resp.status().is_success() {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
                     if let Some(dados) = json.get("dados").and_then(|d| d.as_array()) {
                         if let Ok(conn) = pool.get() {
                             for d in dados {
-                                let nome = d.get("nome").and_then(|n| n.as_str()).unwrap_or("").trim();
-                                let foto = d.get("urlFoto").and_then(|f| f.as_str()).unwrap_or("").trim();
+                                let nome =
+                                    d.get("nome").and_then(|n| n.as_str()).unwrap_or("").trim();
+                                let foto = d
+                                    .get("urlFoto")
+                                    .and_then(|f| f.as_str())
+                                    .unwrap_or("")
+                                    .trim();
                                 if !nome.is_empty() && !foto.is_empty() {
                                     if let Ok(affected) = conn.execute(
                                         "UPDATE politicos SET foto_url = ?1 WHERE (UPPER(nome_urna) = UPPER(?2) OR UPPER(nome_completo) = UPPER(?2)) AND (foto_url IS NULL OR foto_url = '')",
@@ -2223,13 +2357,15 @@ mod tests {
             "INSERT INTO bens_candidato (candidatura_id, tipo_bem, descricao, valor_declarado)
              VALUES (?1, 'IMOVEL', 'APARTAMENTO RESIDENCIAL', 1200000.0)",
             [cand_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         conn.execute(
             "INSERT INTO receitas_campanha (candidatura_id, doador_cpf_cnpj, doador_nome, valor)
              VALUES (?1, '11122233344', 'DOADOR DESTAQUE', 50000.0)",
             [cand_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let app = Router::new()
             .route("/api/v1/politico/:id", get(politico_dossie_handler))
@@ -2243,7 +2379,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let dossie: DossiePolitico = serde_json::from_slice(&body_bytes).unwrap();
 
         assert_eq!(dossie.nome_completo, "MARCOS PONTE");
@@ -2264,7 +2402,8 @@ mod tests {
             "INSERT INTO politicos (nome_completo, nome_urna, ocupacao)
              VALUES ('DENISE PESSÔA', 'DENISE PESSÔA', 'DEPUTADO FEDERAL')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let pol_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -2284,7 +2423,10 @@ mod tests {
         let app = Router::new()
             .route("/api/politicos", get(listar_politicos_handler))
             .route("/api/politicos/:id", get(politico_detalhe_handler))
-            .route("/api/politicos/:id/despesas-geo", get(politico_despesas_geo_handler))
+            .route(
+                "/api/politicos/:id/despesas-geo",
+                get(politico_despesas_geo_handler),
+            )
             .with_state(pool);
 
         // 1. Testa listagem com filtro
@@ -2294,7 +2436,9 @@ mod tests {
             .unwrap();
         let res_list = app.clone().oneshot(req_list).await.unwrap();
         assert_eq!(res_list.status(), StatusCode::OK);
-        let list_bytes = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        let list_bytes = axum::body::to_bytes(res_list.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let list_resp: ListarPoliticosResponse = serde_json::from_slice(&list_bytes).unwrap();
         assert_eq!(list_resp.total, 1);
         assert_eq!(list_resp.politicos[0].nome_completo, "DENISE PESSÔA");
@@ -2307,11 +2451,16 @@ mod tests {
             .unwrap();
         let res_detalhe = app.clone().oneshot(req_detalhe).await.unwrap();
         assert_eq!(res_detalhe.status(), StatusCode::OK);
-        let det_bytes = axum::body::to_bytes(res_detalhe.into_body(), usize::MAX).await.unwrap();
+        let det_bytes = axum::body::to_bytes(res_detalhe.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let det_resp: PoliticoDetalheResponse = serde_json::from_slice(&det_bytes).unwrap();
         assert_eq!(det_resp.resumo_financeiro.total_gasto_ceap, 250.0);
         assert_eq!(det_resp.gastos_por_categoria.len(), 1);
-        assert_eq!(det_resp.gastos_por_categoria[0].categoria, "COMBUSTÍVEIS E LUBRIFICANTES.");
+        assert_eq!(
+            det_resp.gastos_por_categoria[0].categoria,
+            "COMBUSTÍVEIS E LUBRIFICANTES."
+        );
 
         // 3. Testa georreferenciamento de despesas
         let req_geo = Request::builder()
@@ -2320,7 +2469,9 @@ mod tests {
             .unwrap();
         let res_geo = app.oneshot(req_geo).await.unwrap();
         assert_eq!(res_geo.status(), StatusCode::OK);
-        let geo_bytes = axum::body::to_bytes(res_geo.into_body(), usize::MAX).await.unwrap();
+        let geo_bytes = axum::body::to_bytes(res_geo.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let geo_resp: PoliticoDespesasGeoResponse = serde_json::from_slice(&geo_bytes).unwrap();
         assert_eq!(geo_resp.total_despesas_geo, 1);
         assert_eq!(geo_resp.pontos[0].uf, "DF");
@@ -2343,11 +2494,20 @@ mod tests {
             "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
              VALUES (?1, 2024, 'VEREADOR', 'PL', 'SP')",
             [pol_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let app = Router::new()
-            .route("/api/politicos/:id/foto", post(salvar_foto_manual_handler).get(obter_foto_handler).delete(remover_foto_handler))
-            .route("/api/politicos/:id/buscar-foto-tse", post(buscar_foto_tse_handler))
+            .route(
+                "/api/politicos/:id/foto",
+                post(salvar_foto_manual_handler)
+                    .get(obter_foto_handler)
+                    .delete(remover_foto_handler),
+            )
+            .route(
+                "/api/politicos/:id/buscar-foto-tse",
+                post(buscar_foto_tse_handler),
+            )
             .route("/api/politicos", get(listar_politicos_handler))
             .with_state(pool.clone());
 
@@ -2377,7 +2537,10 @@ mod tests {
 
         let res_obter = app.clone().oneshot(req_obter).await.unwrap();
         assert_eq!(res_obter.status(), StatusCode::OK);
-        assert_eq!(res_obter.headers().get("content-type").unwrap(), "image/png");
+        assert_eq!(
+            res_obter.headers().get("content-type").unwrap(),
+            "image/png"
+        );
 
         // 3. Testa buscar_foto_tse retornando foto já existente no banco de dados local
         let req_buscar = Request::builder()
@@ -2388,7 +2551,9 @@ mod tests {
 
         let res_buscar = app.clone().oneshot(req_buscar).await.unwrap();
         assert_eq!(res_buscar.status(), StatusCode::OK);
-        let buscar_bytes = axum::body::to_bytes(res_buscar.into_body(), usize::MAX).await.unwrap();
+        let buscar_bytes = axum::body::to_bytes(res_buscar.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let buscar_resp: BuscarFotoResponse = serde_json::from_slice(&buscar_bytes).unwrap();
         assert!(buscar_resp.sucesso);
         assert_eq!(buscar_resp.origem, Some("BANCO_LOCAL".to_string()));
@@ -2402,10 +2567,15 @@ mod tests {
 
         let res_list = app.clone().oneshot(req_list).await.unwrap();
         assert_eq!(res_list.status(), StatusCode::OK);
-        let list_bytes = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        let list_bytes = axum::body::to_bytes(res_list.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let list_resp: ListarPoliticosResponse = serde_json::from_slice(&list_bytes).unwrap();
         assert_eq!(list_resp.total, 1);
-        assert!(list_resp.politicos[0].mandatos.iter().any(|m| m.contains("VEREADOR")));
+        assert!(list_resp.politicos[0]
+            .mandatos
+            .iter()
+            .any(|m| m.contains("VEREADOR")));
         assert!(list_resp.politicos[0].foto_base64.is_some());
     }
 
@@ -2426,12 +2596,14 @@ mod tests {
             "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
              VALUES (?1, 2024, 'PREFEITO', 'PSD', 'MG')",
             [p1_id],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
              VALUES (?1, 2020, 'VEREADOR', 'PSD', 'MG')",
             [p1_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Político 2: concorreu apenas em 2022
         conn.execute(
@@ -2444,7 +2616,8 @@ mod tests {
             "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
              VALUES (?1, 2022, 'DEPUTADO FEDERAL', 'PT', 'SP')",
             [p2_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let app = Router::new()
             .route("/api/politicos", get(listar_politicos_handler))
@@ -2457,7 +2630,9 @@ mod tests {
             .unwrap();
         let res_todos = app.clone().oneshot(req_todos).await.unwrap();
         assert_eq!(res_todos.status(), StatusCode::OK);
-        let bytes_todos = axum::body::to_bytes(res_todos.into_body(), usize::MAX).await.unwrap();
+        let bytes_todos = axum::body::to_bytes(res_todos.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_todos: ListarPoliticosResponse = serde_json::from_slice(&bytes_todos).unwrap();
         assert_eq!(resp_todos.total, 2);
         assert!(resp_todos.anos_disponiveis.contains(&2024));
@@ -2471,7 +2646,9 @@ mod tests {
             .unwrap();
         let res_2022 = app.clone().oneshot(req_2022).await.unwrap();
         assert_eq!(res_2022.status(), StatusCode::OK);
-        let bytes_2022 = axum::body::to_bytes(res_2022.into_body(), usize::MAX).await.unwrap();
+        let bytes_2022 = axum::body::to_bytes(res_2022.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_2022: ListarPoliticosResponse = serde_json::from_slice(&bytes_2022).unwrap();
         assert_eq!(resp_2022.total, 1);
         assert_eq!(resp_2022.politicos[0].nome_urna, "DEP 2022");
@@ -2484,7 +2661,9 @@ mod tests {
             .unwrap();
         let res_2020 = app.clone().oneshot(req_2020).await.unwrap();
         assert_eq!(res_2020.status(), StatusCode::OK);
-        let bytes_2020 = axum::body::to_bytes(res_2020.into_body(), usize::MAX).await.unwrap();
+        let bytes_2020 = axum::body::to_bytes(res_2020.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_2020: ListarPoliticosResponse = serde_json::from_slice(&bytes_2020).unwrap();
         assert_eq!(resp_2020.total, 1);
         assert_eq!(resp_2020.politicos[0].nome_urna, "MULTIANO");
@@ -2500,7 +2679,8 @@ mod tests {
             "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado)
              VALUES ('FULANO EVOLUCAO', 'FULANO', '***.111.222-**')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let pol_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -2516,7 +2696,10 @@ mod tests {
         ).unwrap();
 
         let app = Router::new()
-            .route("/api/politicos/:id/evolucao-patrimonial", get(politico_evolucao_patrimonial_handler))
+            .route(
+                "/api/politicos/:id/evolucao-patrimonial",
+                get(politico_evolucao_patrimonial_handler),
+            )
             .with_state(pool.clone());
 
         let req = Request::builder()
@@ -2526,7 +2709,9 @@ mod tests {
 
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let pontos: Vec<PontoEvolucaoPatrimonial> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(pontos.len(), 2);
         assert_eq!(pontos[0].ano, 2020);
@@ -2564,26 +2749,55 @@ mod tests {
             .unwrap();
         let res_stf = app.clone().oneshot(req_stf).await.unwrap();
         assert_eq!(res_stf.status(), StatusCode::OK);
-        let bytes_stf = axum::body::to_bytes(res_stf.into_body(), usize::MAX).await.unwrap();
+        let bytes_stf = axum::body::to_bytes(res_stf.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_stf: ListarPoliticosResponse = serde_json::from_slice(&bytes_stf).unwrap();
-        println!("TOTAL RETORNADO: {} / politicos: {:?}", resp_stf.total, resp_stf.politicos.iter().map(|p| (&p.nome_completo, &p.cargo)).collect::<Vec<_>>());
-        assert!(resp_stf.total >= 11, "Deveria listar os 11 ministros do STF");
-        assert!(resp_stf.politicos.iter().any(|p| p.nome_completo.contains("LUÍS ROBERTO BARROSO") || p.nome_completo.contains("BARROSO")));
+        println!(
+            "TOTAL RETORNADO: {} / politicos: {:?}",
+            resp_stf.total,
+            resp_stf
+                .politicos
+                .iter()
+                .map(|p| (&p.nome_completo, &p.cargo))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            resp_stf.total >= 11,
+            "Deveria listar os 11 ministros do STF"
+        );
+        assert!(resp_stf
+            .politicos
+            .iter()
+            .any(|p| p.nome_completo.contains("LUÍS ROBERTO BARROSO")
+                || p.nome_completo.contains("BARROSO")));
 
         // 2. Detalhe de uma autoridade
-        let barroso = resp_stf.politicos.iter().find(|p| p.nome_completo.contains("BARROSO")).unwrap();
+        let barroso = resp_stf
+            .politicos
+            .iter()
+            .find(|p| p.nome_completo.contains("BARROSO"))
+            .unwrap();
         let req_det = Request::builder()
             .uri(format!("/api/politicos/{}", barroso.id))
             .body(Body::empty())
             .unwrap();
         let res_det = app.clone().oneshot(req_det).await.unwrap();
         assert_eq!(res_det.status(), StatusCode::OK);
-        let bytes_det = axum::body::to_bytes(res_det.into_body(), usize::MAX).await.unwrap();
+        let bytes_det = axum::body::to_bytes(res_det.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_det: PoliticoDetalheResponse = serde_json::from_slice(&bytes_det).unwrap();
         assert_eq!(resp_det.tipo_agente.as_deref(), Some("MINISTRO_STF"));
         assert!(!resp_det.cargos_autoridades.is_empty());
-        assert_eq!(resp_det.cargos_autoridades[0].orgao, "Supremo Tribunal Federal");
-        assert!(resp_det.cargos_autoridades[0].cargo.to_uppercase().contains("MINISTR"));
+        assert_eq!(
+            resp_det.cargos_autoridades[0].orgao,
+            "Supremo Tribunal Federal"
+        );
+        assert!(resp_det.cargos_autoridades[0]
+            .cargo
+            .to_uppercase()
+            .contains("MINISTR"));
     }
 
     #[tokio::test]
@@ -2596,7 +2810,8 @@ mod tests {
             "INSERT INTO politicos (nome_completo, nome_urna, cpf_mascarado)
              VALUES ('DEPUTADO TESTE DA SILVA', 'DEP TESTE', '***.222.333-**')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let pol_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -2606,20 +2821,18 @@ mod tests {
         ).unwrap();
 
         // Inserir emenda parlamentar
-        let emendas = vec![
-            storage::NovaEmendaParlamentar {
-                politico_id: Some(pol_id),
-                ano: 2024,
-                numero_emenda: "202400010001".to_string(),
-                autor_nome: "DEP TESTE".to_string(),
-                tipo_emenda: "INDIVIDUAL_ESPECIAL".to_string(),
-                localidade_destino: "Brasília".to_string(),
-                uf: "DF".to_string(),
-                beneficiario: "MUNICIPIO DE TESTE".to_string(),
-                valor_empenhado: 1500000.0,
-                valor_pago: 1200000.0,
-            }
-        ];
+        let emendas = vec![storage::NovaEmendaParlamentar {
+            politico_id: Some(pol_id),
+            ano: 2024,
+            numero_emenda: "202400010001".to_string(),
+            autor_nome: "DEP TESTE".to_string(),
+            tipo_emenda: "INDIVIDUAL_ESPECIAL".to_string(),
+            localidade_destino: "Brasília".to_string(),
+            uf: "DF".to_string(),
+            beneficiario: "MUNICIPIO DE TESTE".to_string(),
+            valor_empenhado: 1500000.0,
+            valor_pago: 1200000.0,
+        }];
         storage::batch_insert_emendas_parlamentares(&mut conn, &emendas).unwrap();
 
         let app = Router::new()
@@ -2635,7 +2848,9 @@ mod tests {
             .unwrap();
         let res_emenda = app.clone().oneshot(req_emenda).await.unwrap();
         assert_eq!(res_emenda.status(), StatusCode::OK);
-        let bytes_emenda = axum::body::to_bytes(res_emenda.into_body(), usize::MAX).await.unwrap();
+        let bytes_emenda = axum::body::to_bytes(res_emenda.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_emenda: PoliticoEmendasResponse = serde_json::from_slice(&bytes_emenda).unwrap();
         assert_eq!(resp_emenda.total_emendas, 1);
         assert_eq!(resp_emenda.total_empenhado, 1500000.0);
@@ -2649,7 +2864,9 @@ mod tests {
             .unwrap();
         let res_det = app.clone().oneshot(req_det).await.unwrap();
         assert_eq!(res_det.status(), StatusCode::OK);
-        let bytes_det = axum::body::to_bytes(res_det.into_body(), usize::MAX).await.unwrap();
+        let bytes_det = axum::body::to_bytes(res_det.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_det: PoliticoDetalheResponse = serde_json::from_slice(&bytes_det).unwrap();
         assert_eq!(resp_det.score_integridade, 100);
         assert_eq!(resp_det.nivel_risco, "MÍNIMO");
@@ -2662,7 +2879,9 @@ mod tests {
             .unwrap();
         let res_list = app.clone().oneshot(req_list).await.unwrap();
         assert_eq!(res_list.status(), StatusCode::OK);
-        let bytes_list = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        let bytes_list = axum::body::to_bytes(res_list.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_list: ListarPoliticosResponse = serde_json::from_slice(&bytes_list).unwrap();
         assert!(!resp_list.politicos.is_empty());
         let item = resp_list.politicos.iter().find(|p| p.id == pol_id).unwrap();
@@ -2670,4 +2889,3 @@ mod tests {
         assert_eq!(item.nivel_risco, "MÍNIMO");
     }
 }
-

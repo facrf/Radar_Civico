@@ -56,3 +56,5 @@ pub use tse_streaming::{
     ingerir_receitas_tse_em_lotes, processar_stream_consulta_cand, processar_stream_receitas,
     CandidatoCsvRecord, ReceitaCsvRecord,
 };
+
+pub mod validation;

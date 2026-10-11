@@ -36,11 +36,6 @@ pub struct ReceitaCsvRecord {
     pub descricao: Option<String>,
 }
 
-fn parse_float_br(val: &str) -> f64 {
-    let clean = val.trim().replace('.', "").replace(',', ".");
-    clean.parse::<f64>().unwrap_or(0.0)
-}
-
 pub async fn processar_stream_consulta_cand<R: AsyncRead + Unpin + Send>(
     reader: R,
 ) -> Result<Vec<CandidatoCsvRecord>> {
@@ -218,8 +213,12 @@ pub async fn processar_stream_receitas<R: AsyncRead + Unpin + Send>(
             .trim()
             .to_string();
 
-        let valor_str = col_valor.and_then(|idx| record.get(idx)).unwrap_or("0");
-        let valor = parse_float_br(valor_str);
+        let valor_str = col_valor.and_then(|idx| record.get(idx)).unwrap_or("");
+        let valor = crate::validation::money_field(
+            Some(valor_str),
+            record.position().map(|p| p.line()).unwrap_or(0),
+            "valor",
+        )?;
 
         let sq_candidato = col_sq
             .and_then(|idx| record.get(idx))
@@ -288,7 +287,7 @@ pub async fn ingerir_receitas_tse_em_lotes<R: AsyncRead + Unpin + Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use storage::{DbPool, run_migrations};
+    use storage::{run_migrations, DbPool};
 
     #[tokio::test]
     async fn test_processar_stream_consulta_cand_tse() {
@@ -297,7 +296,9 @@ ANO_ELEICAO;SG_UF;DS_CARGO;SQ_CANDIDATO;NR_CANDIDATO;NM_CANDIDATO;NM_URNA_CANDID
 2024;SP;PREFEITO;250001234567;15;RICARDO NUNES;RICARDO NUNES;***123456**;MDB;SÃO PAULO;ELEITO;EMPRESÁRIO;SUPERIOR COMPLETO;13/11/1967\n\
 2024;SP;PREFEITO;250007654321;50;GUILHERME BOULOS;GUILHERME BOULOS;***654321**;PSOL;SÃO PAULO;NÃO ELEITO;PROFESSOR;SUPERIOR COMPLETO;19/06/1982\n";
 
-        let records = processar_stream_consulta_cand(csv_data.as_bytes()).await.unwrap();
+        let records = processar_stream_consulta_cand(csv_data.as_bytes())
+            .await
+            .unwrap();
 
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].sq_candidato, "250001234567");

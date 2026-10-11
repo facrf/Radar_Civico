@@ -24,20 +24,6 @@ pub struct CeapBulkRecord {
     pub detalhes_litros: Option<f64>,
 }
 
-fn parse_float_br(val: &str) -> f64 {
-    let clean = val.trim().replace("R$", "").replace(' ', "");
-    if clean.is_empty() {
-        return 0.0;
-    }
-    if clean.contains(',') && clean.contains('.') {
-        clean.replace('.', "").replace(',', ".").parse::<f64>().unwrap_or(0.0)
-    } else if clean.contains(',') {
-        clean.replace(',', ".").parse::<f64>().unwrap_or(0.0)
-    } else {
-        clean.parse::<f64>().unwrap_or(0.0)
-    }
-}
-
 fn normalizar_data_ceap(raw: &str) -> String {
     let s = raw.trim();
     if s.is_empty() {
@@ -205,12 +191,7 @@ pub async fn processar_stream_ceap_com_delimitador<R: AsyncRead + Unpin + Send>(
 
     let col_litros = find_col(
         &headers,
-        &[
-            "DETALHESLITROS",
-            "LITROS",
-            "QTDLITROS",
-            "VOLUMELITROS",
-        ],
+        &["DETALHESLITROS", "LITROS", "QTDLITROS", "VOLUMELITROS"],
     );
 
     let mut records = Vec::new();
@@ -253,10 +234,11 @@ pub async fn processar_stream_ceap_com_delimitador<R: AsyncRead + Unpin + Send>(
             .trim();
         let fornecedor_cnpj_cpf = limpar_cnpj(raw_forn_doc);
 
-        let valor_liquido = col_valor
-            .and_then(|i| record.get(i))
-            .map(parse_float_br)
-            .unwrap_or(0.0);
+        let valor_liquido = crate::validation::money_field(
+            col_valor.and_then(|i| record.get(i)),
+            record.position().map(|p| p.line()).unwrap_or(0),
+            "valor_liquido",
+        )?;
 
         let numero_documento = col_doc
             .and_then(|i| record.get(i))
@@ -270,7 +252,15 @@ pub async fn processar_stream_ceap_com_delimitador<R: AsyncRead + Unpin + Send>(
 
         let detalhes_litros = col_litros
             .and_then(|i| record.get(i))
-            .map(parse_float_br)
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| {
+                crate::validation::number_field(
+                    s,
+                    record.position().map(|p| p.line()).unwrap_or(0),
+                    "litros",
+                )
+            })
+            .transpose()?
             .filter(|&v| v > 0.0);
 
         records.push(CeapBulkRecord {
@@ -331,8 +321,7 @@ pub async fn extrair_e_processar_ceap_zip(zip_bytes: &[u8]) -> Result<Vec<CeapBu
         let name = file.name().to_lowercase();
         if name.ends_with(".csv") {
             let mut buf = Vec::new();
-            file.read_to_end(&mut buf)
-                .map_err(IngestionError::Io)?;
+            file.read_to_end(&mut buf).map_err(IngestionError::Io)?;
             csv_conteudo = Some(buf);
             break;
         }
@@ -409,9 +398,15 @@ DEPUTADA SANTOS;98765432100;2000;2;57;RJ;PARTIDO;57;1;PASSAGEM AEREA;0;;LATAM AI
         assert_eq!(records.len(), 2);
 
         assert_eq!(records[0].parlamentar_nome, "DEPUTADO SILVA");
-        assert_eq!(records[0].parlamentar_cpf_mascarado, Some("***.456.789-**".to_string()));
+        assert_eq!(
+            records[0].parlamentar_cpf_mascarado,
+            Some("***.456.789-**".to_string())
+        );
         assert_eq!(records[0].data_emissao, "2024-05-10");
-        assert_eq!(records[0].categoria_despesa, "COMBUSTIVEIS E LUBRIFICANTES.");
+        assert_eq!(
+            records[0].categoria_despesa,
+            "COMBUSTIVEIS E LUBRIFICANTES."
+        );
         assert_eq!(records[0].fornecedor_nome, "POSTO ALVORADA LTDA");
         assert_eq!(records[0].fornecedor_cnpj_cpf, "12345678000199");
         assert_eq!(records[0].valor_liquido, 350.50);
@@ -419,7 +414,10 @@ DEPUTADA SANTOS;98765432100;2000;2;57;RJ;PARTIDO;57;1;PASSAGEM AEREA;0;;LATAM AI
         assert_eq!(records[0].detalhes_litros, Some(65.5));
 
         assert_eq!(records[1].parlamentar_nome, "DEPUTADA SANTOS");
-        assert_eq!(records[1].parlamentar_cpf_mascarado, Some("***.654.321-**".to_string()));
+        assert_eq!(
+            records[1].parlamentar_cpf_mascarado,
+            Some("***.654.321-**".to_string())
+        );
         assert_eq!(records[1].data_emissao, "2024-05-12");
         assert_eq!(records[1].valor_liquido, 1200.00);
         assert_eq!(records[1].detalhes_litros, None);
@@ -465,7 +463,9 @@ CARLOS DRUMMOND;11122233344;2024-06-01;LOCAÇÃO DE VEÍCULOS;LOCALIZA RENT A CA
         assert_eq!(inseridos, 1);
 
         let count: i64 = conn
-            .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })
             .expect("falha count");
         assert_eq!(count, 1);
 

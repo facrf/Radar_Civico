@@ -44,7 +44,7 @@ pub fn batch_insert_receitas(conn: &mut Connection, receitas: &[NovaReceita]) ->
                 r.candidatura_id,
                 r.doador_cpf_cnpj,
                 r.doador_nome,
-                r.valor,
+                crate::Money::from_reais(r.valor)?.reais(),
                 r.data_receita,
                 r.tipo_origem,
                 r.descricao,
@@ -74,7 +74,7 @@ pub fn batch_insert_despesas(conn: &mut Connection, despesas: &[NovaDespesa]) ->
                 d.candidatura_id,
                 d.fornecedor_cpf_cnpj,
                 d.fornecedor_nome,
-                d.valor,
+                crate::Money::from_reais(d.valor)?.reais(),
                 d.data_despesa,
                 d.tipo_despesa,
                 d.descricao,
@@ -111,7 +111,10 @@ pub struct NovoAlertaBeneficioIndevido {
     pub status_analise: Option<String>,
 }
 
-pub fn batch_insert_beneficios(conn: &mut Connection, beneficios: &[NovoBeneficio]) -> Result<usize> {
+pub fn batch_insert_beneficios(
+    conn: &mut Connection,
+    beneficios: &[NovoBeneficio],
+) -> Result<usize> {
     if beneficios.is_empty() {
         return Ok(0);
     }
@@ -132,7 +135,7 @@ pub fn batch_insert_beneficios(conn: &mut Connection, beneficios: &[NovoBenefici
                 b.uf,
                 b.mes_disponibilizacao,
                 b.parcela,
-                b.valor,
+                crate::Money::from_reais(b.valor)?.reais(),
                 b.enquadramento,
             ])?;
         }
@@ -164,8 +167,11 @@ pub fn batch_insert_alertas_beneficio(
                 a.beneficio_id,
                 a.motivo,
                 a.detalhes,
-                a.valor_recebido,
-                a.total_bens,
+                crate::Money::from_reais(a.valor_recebido)?.reais(),
+                a.total_bens
+                    .map(crate::Money::from_reais)
+                    .transpose()?
+                    .map(crate::Money::reais),
                 a.cargo_ou_mandato,
                 a.ano_exercicio,
                 a.status_analise.as_deref().unwrap_or("PENDENTE"),
@@ -220,7 +226,7 @@ pub fn batch_insert_despesas_parlamentares(
                 d.categoria_despesa,
                 d.fornecedor_nome,
                 d.fornecedor_cnpj_cpf,
-                d.valor_liquido,
+                crate::Money::from_reais(d.valor_liquido)?.reais(),
                 d.numero_documento,
                 d.url_nota_fiscal,
                 d.detalhes_litros,
@@ -264,7 +270,7 @@ pub fn batch_insert_bens_candidato(
                 b.candidatura_id,
                 b.tipo_bem,
                 b.descricao,
-                b.valor_declarado,
+                crate::Money::from_reais(b.valor_declarado)?.reais(),
             ])?;
         }
     }
@@ -553,8 +559,8 @@ pub fn batch_insert_emendas_parlamentares(
                 e.localidade_destino,
                 e.uf,
                 e.beneficiario,
-                e.valor_empenhado,
-                e.valor_pago,
+                crate::Money::from_reais(e.valor_empenhado)?.reais(),
+                crate::Money::from_reais(e.valor_pago)?.reais(),
             ])?;
         }
     }
@@ -590,7 +596,8 @@ mod tests {
         let inserted_rec = batch_insert_receitas(&mut conn, &receitas)?;
         assert_eq!(inserted_rec, 100);
 
-        let rec_count: i64 = conn.query_row("SELECT count(*) FROM receitas_campanha", [], |r| r.get(0))?;
+        let rec_count: i64 =
+            conn.query_row("SELECT count(*) FROM receitas_campanha", [], |r| r.get(0))?;
         assert_eq!(rec_count, 100);
 
         let despesas: Vec<NovaDespesa> = (0..150)
@@ -608,11 +615,13 @@ mod tests {
         let inserted_desp = batch_insert_despesas(&mut conn, &despesas)?;
         assert_eq!(inserted_desp, 150);
 
-        let desp_count: i64 = conn.query_row("SELECT count(*) FROM despesas_campanha", [], |r| r.get(0))?;
+        let desp_count: i64 =
+            conn.query_row("SELECT count(*) FROM despesas_campanha", [], |r| r.get(0))?;
         assert_eq!(desp_count, 150);
 
         // Verify triggers populated fornecedores_fts
-        let fts_count: i64 = conn.query_row("SELECT count(*) FROM fornecedores_fts", [], |r| r.get(0))?;
+        let fts_count: i64 =
+            conn.query_row("SELECT count(*) FROM fornecedores_fts", [], |r| r.get(0))?;
         assert_eq!(fts_count, 150);
 
         Ok(())
@@ -647,7 +656,10 @@ mod tests {
         let inserted = batch_insert_beneficios(&mut conn, &beneficios)?;
         assert_eq!(inserted, 50);
 
-        let count: i64 = conn.query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| r.get(0))?;
+        let count: i64 =
+            conn.query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
+                r.get(0)
+            })?;
         assert_eq!(count, 50);
 
         let alertas = vec![NovoAlertaBeneficioIndevido {
@@ -665,7 +677,10 @@ mod tests {
         let inserted_alertas = batch_insert_alertas_beneficio(&mut conn, &alertas)?;
         assert_eq!(inserted_alertas, 1);
 
-        let count_alertas: i64 = conn.query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| r.get(0))?;
+        let count_alertas: i64 =
+            conn.query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| {
+                r.get(0)
+            })?;
         assert_eq!(count_alertas, 1);
 
         Ok(())
@@ -709,14 +724,20 @@ mod tests {
         let inseridos = batch_insert_despesas_parlamentares(&mut conn, &despesas)?;
         assert_eq!(inseridos, 2);
 
-        let total: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
+        let total: i64 =
+            conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })?;
         assert_eq!(total, 2);
 
         // Testa idempotência: re-inserir o mesmo lote não duplica e retorna 0 novos inseridos
         let re_inseridos = batch_insert_despesas_parlamentares(&mut conn, &despesas)?;
         assert_eq!(re_inseridos, 0);
 
-        let total_pos: i64 = conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))?;
+        let total_pos: i64 =
+            conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })?;
         assert_eq!(total_pos, 2);
 
         Ok(())
@@ -783,13 +804,19 @@ mod tests {
         let n = batch_insert_candidatos_tse(&mut conn, &candidatos)?;
         assert_eq!(n, 3);
 
-        let total_politicos: i64 = conn.query_row("SELECT count(*) FROM politicos", [], |r| r.get(0))?;
+        let total_politicos: i64 =
+            conn.query_row("SELECT count(*) FROM politicos", [], |r| r.get(0))?;
         assert_eq!(total_politicos, 2);
 
-        let total_candidaturas: i64 = conn.query_row("SELECT count(*) FROM candidaturas", [], |r| r.get(0))?;
+        let total_candidaturas: i64 =
+            conn.query_row("SELECT count(*) FROM candidaturas", [], |r| r.get(0))?;
         assert_eq!(total_candidaturas, 2);
 
-        let nome: String = conn.query_row("SELECT nome_completo FROM politicos WHERE sq_candidato = '1001'", [], |r| r.get(0))?;
+        let nome: String = conn.query_row(
+            "SELECT nome_completo FROM politicos WHERE sq_candidato = '1001'",
+            [],
+            |r| r.get(0),
+        )?;
         assert_eq!(nome, "CANDIDATO UM ATUALIZADO");
 
         Ok(())
@@ -837,7 +864,9 @@ mod tests {
         let n = batch_insert_emendas_parlamentares(&mut conn, &emendas)?;
         assert_eq!(n, 2);
 
-        let total: i64 = conn.query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| r.get(0))?;
+        let total: i64 = conn.query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
+            r.get(0)
+        })?;
         assert_eq!(total, 2);
 
         let pol_id_resolvido: Option<i64> = conn.query_row(

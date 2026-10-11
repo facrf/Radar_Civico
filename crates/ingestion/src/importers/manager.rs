@@ -39,6 +39,39 @@ impl ImporterManager {
         }
     }
 
+    /// Recupera os últimos snapshots depois da recuperação de tarefas no arranque.
+    pub fn restore(&self) -> Result<()> {
+        let conn = self.sink.pool().get()?;
+        let snapshots = storage::jobs::list(&conn, "importer")?;
+        let mut contexts = self
+            .contexts
+            .write()
+            .map_err(|_| IngestionError::Custom("Trava de contextos indisponível".into()))?;
+        for (id, _, json) in snapshots {
+            let progress: ImportProgress =
+                serde_json::from_str(&json).map_err(|e| IngestionError::Parse(e.to_string()))?;
+            contexts.insert(id, Arc::new(ImportContext::from_progress(progress)));
+        }
+        Ok(())
+    }
+    async fn persist(pool: storage::DbPool, ctx: &ImportContext) -> Result<()> {
+        let progress = ctx.get_progress();
+        let payload =
+            serde_json::to_string(&progress).map_err(|e| IngestionError::Parse(e.to_string()))?;
+        pool.run_blocking(move |conn| {
+            storage::jobs::save_current(
+                conn,
+                "importer",
+                &progress.importer_id,
+                progress.is_running,
+                &payload,
+            )
+            .map(|_| ())
+        })
+        .await?;
+        Ok(())
+    }
+
     pub fn register(&self, importer: Arc<dyn SourceImporter>) {
         if let Ok(mut map) = self.importers.write() {
             map.insert(importer.id().to_string(), importer);
@@ -140,6 +173,11 @@ impl ImporterManager {
                 )));
             }
             let ctx = Arc::new(ImportContext::new(id));
+            let conn = self.sink.pool().get()?;
+            let progress = ctx.get_progress();
+            let json = serde_json::to_string(&progress)
+                .map_err(|e| IngestionError::Parse(e.to_string()))?;
+            storage::jobs::save(&conn, "importer", id, true, &json)?;
             contexts.insert(id.to_string(), Arc::clone(&ctx));
             ctx
         };
@@ -148,9 +186,10 @@ impl ImporterManager {
         let ctx_cloned = Arc::clone(&ctx);
         let sink_cloned = Arc::clone(&self.sink);
 
+        let persistence_pool = self.sink.pool().clone();
         tokio::spawn(async move {
             let monitor = ctx_cloned.clone();
-            let result = tokio::spawn(async move {
+            let mut worker = tokio::spawn(async move {
                 ctx_cloned.set_stage(ImportStage::Processando, "Iniciando processamento...");
                 match importer_cloned
                     .run(Arc::clone(&ctx_cloned), sink_cloned)
@@ -170,10 +209,23 @@ impl ImporterManager {
                         ctx_cloned.set_error(err.to_string());
                     }
                 }
-            })
-            .await;
+            });
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            let result = loop {
+                tokio::select! {
+                    result=&mut worker => break result,
+                    _=interval.tick() => {
+                        if let Err(error)=Self::persist(persistence_pool.clone(),&monitor).await {
+                            tracing::error!("Falha ao persistir progresso: {error}");
+                        }
+                    }
+                }
+            };
             if let Err(error) = result {
                 monitor.set_error(format!("Worker de importação interrompido: {error}"));
+            }
+            if let Err(error) = Self::persist(persistence_pool, &monitor).await {
+                tracing::error!("Falha ao persistir estado final: {error}");
             }
         });
 
@@ -204,9 +256,12 @@ mod concurrency_regressions {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dois_inicios_simultaneos_criam_apenas_um_worker() {
-        let manager = ImporterManager::new(Arc::new(BatchSink::new(
-            storage::DbPool::open_in_memory().unwrap(),
-        )));
+        let pool = storage::DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            storage::run_migrations(&mut conn).unwrap();
+        }
+        let manager = ImporterManager::new(Arc::new(BatchSink::new(pool)));
         manager.register(Arc::new(WaitingImporter));
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let mut threads = Vec::new();
@@ -238,5 +293,35 @@ mod concurrency_regressions {
             manager.get_status("waiting").unwrap().stage,
             ImportStage::Cancelado
         );
+    }
+}
+
+#[cfg(test)]
+mod persistence_regressions {
+    use super::*;
+    #[test]
+    fn restore_preserva_progresso_interrompido() {
+        let pool = storage::DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        storage::run_migrations(&mut conn).unwrap();
+        let ctx = ImportContext::new("tse");
+        ctx.update_progress("receitas.csv", 2, 5, 123);
+        storage::jobs::save(
+            &conn,
+            "importer",
+            "tse",
+            true,
+            &serde_json::to_string(&ctx.get_progress()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(storage::jobs::recover_interrupted(&conn).unwrap(), 1);
+        drop(conn);
+        let manager = ImporterManager::new(Arc::new(BatchSink::new(pool)));
+        manager.restore().unwrap();
+        let status = manager.get_status("tse").unwrap();
+        assert_eq!(status.stage, ImportStage::Interrompido);
+        assert_eq!(status.records_processed, 123);
+        assert_eq!(status.files_processed, 2);
+        assert!(!status.is_running);
     }
 }

@@ -628,6 +628,7 @@ pub const MIGRATIONS: &[Migration] = &[
             WHERE chave_origem IS NOT NULL;
         ",
     },
+    Migration { version:21, name:"centavos_e_tarefas_duraveis", sql:include_str!("021_money_jobs.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1313,5 +1314,56 @@ mod tests {
         assert_eq!(val_pago, 850000.0);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod money_regressions {
+    #[test]
+    fn cents_legacy_insert_update_e_null() {
+        let pool = crate::DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        super::run_migrations(&mut conn).unwrap();
+        conn.execute("INSERT INTO receitas_campanha(doador_cpf_cnpj,doador_nome,valor) VALUES ('1','A',0.1),('2','B',0.2)",[]).unwrap();
+        let total: i64 = conn
+            .query_row(
+                "SELECT SUM(valor_centavos) FROM receitas_campanha",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 30);
+        let ty: String = conn
+            .query_row(
+                "SELECT typeof(valor_centavos_armazenados) FROM receitas_campanha LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ty, "integer");
+        conn.execute(
+            "UPDATE receitas_campanha SET valor=0.35 WHERE doador_cpf_cnpj='1'",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE receitas_campanha SET valor_centavos_armazenados=NULL WHERE doador_cpf_cnpj='2'",[]).unwrap();
+        let total: i64 = conn
+            .query_row(
+                "SELECT SUM(valor_centavos) FROM receitas_campanha",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 55);
+        conn.execute("INSERT INTO alertas_auditoria(tipo,severidade,titulo,descricao,alvo_nome,fonte_dado) VALUES ('TESTE','INFO','A','B','C','D')",[]).unwrap();
+        let val: Option<i64> = conn
+            .query_row(
+                "SELECT valor_envolvido_centavos FROM alertas_auditoria",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(val, None);
+        super::run_migrations(&mut conn).unwrap();
     }
 }

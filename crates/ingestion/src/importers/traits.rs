@@ -18,6 +18,7 @@ pub enum ImportStage {
     Finalizando,
     Concluido,
     Cancelado,
+    Interrompido,
     Erro,
 }
 
@@ -85,6 +86,15 @@ impl ImportContext {
             importer_id: id,
             cancellation_token: CancellationToken::new(),
             progress: Arc::new(RwLock::new(initial_progress)),
+            started_instant: Instant::now(),
+        }
+    }
+
+    pub fn from_progress(progress: ImportProgress) -> Self {
+        Self {
+            importer_id: progress.importer_id.clone(),
+            cancellation_token: CancellationToken::new(),
+            progress: Arc::new(RwLock::new(progress)),
             started_instant: Instant::now(),
         }
     }

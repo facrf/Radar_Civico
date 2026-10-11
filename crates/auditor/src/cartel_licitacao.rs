@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContratoEmpresaSocio {
@@ -28,7 +28,7 @@ pub struct AlertaConluioLicitacao {
 
 pub fn auditar_socios_comuns_contratos(
     contratos: &[ContratoEmpresaSocio],
-) -> Vec<AlertaConluioLicitacao> {
+) -> crate::Result<Vec<AlertaConluioLicitacao>> {
     // Agrupa por (órgão contratante, chave do sócio)
     let mut grupos: HashMap<(String, String), Vec<&ContratoEmpresaSocio>> = HashMap::new();
 
@@ -52,20 +52,22 @@ pub fn auditar_socios_comuns_contratos(
     for ((orgao, _), itens) in grupos {
         let mut cnpjs: HashSet<String> = HashSet::new();
         let mut empresas: HashSet<String> = HashSet::new();
-        let mut total_valor = 0.0;
+        let mut total_valor = storage::Money::ZERO;
         let mut socio_nome = String::new();
         let mut socio_cpf = String::new();
 
         for item in &itens {
             cnpjs.insert(item.empresa_cnpj.clone());
             empresas.insert(item.empresa_razao_social.clone());
-            total_valor += item.valor_contratado;
+            total_valor =
+                total_valor.checked_add(storage::Money::from_reais(item.valor_contratado)?)?;
             if socio_nome.is_empty() {
                 socio_nome = item.socio_nome.clone();
                 socio_cpf = item.socio_cpf_mascarado.clone();
             }
         }
 
+        let total_valor = total_valor.reais();
         // Alerta apenas quando o sócio atua em pelo menos 2 CNPJs distintos contratados pelo mesmo órgão
         if cnpjs.len() >= 2 {
             let gravidade = if total_valor >= 1_000_000.0 || cnpjs.len() >= 3 {
@@ -103,8 +105,12 @@ pub fn auditar_socios_comuns_contratos(
         }
     }
 
-    alertas.sort_by(|a, b| b.valor_total_contratado.partial_cmp(&a.valor_total_contratado).unwrap_or(std::cmp::Ordering::Equal));
-    alertas
+    alertas.sort_by(|a, b| {
+        b.valor_total_contratado
+            .partial_cmp(&a.valor_total_contratado)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(alertas)
 }
 
 #[cfg(test)]
@@ -136,7 +142,7 @@ mod tests {
             },
         ];
 
-        let alertas = auditar_socios_comuns_contratos(&contratos);
+        let alertas = auditar_socios_comuns_contratos(&contratos).unwrap();
         assert_eq!(alertas.len(), 1);
         let a = &alertas[0];
         assert_eq!(a.orgao_contratante, "PREFEITURA DE CAMPINAS");
@@ -170,7 +176,7 @@ mod tests {
             },
         ];
 
-        let alertas = auditar_socios_comuns_contratos(&contratos);
+        let alertas = auditar_socios_comuns_contratos(&contratos).unwrap();
         assert!(alertas.is_empty());
     }
 }

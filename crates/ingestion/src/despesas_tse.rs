@@ -18,11 +18,6 @@ pub struct DespesaTseCsvRecord {
     pub descricao: Option<String>,
 }
 
-fn parse_float_br(val: &str) -> f64 {
-    let clean = val.trim().replace('.', "").replace(',', ".");
-    clean.parse::<f64>().unwrap_or(0.0)
-}
-
 pub async fn processar_stream_despesas_tse<R: AsyncRead + Unpin + Send>(
     reader: R,
 ) -> Result<Vec<DespesaTseCsvRecord>> {
@@ -41,7 +36,9 @@ pub async fn processar_stream_despesas_tse<R: AsyncRead + Unpin + Send>(
     let col_sq = headers.iter().position(|h| h.trim() == "SQ_CANDIDATO");
     let col_forn_doc = headers.iter().position(|h| {
         let clean = h.trim();
-        clean == "NR_CPF_CNPJ_FORNECEDOR" || clean == "NR_CPF_FORNECEDOR" || clean == "CD_CPF_CNPJ_FORNECEDOR"
+        clean == "NR_CPF_CNPJ_FORNECEDOR"
+            || clean == "NR_CPF_FORNECEDOR"
+            || clean == "CD_CPF_CNPJ_FORNECEDOR"
     });
     let col_forn_nome = headers.iter().position(|h| {
         let clean = h.trim();
@@ -79,8 +76,12 @@ pub async fn processar_stream_despesas_tse<R: AsyncRead + Unpin + Send>(
         let raw_doc = col_forn_doc.and_then(|idx| record.get(idx)).unwrap_or("");
         let fornecedor_cpf_cnpj = limpar_cnpj(raw_doc);
 
-        let valor_str = col_valor.and_then(|idx| record.get(idx)).unwrap_or("0");
-        let valor = parse_float_br(valor_str);
+        let valor_str = col_valor.and_then(|idx| record.get(idx)).unwrap_or("");
+        let valor = crate::validation::money_field(
+            Some(valor_str),
+            record.position().map(|p| p.line()).unwrap_or(0),
+            "valor",
+        )?;
 
         let sq_candidato = col_sq
             .and_then(|idx| record.get(idx))
@@ -166,7 +167,10 @@ SQ_CANDIDATO;NR_CPF_CNPJ_FORNECEDOR;NM_FORNECEDOR;VR_DESPESA;DT_DESPESA;DS_TIPO_
         assert_eq!(records[0].fornecedor_cpf_cnpj, "12345678000190");
         assert_eq!(records[0].fornecedor_nome, "GRAFICA IMPRESSAO RAPIDA LTDA");
         assert!((records[0].valor - 12450.75).abs() < 0.01);
-        assert_eq!(records[0].tipo_despesa.as_deref(), Some("Publicidade Impressa"));
+        assert_eq!(
+            records[0].tipo_despesa.as_deref(),
+            Some("Publicidade Impressa")
+        );
 
         assert_eq!(records[1].fornecedor_cpf_cnpj, "98765432000110");
         assert!((records[1].valor - 35000.0).abs() < 0.01);

@@ -213,3 +213,7 @@ cd web && npm run check && npm run build
 
 ## 📄 Licença
 Distribuído sob licença aberta para fortalecimento da transparência pública e controle social.
+
+## Melhorias e operação
+
+Consulte [Melhorias e operação](docs/MELHORIAS_E_OPERACAO.md) para paginação dos dossiês, limites do grafo, valores em centavos, validação de importações, recuperação de tarefas e CI/cache Docker.
