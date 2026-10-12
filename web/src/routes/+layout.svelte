@@ -25,20 +25,11 @@
 	}
 
 	onMount(() => {
-        const originalFetch = window.fetch;
-        window.fetch = async (...args) => {
-            const response = await originalFetch(...args);
-            if (response.status === 401 && response.url.includes('/api/')) {
-                window.location.assign('/admin/login');
-            }
-            return response;
-        };
 		window.addEventListener('radar-icon-updated', atualizarIdentidade);
 		window.addEventListener('radar-alertas-updated', verificarAlertas);
 		verificarAlertas();
 		sincronizarVersaoServidor();
 		return () => {
-            window.fetch = originalFetch;
 			window.removeEventListener('radar-icon-updated', atualizarIdentidade);
 			window.removeEventListener('radar-alertas-updated', verificarAlertas);
 		};
@@ -75,7 +66,6 @@
 
 			<nav class="flex flex-wrap items-center gap-1 sm:gap-2">
                 <a href="/fontes-fotos" class="px-3 py-2 text-sm text-slate-300">Fontes das fotos</a>
-                <a href="/admin/login" data-sveltekit-reload class="px-3 py-2 text-sm text-sky-300">Entrar como administrador</a>
 				<a href="/" class="px-3 py-2 text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-800/60 rounded-md transition-colors">
 					Painel & Busca
 				</a>

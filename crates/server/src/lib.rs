@@ -80,6 +80,10 @@ use tower_http::trace::TraceLayer;
 pub fn criar_router(pool: DbPool) -> Router {
     let mut router = Router::new()
         .route("/health", get(|| async { "OK" }))
+        .route(
+            "/admin/login",
+            get(|| async { axum::response::Redirect::to("/") }),
+        )
         .route("/api/busca", get(busca_handler))
         .route("/api/v1/busca", get(busca_handler))
         .route("/api/politicos", get(listar_politicos_handler))
@@ -371,4 +375,48 @@ pub fn criar_router(pool: DbPool) -> Router {
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(pool)
+}
+
+#[cfg(test)]
+mod local_access_tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn login_antigo_redireciona_ao_painel() {
+        let app = criar_router(DbPool::open_in_memory().unwrap());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/login")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()[header::LOCATION], "/");
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
+    }
+
+    #[tokio::test]
+    async fn importacao_sem_login_chega_a_validacao_do_payload() {
+        let app = criar_router(DbPool::open_in_memory().unwrap());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/ingestao/executar")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
 }

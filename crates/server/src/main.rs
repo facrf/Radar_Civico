@@ -132,9 +132,7 @@ async fn main() -> Result<()> {
 
     tokio::spawn(ingestion::progress::persist_progress_loop(pool.clone()));
 
-    let auth_dir = env::var("DATA_DIR").unwrap_or_else(|_| "./data".into());
-    let auth = server::security::AdminAuth::load(Path::new(&auth_dir))?;
-    let app = server::security::secure_router(criar_router(pool), auth);
+    let app = criar_router(pool);
 
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
