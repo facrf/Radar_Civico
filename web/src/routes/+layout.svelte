@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
-	import { versionStore, sincronizarVersaoServidor } from '$lib/version';
+	import { versionStore, sincronizarVersaoServidor } from '#lib/version';
 
 	let brandTimestamp = Date.now();
 	let iconLoadFailed = false;
@@ -25,11 +25,20 @@
 	}
 
 	onMount(() => {
+        const originalFetch = window.fetch;
+        window.fetch = async (...args) => {
+            const response = await originalFetch(...args);
+            if (response.status === 401 && response.url.includes('/api/')) {
+                window.location.assign('/admin/login');
+            }
+            return response;
+        };
 		window.addEventListener('radar-icon-updated', atualizarIdentidade);
 		window.addEventListener('radar-alertas-updated', verificarAlertas);
 		verificarAlertas();
 		sincronizarVersaoServidor();
 		return () => {
+            window.fetch = originalFetch;
 			window.removeEventListener('radar-icon-updated', atualizarIdentidade);
 			window.removeEventListener('radar-alertas-updated', verificarAlertas);
 		};
@@ -42,7 +51,7 @@
 
 <div class="min-h-screen flex flex-col bg-slate-900 text-slate-100 font-sans">
 	<header class="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-50">
-		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 min-h-16 py-3 flex flex-wrap items-center justify-between gap-3">
 			<a href="/" class="flex items-center gap-3 group">
 				<div class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition-transform overflow-hidden relative">
 					<img
@@ -64,7 +73,9 @@
 				</div>
 			</a>
 
-			<nav class="flex items-center gap-1 sm:gap-2">
+			<nav class="flex flex-wrap items-center gap-1 sm:gap-2">
+                <a href="/fontes-fotos" class="px-3 py-2 text-sm text-slate-300">Fontes das fotos</a>
+                <a href="/admin/login" data-sveltekit-reload class="px-3 py-2 text-sm text-sky-300">Entrar como administrador</a>
 				<a href="/" class="px-3 py-2 text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-800/60 rounded-md transition-colors">
 					Painel & Busca
 				</a>

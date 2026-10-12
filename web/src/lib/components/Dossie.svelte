@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { BemItem, CandidaturaItem, DoadorItem, DossiePolitico } from '$lib/types';
+	import type { BemItem, CandidaturaItem, DoadorItem, DossiePolitico } from '#lib/types';
 
 	export let dossie: DossiePolitico;
 

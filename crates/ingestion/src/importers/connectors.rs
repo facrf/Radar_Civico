@@ -1,6 +1,5 @@
-use std::sync::Arc;
 use async_trait::async_trait;
-use serde_json::json;
+use std::sync::Arc;
 use tokio::task::spawn_blocking;
 
 use crate::error::{IngestionError, Result};
@@ -42,21 +41,24 @@ impl SourceImporter for ReceitaFederalImporter {
     }
 
     async fn run(&self, ctx: Arc<ImportContext>, sink: Arc<BatchSink>) -> Result<()> {
-        ctx.set_stage(ImportStage::Conectando, "Conectando à base da Receita Federal...");
+        ctx.set_stage(
+            ImportStage::Conectando,
+            "Conectando à base da Receita Federal...",
+        );
 
-        let csv_data = self.mock_csv.clone().unwrap_or_else(|| {
-            // CSV mínimo para demonstração caso não seja injetado arquivo
-            "CNPJ_BASICO;CNPJ_ORDEM;CNPJ_DV;RAZAO_SOCIAL;SOCIO_CPF_CNPJ_MASCARADO;SOCIO_NOME;QUALIFICACAO_SOCIO\n\
-             12345678;0001;99;EMPRESA MODELO LTDA;***.123.456-**;CARLOS ALBERTO;SOCIO-ADMINISTRADOR\n"
-                .to_string()
-        });
+        let csv_data = self.mock_csv.clone().ok_or_else(|| IngestionError::Custom(
+            "QSA exige arquivo oficial: utilize o upload RECEITA_QSA. Nenhum dado foi inserido.".into()
+        ))?;
 
         if ctx.is_cancelled() {
             ctx.set_stage(ImportStage::Cancelado, "Cancelado pelo usuário");
             return Ok(());
         }
 
-        ctx.set_stage(ImportStage::Processando, "Processando registros de sócios e CNPJs...");
+        ctx.set_stage(
+            ImportStage::Processando,
+            "Processando registros de sócios e CNPJs...",
+        );
 
         let pool = sink.pool().clone();
         let inseridos = spawn_blocking(move || -> Result<usize> {
@@ -79,10 +81,7 @@ impl SourceImporter for ReceitaFederalImporter {
                     .from_reader(csv_data.as_bytes());
 
                 for result in rdr.records() {
-                    let record = match result {
-                        Ok(r) => r,
-                        Err(_) => continue,
-                    };
+                    let record = result.map_err(|e| IngestionError::Parse(e.to_string()))?;
                     if record.len() >= 7 {
                         stmt.execute(storage::rusqlite::params![
                             record.get(0).unwrap_or(""),
@@ -105,7 +104,10 @@ impl SourceImporter for ReceitaFederalImporter {
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
 
         ctx.update_progress("qsa_receita.csv", 1, 1, inseridos as u64);
-        ctx.finish(format!("Receita Federal: {} vínculos QSA processados com sucesso", inseridos));
+        ctx.finish(format!(
+            "Receita Federal: {} vínculos QSA processados com sucesso",
+            inseridos
+        ));
         Ok(())
     }
 }
@@ -244,49 +246,8 @@ impl SourceImporter for PncpImporter {
         "Ingestão e sincronização de contratos e atas de registro de preços do PNCP"
     }
 
-    async fn run(&self, ctx: Arc<ImportContext>, sink: Arc<BatchSink>) -> Result<()> {
-        let ano = if self.ano == 0 { 2024 } else { self.ano };
-        ctx.set_stage(ImportStage::Conectando, format!("Acessando API do PNCP ({ano})..."));
-
-        if ctx.is_cancelled() {
-            ctx.set_stage(ImportStage::Cancelado, "Cancelado");
-            return Ok(());
-        }
-
-        ctx.set_stage(ImportStage::Processando, "Consolidando contratos públicos...");
-        let pool = sink.pool().clone();
-        let cnpj = self.cnpj_filtro.clone().unwrap_or_else(|| "12345678000199".to_string());
-
-        let inseridos = spawn_blocking(move || -> Result<usize> {
-            let mut conn = pool.get().map_err(IngestionError::Storage)?;
-            storage::aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
-
-            let tx = storage::transaction_immediate(&mut conn).map_err(IngestionError::Storage)?;
-            {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT INTO contratos_publicos (
-                        orgao_contratante, fornecedor_cnpj, valor_contratado, objeto, data_assinatura, data_termino
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-                ).map_err(IngestionError::Sqlite)?;
-
-                stmt.execute(storage::rusqlite::params![
-                    "PREFEITURA MUNICIPAL EXEMPLO",
-                    cnpj,
-                    250_000.0,
-                    "Prestação de serviços continuados de consultoria e TI",
-                    format!("{ano}-01-15"),
-                    format!("{ano}-12-31"),
-                ]).map_err(IngestionError::Sqlite)?;
-            }
-            tx.commit().map_err(IngestionError::Sqlite)?;
-            Ok(1)
-        })
-        .await
-        .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
-
-        ctx.update_progress("pncp_contratos.json", 1, 1, inseridos as u64);
-        ctx.finish(format!("PNCP: {} contratos registrados para o exercício {}", inseridos, ano));
-        Ok(())
+    async fn run(&self, _ctx: Arc<ImportContext>, _sink: Arc<BatchSink>) -> Result<()> {
+        Err(IngestionError::Custom("PNCP automático indisponível: configure uma fonte oficial antes de importar contratos. Nenhum dado foi inserido.".into()))
     }
 }
 
@@ -322,59 +283,8 @@ impl SourceImporter for QueridoDiarioImporter {
         "Monitoramento de diários oficiais municipais para busca de nomeações e atos públicos"
     }
 
-    async fn run(&self, ctx: Arc<ImportContext>, sink: Arc<BatchSink>) -> Result<()> {
-        let termo = if self.termo.is_empty() { "NOMEACAO SECRETARIO" } else { &self.termo };
-        let mun = if self.municipio_uf.is_empty() { "SAO PAULO/SP" } else { &self.municipio_uf };
-
-        ctx.set_stage(ImportStage::Conectando, format!("Consultando Querido Diário ({termo} em {mun})..."));
-
-        if ctx.is_cancelled() {
-            ctx.set_stage(ImportStage::Cancelado, "Cancelado");
-            return Ok(());
-        }
-
-        ctx.set_stage(ImportStage::Processando, "Gravando ocorrências no cache de diários...");
-        let pool = sink.pool().clone();
-        let termo_str = termo.to_string();
-        let mun_str = mun.to_string();
-
-        let inseridos = spawn_blocking(move || -> Result<usize> {
-            let mut conn = pool.get().map_err(IngestionError::Storage)?;
-            storage::aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
-
-            let tx = storage::transaction_immediate(&mut conn).map_err(IngestionError::Storage)?;
-            {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT INTO cache_consultas_diario (
-                        doador_cpf_cnpj, termo_pesquisado, municipio_uf, ocorrencias_encontradas, payload_json
-                     ) VALUES (?1, ?2, ?3, ?4, ?5)"
-                ).map_err(IngestionError::Sqlite)?;
-
-                let payload = json!({
-                    "gazettes": [{
-                        "date": "2024-02-01",
-                        "text": "Fica nomeado para exercer o cargo em comissao de Secretario Municipal",
-                        "municipality": mun_str
-                    }]
-                }).to_string();
-
-                stmt.execute(storage::rusqlite::params![
-                    "00000000000",
-                    termo_str,
-                    mun_str,
-                    1,
-                    payload
-                ]).map_err(IngestionError::Sqlite)?;
-            }
-            tx.commit().map_err(IngestionError::Sqlite)?;
-            Ok(1)
-        })
-        .await
-        .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
-
-        ctx.update_progress("querido_diario_results.json", 1, 1, inseridos as u64);
-        ctx.finish(format!("Querido Diário: {} atos oficiais indexados", inseridos));
-        Ok(())
+    async fn run(&self, _ctx: Arc<ImportContext>, _sink: Arc<BatchSink>) -> Result<()> {
+        Err(IngestionError::Custom("Utilize a sincronização de diários nas configurações ou a investigação por nome. Nenhum dado foi inserido.".into()))
     }
 }
 
@@ -413,20 +323,24 @@ impl SourceImporter for CnaOabImporter {
     }
 
     async fn run(&self, ctx: Arc<ImportContext>, sink: Arc<BatchSink>) -> Result<()> {
-        ctx.set_stage(ImportStage::Conectando, "Conectando ao sistema CNA da OAB...");
+        ctx.set_stage(
+            ImportStage::Conectando,
+            "Conectando ao sistema CNA da OAB...",
+        );
 
-        let csv_data = self.mock_csv.clone().unwrap_or_else(|| {
-            "PESSOA_NOME;CPF_MASCARADO;ORGAO_EMISSOR;NUMERO_REGISTRO;SECCIONAL_UF;SITUACAO_REGISTRO;TIPO_INSCRICAO\n\
-             DR ROBERTO CARLOS;***.555.666-**;OAB;98765;SP;REGULAR;ADVOGADO\n"
-                .to_string()
-        });
+        let csv_data = self.mock_csv.clone().ok_or_else(|| IngestionError::Custom(
+            "OAB exige arquivo oficial: utilize o upload OAB ou a investigação por nome. Nenhum dado foi inserido.".into()
+        ))?;
 
         if ctx.is_cancelled() {
             ctx.set_stage(ImportStage::Cancelado, "Cancelado");
             return Ok(());
         }
 
-        ctx.set_stage(ImportStage::Processando, "Atualizando cadastros profissionais da OAB...");
+        ctx.set_stage(
+            ImportStage::Processando,
+            "Atualizando cadastros profissionais da OAB...",
+        );
         let pool = sink.pool().clone();
 
         let inseridos = spawn_blocking(move || -> Result<usize> {
@@ -449,10 +363,7 @@ impl SourceImporter for CnaOabImporter {
                     .from_reader(csv_data.as_bytes());
 
                 for result in rdr.records() {
-                    let record = match result {
-                        Ok(r) => r,
-                        Err(_) => continue,
-                    };
+                    let record = result.map_err(|e| IngestionError::Parse(e.to_string()))?;
                     if record.len() >= 6 {
                         let res = stmt.execute(storage::rusqlite::params![
                             record.get(0).unwrap_or(""),
@@ -463,9 +374,8 @@ impl SourceImporter for CnaOabImporter {
                             record.get(5).unwrap_or("REGULAR"),
                             record.get(6).unwrap_or("ADVOGADO"),
                         ]);
-                        if res.is_ok() {
-                            count += 1;
-                        }
+                        res.map_err(IngestionError::Sqlite)?;
+                        count += 1;
                     }
                 }
             }
@@ -476,7 +386,10 @@ impl SourceImporter for CnaOabImporter {
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
 
         ctx.update_progress("oab_cadastros.csv", 1, 1, inseridos as u64);
-        ctx.finish(format!("CNA/OAB: {} registros profissionais atualizados com sucesso", inseridos));
+        ctx.finish(format!(
+            "CNA/OAB: {} registros profissionais atualizados com sucesso",
+            inseridos
+        ));
         Ok(())
     }
 }
@@ -497,12 +410,13 @@ pub mod tests {
         let importer = ReceitaFederalImporter::default();
         let ctx = Arc::new(ImportContext::new("receita_qsa"));
 
-        importer.run(Arc::clone(&ctx), sink).await.unwrap();
-        assert_eq!(ctx.get_progress().stage, ImportStage::Concluido);
+        importer.run(Arc::clone(&ctx), sink).await.unwrap_err();
 
         let conn = pool.get().unwrap();
-        let total: i64 = conn.query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0)).unwrap();
-        assert_eq!(total, 1);
+        let total: i64 = conn
+            .query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 0);
     }
 
     #[tokio::test]
@@ -516,12 +430,13 @@ pub mod tests {
         let importer = PncpImporter::new(2024);
         let ctx = Arc::new(ImportContext::new("pncp"));
 
-        importer.run(Arc::clone(&ctx), sink).await.unwrap();
-        assert_eq!(ctx.get_progress().stage, ImportStage::Concluido);
+        importer.run(Arc::clone(&ctx), sink).await.unwrap_err();
 
         let conn = pool.get().unwrap();
-        let total: i64 = conn.query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0)).unwrap();
-        assert_eq!(total, 1);
+        let total: i64 = conn
+            .query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 0);
     }
 
     #[tokio::test]
@@ -535,12 +450,15 @@ pub mod tests {
         let importer = QueridoDiarioImporter::default();
         let ctx = Arc::new(ImportContext::new("querido_diario"));
 
-        importer.run(Arc::clone(&ctx), sink).await.unwrap();
-        assert_eq!(ctx.get_progress().stage, ImportStage::Concluido);
+        importer.run(Arc::clone(&ctx), sink).await.unwrap_err();
 
         let conn = pool.get().unwrap();
-        let total: i64 = conn.query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| r.get(0)).unwrap();
-        assert_eq!(total, 1);
+        let total: i64 = conn
+            .query_row("SELECT count(*) FROM cache_consultas_diario", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(total, 0);
     }
 
     #[tokio::test]
@@ -554,12 +472,15 @@ pub mod tests {
         let importer = CnaOabImporter::default();
         let ctx = Arc::new(ImportContext::new("cna_oab"));
 
-        importer.run(Arc::clone(&ctx), sink).await.unwrap();
-        assert_eq!(ctx.get_progress().stage, ImportStage::Concluido);
+        importer.run(Arc::clone(&ctx), sink).await.unwrap_err();
 
         let conn = pool.get().unwrap();
-        let total: i64 = conn.query_row("SELECT count(*) FROM registros_profissionais", [], |r| r.get(0)).unwrap();
-        assert_eq!(total, 1);
+        let total: i64 = conn
+            .query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(total, 0);
     }
 
     #[tokio::test]

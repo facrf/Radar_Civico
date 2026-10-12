@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '#lib/page';
 	import { onMount } from 'svelte';
-	import DossieCnpjView from '$lib/components/DossieCnpjView.svelte';
-	import type { DossieCnpj } from '$lib/types';
+	import DossieCnpjView from '#lib/components/DossieCnpjView.svelte';
+	import type { DossieCnpj } from '#lib/types';
 
-	let cnpj = $page.params.cnpj;
+	let cnpj = ($page.params.cnpj ?? "");
 	let dossie: DossieCnpj | null = null;
 	let loading = true;
 	let erro: string | null = null;

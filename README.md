@@ -63,7 +63,7 @@ radar-civico/
 
 ### 1. Pré-requisitos
 * **Rust 1.75+** (`cargo`)
-* **Node.js 18+** e `npm` (para o frontend)
+* **Node.js 22.17+** e `npm` (para o frontend)
 * *(Opcional)* **Docker** e **Docker Compose**
 
 ### 2. Modo Servidor e Interface Web

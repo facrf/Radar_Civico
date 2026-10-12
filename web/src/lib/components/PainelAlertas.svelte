@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import type { AlertaItem } from '$lib/types';
+	import type { AlertaItem } from '#lib/types';
 
 	let alertas: AlertaItem[] = [];
 	let loading = true;

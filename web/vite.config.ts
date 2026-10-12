@@ -1,3 +1,5 @@
+import adapter from '@sveltejs/adapter-static';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 import { execSync } from 'node:child_process';
@@ -68,7 +70,7 @@ function getVersionInfo() {
 const versionInfo = getVersionInfo();
 
 export default defineConfig({
-	plugins: [sveltekit()],
+	plugins: [sveltekit({ preprocess: vitePreprocess(), adapter: adapter({ fallback: 'index.html', strict: false }) })],
 	define: {
 		__APP_VERSION__: JSON.stringify(versionInfo.version),
 		__APP_COMMIT__: JSON.stringify(versionInfo.commit),
@@ -76,7 +78,8 @@ export default defineConfig({
 	},
 	server: {
 		proxy: {
-			'/api': 'http://localhost:8080'
+			'/api': 'http://localhost:8080',
+            '/admin': 'http://localhost:8080'
 		}
 	}
 });

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { DossieCpf } from '$lib/types';
+	import type { DossieCpf } from '#lib/types';
 
 	export let dossie: DossieCpf;
 

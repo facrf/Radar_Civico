@@ -1775,262 +1775,95 @@ pub async fn buscar_foto_tse_handler(
     State(pool): State<DbPool>,
     Path(id): Path<i64>,
 ) -> Result<Json<BuscarFotoResponse>, (StatusCode, Json<BuscarFotoResponse>)> {
-    let conn = pool.get().map_err(|e| {
+    let fail = |status, message: String| {
         (
-            StatusCode::INTERNAL_SERVER_ERROR,
+            status,
             Json(BuscarFotoResponse {
                 sucesso: false,
-                mensagem: format!("Erro ao obter conexão do banco de dados: {}", e),
+                mensagem: message,
                 foto_base64: None,
                 foto_mime: None,
                 origem: None,
             }),
         )
-    })?;
-
-    // 1. Verifica se já possui foto salva no banco de dados local
-    let foto_existente: Option<(Vec<u8>, Option<String>)> = conn
-        .query_row(
-            "SELECT foto_blob, foto_mime FROM politicos WHERE id = ?1",
-            [id],
-            |r| {
-                let blob: Option<Vec<u8>> = r.get(0)?;
-                let mime: Option<String> = r.get(1)?;
-                Ok((blob, mime))
-            },
-        )
-        .ok()
-        .and_then(|(b, m)| b.map(|bytes| (bytes, m)));
-
-    if let Some((bytes, mime)) = foto_existente {
-        if !bytes.is_empty() {
-            let mime_str = mime.unwrap_or_else(|| "image/jpeg".to_string());
-            let b64 = BASE64.encode(&bytes);
+    };
+    let dados = pool.run_blocking(move |conn| {
+        Ok(conn.query_row("SELECT p.nome_completo, p.foto_blob, p.foto_mime, p.foto_url, p.sq_candidato, COALESCE(c.ano_eleicao, 2024), COALESCE(c.cargo, '') FROM politicos p LEFT JOIN candidaturas c ON c.politico_id=p.id WHERE p.id=?1 ORDER BY c.ano_eleicao DESC LIMIT 1", [id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<Vec<u8>>>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,i32>(5)?,r.get::<_,String>(6)?)))?)
+    }).await.map_err(|e| fail(StatusCode::NOT_FOUND,e.to_string()))?;
+    let (nome, blob, _mime, url, sq, ano, cargo) = dados;
+    if let Some(bytes) = blob {
+        if let Some(mime) = crate::photos::image_mime(&bytes) {
             return Ok(Json(BuscarFotoResponse {
                 sucesso: true,
-                mensagem: "Foto oficial já armazenada no banco de dados local.".to_string(),
-                foto_base64: Some(b64),
-                foto_mime: Some(mime_str),
-                origem: Some("BANCO_LOCAL".to_string()),
+                mensagem: "Retrato armazenado localmente.".into(),
+                foto_base64: Some(BASE64.encode(bytes)),
+                foto_mime: Some(mime.into()),
+                origem: Some("BANCO_LOCAL".into()),
             }));
         }
     }
-
-    // 2. Consulta dados do político e suas candidaturas
-    let dados_politico: Option<(Option<String>, String, String, Option<String>, String, i32)> =
-        conn.query_row(
-            "SELECT p.sq_candidato, p.nome_completo, p.nome_urna, p.ocupacao,
-                    COALESCE(c.cargo, p.ocupacao, 'PARLAMENTAR'), COALESCE(c.ano_eleicao, 2024)
-             FROM politicos p
-             LEFT JOIN candidaturas c ON c.politico_id = p.id
-             WHERE p.id = ?1
-             ORDER BY c.ano_eleicao DESC LIMIT 1",
-            [id],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                ))
-            },
-        )
-        .ok();
-
-    let (sq_opt, nome_completo, nome_urna, _ocup, cargo, ano_eleicao) = match dados_politico {
-        Some(d) => d,
-        None => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(BuscarFotoResponse {
-                    sucesso: false,
-                    mensagem: "Político não encontrado no banco de dados.".to_string(),
-                    foto_base64: None,
-                    foto_mime: None,
-                    origem: None,
-                }),
-            ));
-        }
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap_or_default();
-
-    let mut foto_baixada: Option<(Vec<u8>, String, String)> = None;
-    let mut erros_detalhados: Vec<String> = Vec::new();
-
-    // 2.5 Se tiver foto_url já cadastrada, tenta baixar diretamente dela primeiro
-    let foto_url_cadastrada: Option<String> = conn
-        .query_row("SELECT foto_url FROM politicos WHERE id = ?1", [id], |r| {
-            r.get(0)
-        })
-        .ok()
-        .flatten();
-
-    if let Some(ref url_direta) = foto_url_cadastrada {
-        if let Ok(resp_img) = client.get(url_direta).send().await {
-            if resp_img.status().is_success() {
-                if let Ok(bytes) = resp_img.bytes().await {
-                    if !bytes.is_empty() {
-                        foto_baixada = Some((
-                            bytes.to_vec(),
-                            "image/jpeg".to_string(),
-                            "CAMARA_DEPUTADOS".to_string(),
-                        ));
-                    }
-                }
-            }
-        }
+    let mut urls = Vec::new();
+    if let Some(url) = url.filter(|u| u.starts_with("https://")) {
+        urls.push((url, "FONTE_CADASTRADA"));
     }
-
-    // 3. Se for Deputado Federal (ou Câmara), consulta API da Câmara dos Deputados
-    if foto_baixada.is_none()
-        && (cargo.to_uppercase().contains("DEPUTADO")
-            || cargo.to_uppercase().contains("PARLAMENTAR")
-            || sq_opt.is_none())
-    {
-        let nomes_para_buscar = vec![nome_urna.clone(), nome_completo.clone()];
-        for n in nomes_para_buscar {
-            if foto_baixada.is_some() {
-                break;
-            }
-            let url_camara_api = format!(
-                "https://dadosabertos.camara.leg.br/api/v2/deputados?nome={}&ordem=ASC&ordenarPor=nome",
-                urlencoding::encode(&n)
-            );
-
-            match client
-                .get(&url_camara_api)
-                .header("User-Agent", "RadarCivico/0.1.0")
-                .header("Accept", "application/json")
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        if let Some(dados) = json.get("dados").and_then(|d| d.as_array()) {
-                            if let Some(primeiro) = dados.first() {
-                                if let Some(url_foto) =
-                                    primeiro.get("urlFoto").and_then(|u| u.as_str())
-                                {
-                                    if let Ok(resp_img) = client.get(url_foto).send().await {
-                                        if resp_img.status().is_success() {
-                                            if let Ok(bytes) = resp_img.bytes().await {
-                                                if !bytes.is_empty() {
-                                                    foto_baixada = Some((
-                                                        bytes.to_vec(),
-                                                        "image/jpeg".to_string(),
-                                                        "CAMARA_DEPUTADOS".to_string(),
-                                                    ));
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
+    if let Some(sq) = sq.filter(|s| !s.trim().is_empty()) {
+        urls.push((format!("https://divulgacandcontas.tse.jus.br/divulga/rest/v1/candidatura/buscar/foto/{ano}/{sq}"),"TSE"));
+    }
+    // Não usa o primeiro nome parcial da Câmara para presidentes ou ministros.
+    if cargo.to_uppercase().contains("DEPUTADO FEDERAL") {
+        let api = format!(
+            "https://dadosabertos.camara.leg.br/api/v2/deputados?nome={}",
+            urlencoding::encode(&nome)
+        );
+        if let Ok(client) = crate::security::public_client(&api).await {
+            if let Ok(response) = client.get(&api).send().await {
+                if let Ok(value) = response.json::<serde_json::Value>().await {
+                    if let Some(items) = value["dados"].as_array() {
+                        for item in items {
+                            if item["nomeCivil"]
+                                .as_str()
+                                .or(item["nome"].as_str())
+                                .is_some_and(|n| {
+                                    n.trim().to_uppercase() == nome.trim().to_uppercase()
+                                })
+                            {
+                                if let Some(url) = item["urlFoto"].as_str() {
+                                    urls.push((url.into(), "CAMARA_DEPUTADOS"));
                                 }
                             }
                         }
                     }
                 }
-                Ok(resp) => {
-                    erros_detalhados.push(format!("Câmara API retornou status {}", resp.status()));
-                }
-                Err(e) => {
-                    erros_detalhados.push(format!("Falha na conexão com API da Câmara: {}", e));
-                }
             }
         }
     }
-
-    // 4. Se ainda não baixou e tem sq_candidato, tenta TSE DivulgaCandContas
-    if foto_baixada.is_none() {
-        if let Some(sq) = sq_opt.filter(|s| !s.trim().is_empty()) {
-            let urls_tse = vec![
-                format!("https://divulgacandcontas.tse.jus.br/divulga/rest/v1/candidatura/buscar/foto/{}/{}", ano_eleicao, sq),
-                format!("https://divulgacandcontas.tse.jus.br/divulga/rest/v1/candidatura/buscar/foto/{}", sq),
-            ];
-
-            for url in urls_tse {
-                match client.get(&url)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    .header("Referer", "https://divulgacandcontas.tse.jus.br/divulga/")
-                    .header("Accept", "image/*,*/*")
-                    .send()
-                    .await
-                {
-                    Ok(resp) if resp.status().is_success() => {
-                        let content_type = resp.headers().get("content-type")
-                            .and_then(|v| v.to_str().ok())
-                            .unwrap_or("image/jpeg")
-                            .to_string();
-
-                        if let Ok(bytes) = resp.bytes().await {
-                            if bytes.len() > 100 && (bytes.starts_with(&[0xFF, 0xD8]) || bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47])) {
-                                foto_baixada = Some((bytes.to_vec(), content_type, "TSE_DIVULGACAND".to_string()));
-                                break;
-                            }
-                        }
-                    }
-                    Ok(resp) => {
-                        erros_detalhados.push(format!("TSE retornou HTTP {}", resp.status()));
-                    }
-                    Err(e) => {
-                        erros_detalhados.push(format!("Erro ao acessar TSE: {}", e));
-                    }
-                }
+    let mut errors = Vec::new();
+    for (url, origem) in urls {
+        match crate::photos::download(&url).await {
+            Ok((bytes, mime)) => {
+                let saved = bytes.clone();
+                let saved_mime = mime.clone();
+                pool.run_blocking(move |conn| {
+                    conn.execute(
+                        "UPDATE politicos SET foto_blob=?1, foto_mime=?2, foto_url=?3 WHERE id=?4",
+                        storage::rusqlite::params![saved, saved_mime, url, id],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                return Ok(Json(BuscarFotoResponse {
+                    sucesso: true,
+                    mensagem: "Retrato verificado e salvo localmente.".into(),
+                    foto_base64: Some(BASE64.encode(bytes)),
+                    foto_mime: Some(mime),
+                    origem: Some(origem.into()),
+                }));
             }
-        } else {
-            erros_detalhados
-                .push("Candidato não possui código SQ_CANDIDATO cadastrado no banco.".to_string());
+            Err(error) => errors.push(error.to_string()),
         }
     }
-
-    // 5. Se obteve a foto, persiste no banco SQLite
-    if let Some((bytes, mime, origem)) = foto_baixada {
-        let _ = conn.execute(
-            "UPDATE politicos SET foto_blob = ?1, foto_mime = ?2 WHERE id = ?3",
-            storage::rusqlite::params![bytes, mime, id],
-        );
-
-        let b64 = BASE64.encode(&bytes);
-        return Ok(Json(BuscarFotoResponse {
-            sucesso: true,
-            mensagem: format!(
-                "Foto oficial obtida via {} e salva com sucesso no banco de dados!",
-                origem
-            ),
-            foto_base64: Some(b64),
-            foto_mime: Some(mime),
-            origem: Some(origem),
-        }));
-    }
-
-    // 6. Caso não tenha encontrado ou tenha falhado, retorna mensagem explicativa de erro
-    let mensagem_erro = if erros_detalhados.is_empty() {
-        "Não foi possível localizar a foto oficial no TSE ou Câmara para este parlamentar."
-            .to_string()
-    } else {
-        format!(
-            "Não foi possível obter a foto oficial: {}. Você pode utilizar a opção de upload manual ou fornecer uma URL direta de imagem.",
-            erros_detalhados.join("; ")
-        )
-    };
-
-    Err((
-        StatusCode::NOT_FOUND,
-        Json(BuscarFotoResponse {
-            sucesso: false,
-            mensagem: mensagem_erro,
-            foto_base64: None,
-            foto_mime: None,
-            origem: None,
-        }),
-    ))
+    Err(fail(StatusCode::BAD_GATEWAY,format!("Fonte de foto indisponível para {nome}. Use o envio manual de uma imagem verificada. {}",errors.join("; "))))
 }
 
 /// POST /api/politicos/:id/foto e /api/v1/politicos/:id/foto
@@ -2052,10 +1885,8 @@ pub async fn salvar_foto_manual_handler(
         )
     })?;
 
-    let mut bytes_finais = Vec::new();
-    let mut mime_final = payload
-        .foto_mime
-        .unwrap_or_else(|| "image/jpeg".to_string());
+    let bytes_finais;
+    let mime_final;
 
     if let Some(b64) = payload.foto_base64 {
         let clean_b64 = if let Some(pos) = b64.find("base64,") {
@@ -2065,6 +1896,9 @@ pub async fn salvar_foto_manual_handler(
         };
         match BASE64.decode(clean_b64.trim()) {
             Ok(b) if !b.is_empty() => {
+                mime_final = crate::photos::image_mime(&b)
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
                 bytes_finais = b;
             }
             _ => {
@@ -2081,47 +1915,22 @@ pub async fn salvar_foto_manual_handler(
             }
         }
     } else if let Some(url) = payload.foto_url {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(8))
-            .build()
-            .unwrap_or_default();
-
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Some(ct) = resp
-                    .headers()
-                    .get("content-type")
-                    .and_then(|c| c.to_str().ok())
-                {
-                    mime_final = ct.to_string();
-                }
-                if let Ok(b) = resp.bytes().await {
-                    bytes_finais = b.to_vec();
-                }
+        match crate::photos::download(&url).await {
+            Ok((bytes, mime)) => {
+                bytes_finais = bytes;
+                mime_final = mime;
             }
-            Ok(resp) => {
+            Err(error) => {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(BuscarFotoResponse {
                         sucesso: false,
-                        mensagem: format!("URL retornou status HTTP {}.", resp.status()),
+                        mensagem: error.to_string(),
                         foto_base64: None,
                         foto_mime: None,
                         origem: None,
                     }),
-                ));
-            }
-            Err(e) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(BuscarFotoResponse {
-                        sucesso: false,
-                        mensagem: format!("Erro ao baixar imagem da URL: {}", e),
-                        foto_base64: None,
-                        foto_mime: None,
-                        origem: None,
-                    }),
-                ));
+                ))
             }
         }
     } else {
@@ -2137,7 +1946,7 @@ pub async fn salvar_foto_manual_handler(
         ));
     }
 
-    if bytes_finais.is_empty() {
+    if crate::photos::image_mime(&bytes_finais).is_none() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(BuscarFotoResponse {
@@ -2200,8 +2009,8 @@ pub async fn obter_foto_handler(
         .and_then(|(b, m)| b.map(|bytes| (bytes, m)));
 
     match res {
-        Some((bytes, mime)) if !bytes.is_empty() => {
-            let mime_str = mime.unwrap_or_else(|| "image/jpeg".to_string());
+        Some((bytes, _mime)) if crate::photos::image_mime(&bytes).is_some() => {
+            let mime_str = crate::photos::image_mime(&bytes).unwrap_or("application/octet-stream");
             axum::response::Response::builder()
                 .header(axum::http::header::CONTENT_TYPE, mime_str)
                 .header(axum::http::header::CACHE_CONTROL, "public, max-age=86400")
@@ -2262,7 +2071,6 @@ pub async fn remover_foto_handler(
 pub async fn sincronizar_fotos_camara(pool: &DbPool) -> Result<usize, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .danger_accept_invalid_certs(true)
         .build()
         .map_err(|e| e.to_string())?;
 

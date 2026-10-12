@@ -1194,24 +1194,16 @@ pub async fn auxilio_indevido_handler(
     State(pool): State<DbPool>,
     Query(params): Query<AuxilioIndevidoQueryParams>,
 ) -> Result<Json<AuxilioIndevidoResponse>, StatusCode> {
-    let mut conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::task::spawn_blocking(move || carregar_auxilio_indevido(&pool, params))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+}
 
-    // Se a tabela de alertas de auxilio estiver vazia, mas houver registros em beneficios, executa auditoria
-    let count_alertas: i64 = conn
-        .query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
-    if count_alertas == 0 {
-        let count_ben: i64 = conn
-            .query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
-                r.get(0)
-            })
-            .unwrap_or(0);
-        if count_ben > 0 {
-            let _ = auditor::executar_auditoria_auxilio_sqlite(&mut conn);
-        }
-    }
+fn carregar_auxilio_indevido(
+    pool: &DbPool,
+    params: AuxilioIndevidoQueryParams,
+) -> Result<Json<AuxilioIndevidoResponse>, StatusCode> {
+    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut sql = "
         SELECT
@@ -1251,8 +1243,8 @@ pub async fn auxilio_indevido_handler(
 
     sql.push_str(" ORDER BY a.valor_recebido DESC, a.id DESC");
 
-    let limit = params.limit.unwrap_or(50);
-    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.unwrap_or(50).clamp(1, 500);
+    let offset = params.offset.unwrap_or(0).max(0);
 
     sql.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
 

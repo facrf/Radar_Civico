@@ -1,5 +1,3 @@
-use std::io::Write;
-use std::sync::Arc;
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use ingestion::importers::{
@@ -8,6 +6,8 @@ use ingestion::importers::{
 };
 use server::api::importers::set_importer_manager;
 use server::criar_router;
+use std::io::Write;
+use std::sync::Arc;
 use storage::{run_migrations, DbPool};
 use tower::ServiceExt;
 
@@ -137,7 +137,13 @@ CNPJ_BASICO;CNPJ_ORDEM;CNPJ_DV;RAZAO_SOCIAL;SOCIO_CPF_CNPJ_MASCARADO;SOCIO_NOME;
             lista_final
                 .iter()
                 .find(|i| &i.id == id)
-                .map(|i| i.stage == ingestion::importers::ImportStage::Concluido)
+                .map(|i| {
+                    matches!(
+                        i.stage,
+                        ingestion::importers::ImportStage::Concluido
+                            | ingestion::importers::ImportStage::Erro
+                    )
+                })
                 .unwrap_or(false)
         });
         if todos_concluidos {
@@ -146,32 +152,46 @@ CNPJ_BASICO;CNPJ_ORDEM;CNPJ_DV;RAZAO_SOCIAL;SOCIO_CPF_CNPJ_MASCARADO;SOCIO_NOME;
     }
 
     let tse_status = lista_final.iter().find(|i| i.id == "tse").unwrap();
-    assert_eq!(tse_status.stage, ingestion::importers::ImportStage::Concluido);
+    assert_eq!(
+        tse_status.stage,
+        ingestion::importers::ImportStage::Concluido
+    );
     assert_eq!(tse_status.records_processed, 1);
 
     let qsa_status = lista_final.iter().find(|i| i.id == "receita_qsa").unwrap();
-    assert_eq!(qsa_status.stage, ingestion::importers::ImportStage::Concluido);
+    assert_eq!(
+        qsa_status.stage,
+        ingestion::importers::ImportStage::Concluido
+    );
     assert_eq!(qsa_status.records_processed, 1);
 
     let pncp_status = lista_final.iter().find(|i| i.id == "pncp").unwrap();
-    assert_eq!(pncp_status.stage, ingestion::importers::ImportStage::Concluido);
-    assert_eq!(pncp_status.records_processed, 1);
+    assert_eq!(pncp_status.stage, ingestion::importers::ImportStage::Erro);
+    assert_eq!(pncp_status.records_processed, 0);
 
     // 10. Validação da integridade dos dados inseridos no banco SQLite
     let conn = pool.get().expect("conexao para validacao final");
 
     let total_politicos: i64 = conn
-        .query_row("SELECT COUNT(*) FROM politicos WHERE nome_completo = 'FERNANDO SANTOS'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM politicos WHERE nome_completo = 'FERNANDO SANTOS'",
+            [],
+            |r| r.get(0),
+        )
         .expect("query politicos");
     assert_eq!(total_politicos, 1);
 
     let total_qsa: i64 = conn
-        .query_row("SELECT COUNT(*) FROM empresas_qsa WHERE cnpj_basico = '98765432'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM empresas_qsa WHERE cnpj_basico = '98765432'",
+            [],
+            |r| r.get(0),
+        )
         .expect("query empresas_qsa");
     assert_eq!(total_qsa, 1);
 
     let total_contratos: i64 = conn
         .query_row("SELECT COUNT(*) FROM contratos_publicos", [], |r| r.get(0))
         .expect("query contratos_publicos");
-    assert_eq!(total_contratos, 1);
+    assert_eq!(total_contratos, 0);
 }

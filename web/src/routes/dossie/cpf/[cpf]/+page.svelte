@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '#lib/page';
 	import { onMount } from 'svelte';
-	import DossieCpfView from '$lib/components/DossieCpfView.svelte';
-	import type { DossieCpf } from '$lib/types';
+	import DossieCpfView from '#lib/components/DossieCpfView.svelte';
+	import type { DossieCpf } from '#lib/types';
 
-	let cpfParam = $page.params.cpf;
+	let cpfParam = ($page.params.cpf ?? "");
 	let dossie: DossieCpf | null = null;
 	let loading = true;
 	let erro: string | null = null;

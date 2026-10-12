@@ -34,13 +34,16 @@ pub fn auditar_socios_comuns_contratos(
 
     for c in contratos {
         let orgao = c.orgao_contratante.trim().to_uppercase();
-        let socio_key = if !c.socio_cpf_mascarado.trim().is_empty() {
-            c.socio_cpf_mascarado.trim().to_string()
-        } else {
-            c.socio_nome.trim().to_uppercase()
-        };
-
-        if orgao.is_empty() || socio_key.is_empty() {
+        // Documentos mascarados e nomes não identificam uma pessoa de forma única.
+        let socio_key: String = c
+            .socio_cpf_mascarado
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect();
+        if orgao.is_empty()
+            || !matches!(socio_key.len(), 11 | 14)
+            || c.socio_cpf_mascarado.contains('*')
+        {
             continue;
         }
 
@@ -127,7 +130,7 @@ mod tests {
                 empresa_razao_social: "ALFA ENGENHARIA LTDA".to_string(),
                 valor_contratado: 600_000.0,
                 data_assinatura: "2024-03-01".to_string(),
-                socio_cpf_mascarado: "***.777.888-**".to_string(),
+                socio_cpf_mascarado: "12377788801".to_string(),
                 socio_nome: "CARLOS ANDRADE".to_string(),
             },
             ContratoEmpresaSocio {
@@ -137,7 +140,7 @@ mod tests {
                 empresa_razao_social: "BETA CONSTRUCOES LTDA".to_string(),
                 valor_contratado: 500_000.0,
                 data_assinatura: "2024-04-10".to_string(),
-                socio_cpf_mascarado: "***.777.888-**".to_string(), // Mesmo Sócio
+                socio_cpf_mascarado: "12377788801".to_string(), // Mesmo Sócio
                 socio_nome: "CARLOS ANDRADE".to_string(),
             },
         ];
@@ -161,7 +164,7 @@ mod tests {
                 empresa_razao_social: "ALFA ENGENHARIA LTDA".to_string(),
                 valor_contratado: 600_000.0,
                 data_assinatura: "2024-03-01".to_string(),
-                socio_cpf_mascarado: "***.111.222-**".to_string(),
+                socio_cpf_mascarado: "12311122201".to_string(),
                 socio_nome: "SOCIO UM".to_string(),
             },
             ContratoEmpresaSocio {
@@ -171,12 +174,36 @@ mod tests {
                 empresa_razao_social: "BETA CONSTRUCOES LTDA".to_string(),
                 valor_contratado: 500_000.0,
                 data_assinatura: "2024-04-10".to_string(),
-                socio_cpf_mascarado: "***.333.444-**".to_string(),
+                socio_cpf_mascarado: "12333344401".to_string(),
                 socio_nome: "SOCIO DOIS".to_string(),
             },
         ];
 
         let alertas = auditar_socios_comuns_contratos(&contratos).unwrap();
         assert!(alertas.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod identity_regressions {
+    use super::*;
+    #[test]
+    fn masked_documents_and_names_do_not_confirm_partnership() {
+        for doc in ["***.777.888-**", "", "-4"] {
+            let a = ContratoEmpresaSocio {
+                contrato_id: 1,
+                orgao_contratante: "ORGAO".into(),
+                empresa_cnpj: "11111111000101".into(),
+                empresa_razao_social: "A".into(),
+                valor_contratado: 600000.0,
+                data_assinatura: "2024-01-01".into(),
+                socio_cpf_mascarado: doc.into(),
+                socio_nome: "JOAO SILVA".into(),
+            };
+            let mut b = a.clone();
+            b.empresa_cnpj = "22222222000102".into();
+            b.contrato_id = 2;
+            assert!(auditar_socios_comuns_contratos(&[a, b]).unwrap().is_empty());
+        }
     }
 }

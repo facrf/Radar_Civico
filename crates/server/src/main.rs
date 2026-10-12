@@ -90,6 +90,9 @@ async fn main() -> Result<()> {
         }
     }
 
+    let web_dir = env::var("WEB_DIR").unwrap_or_else(|_| "web/build".into());
+    let restored = server::photos::restore_catalog(&pool, Path::new(&web_dir))?;
+    info!("Retratos locais de autoridades vinculados: {restored}");
     if eh_auditoria {
         println!("=== Radar Cívico: Executando Varredura do Motor de Auditoria ===");
         let conn = pool.get()?;
@@ -129,7 +132,9 @@ async fn main() -> Result<()> {
 
     tokio::spawn(ingestion::progress::persist_progress_loop(pool.clone()));
 
-    let app = criar_router(pool);
+    let auth_dir = env::var("DATA_DIR").unwrap_or_else(|_| "./data".into());
+    let auth = server::security::AdminAuth::load(Path::new(&auth_dir))?;
+    let app = server::security::secure_router(criar_router(pool), auth);
 
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());

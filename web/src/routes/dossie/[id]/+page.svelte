@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '#lib/page';
 	import { onMount } from 'svelte';
-	import Dossie from '$lib/components/Dossie.svelte';
-	import type { DossiePolitico } from '$lib/types';
+	import Dossie from '#lib/components/Dossie.svelte';
+	import type { DossiePolitico } from '#lib/types';
 
 	import { goto } from '$app/navigation';
 
-	let id = $page.params.id;
+	let id = ($page.params.id ?? "");
 	let dossie: DossiePolitico | null = null;
 	let loading = true;
 	let erro: string | null = null;

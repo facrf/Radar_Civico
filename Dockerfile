@@ -2,7 +2,7 @@
 # Multi-stage Dockerfile para Radar Cívico
 
 # Stage 1: Build frontend SPA (SvelteKit + Tailwind CSS)
-FROM node:20-slim AS web-builder
+FROM node:22-slim AS web-builder
 WORKDIR /app
 
 ARG APP_VERSION

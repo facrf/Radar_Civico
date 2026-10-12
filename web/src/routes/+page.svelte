@@ -1,7 +1,7 @@
 <script lang="ts">
-	import Busca from '$lib/components/Busca.svelte';
-	import PainelAlertas from '$lib/components/PainelAlertas.svelte';
-	import { versionStore } from '$lib/version';
+	import Busca from '#lib/components/Busca.svelte';
+	import PainelAlertas from '#lib/components/PainelAlertas.svelte';
+	import { versionStore } from '#lib/version';
 </script>
 
 <div class="space-y-12">

@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '#lib/page';
 	import { onMount } from 'svelte';
-	import MapaDespesas from '$lib/components/MapaDespesas.svelte';
-	import type { PoliticoDetalheResponse, PoliticoDespesasGeoResponse, BuscarFotoResponse } from '$lib/types';
+	import MapaDespesas from '#lib/components/MapaDespesas.svelte';
+	import type { PoliticoDetalheResponse, PoliticoDespesasGeoResponse, BuscarFotoResponse } from '#lib/types';
 
-	$: id = $page.params.id;
+	$: id = ($page.params.id ?? "");
 
 	let loading = true;
 	let erro: string | null = null;
@@ -99,7 +99,7 @@
 				}
 				fotoLocalUrl = `/api/politicos/${id}/foto?t=${Date.now()}`;
 			} else {
-				msgFotoErro = data.mensagem || 'Não foi possível encontrar a foto oficial no TSE ou Câmara.';
+				msgFotoErro = data.mensagem || 'Não foi possível encontrar um retrato nas fontes cadastradas.';
 			}
 		} catch (err: any) {
 			msgFotoErro = `Erro de comunicação ao buscar foto: ${err?.message || 'Falha de conexão com a API'}`;
@@ -409,17 +409,17 @@
 								on:click={buscarFotoTse}
 								disabled={buscandoFoto}
 								class="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 shadow-sm"
-								title="Busca a foto oficial nas bases do TSE / Câmara dos Deputados e armazena permanentemente no banco local"
+								title="Busca um retrato verificado no catálogo local ou nas fontes cadastradas"
 							>
 								{#if buscandoFoto}
 									<div class="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
-									<span>Buscando foto oficial...</span>
+									<span>Buscando retrato...</span>
 								{:else}
 									<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
 										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
 									</svg>
-									<span>Buscar Foto Oficial (TSE)</span>
+									<span>Buscar retrato</span>
 								{/if}
 							</button>
 
@@ -512,7 +512,7 @@
 						<div>
 							<p class="font-semibold">{msgFotoErro}</p>
 							<p class="text-slate-400 text-[11px] mt-0.5">
-								Dica: Caso a foto oficial não esteja disponível no TSE ou o serviço bloqueie temporariamente, utilize o botão <strong>Personalizar Foto</strong> para colar o link direto ou enviar a imagem do seu computador.
+								Dica: Caso o retrato não esteja disponível na fonte cadastrada ou o serviço bloqueie temporariamente, utilize o botão <strong>Personalizar Foto</strong> para colar o link direto ou enviar a imagem do seu computador.
 							</p>
 						</div>
 					</div>

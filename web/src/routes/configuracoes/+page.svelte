@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { startPolling } from '$lib/polling';
-	import { versionStore, sincronizarVersaoServidor } from '$lib/version';
+	import { startPolling } from '#lib/polling';
+	import { versionStore, sincronizarVersaoServidor } from '#lib/version';
 
 	interface TotalRegistros {
 		politicos: number;
@@ -2711,7 +2711,8 @@
 					</div>
 					<button
 						type="button"
-						on:click={() => (modalSincronizarTudo = false)}
+						aria-label="Fechar sincronização"
+                        on:click={() => (modalSincronizarTudo = false)}
 						class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
 					>
 						<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2772,7 +2773,8 @@
 				<div class="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
 					<button
 						type="button"
-						on:click={() => (modalSincronizarTudo = false)}
+						aria-label="Fechar sincronização"
+                        on:click={() => (modalSincronizarTudo = false)}
 						class="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
 					>
 						Cancelar

@@ -3402,15 +3402,12 @@ pub async fn testar_webhook_handler(
         ));
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": "erro", "mensagem": format!("Falha ao instanciar cliente HTTP: {e}")})),
-            )
-        })?;
+    let client = crate::security::public_client(url).await.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status":"erro", "mensagem": e.to_string()})),
+        )
+    })?;
 
     let corpo_teste = serde_json::json!({
         "evento": payload.evento.unwrap_or_else(|| "teste_conectividade".to_string()),
@@ -4424,12 +4421,12 @@ mod tests {
             ))
             .unwrap();
         let res_wh = app.oneshot(req_wh).await.unwrap();
-        assert_eq!(res_wh.status(), StatusCode::OK);
+        assert_eq!(res_wh.status(), StatusCode::BAD_REQUEST);
         let bytes_wh = axum::body::to_bytes(res_wh.into_body(), usize::MAX)
             .await
             .unwrap();
         let resp_wh: serde_json::Value = serde_json::from_slice(&bytes_wh).unwrap();
-        assert_eq!(resp_wh["sucesso"], false);
+        assert!(resp_wh["mensagem"].as_str().unwrap().contains("interno"));
     }
 
     #[tokio::test]

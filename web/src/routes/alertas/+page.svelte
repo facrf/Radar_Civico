@@ -1,5 +1,5 @@
 <script lang="ts">
-	import PainelAlertas from '$lib/components/PainelAlertas.svelte';
+	import PainelAlertas from '#lib/components/PainelAlertas.svelte';
 </script>
 
 <div class="space-y-6">

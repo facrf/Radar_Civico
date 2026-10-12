@@ -110,3 +110,14 @@ Validação local em 10/10/2026 (America/Sao_Paulo):
 - Endpoints de configurações, importadores e progresso retornaram HTTP 200. Jobs e raízes de grafo inexistentes retornaram HTTP 404.
 - Dossiê real consultado com limite de uma nota; total monetário conferido diretamente no SQLite. A regressão de paginação cobre 201 notas e 61 contratos em banco de teste.
 - Imagem ativa: `sha256:8f6901d4b6f7451784d52fffcb9b2ec52dfc181cc8f455be4282abba3f3a23e2`.
+
+## Administração e fotos
+
+- As consultas públicas permanecem abertas. Importações, alterações, investigações e exportações exigem autenticação.
+- Acesse `/admin/login`, com usuário `admin`. No primeiro arranque, a senha é gerada em `DATA_DIR/admin_password` (permissão 0600). Alternativamente, configure `RADAR_ADMIN_PASSWORD` com pelo menos 16 caracteres. Não publique esse arquivo.
+- A sessão dura oito horas e é invalidada ao reiniciar o servidor. Integrações podem usar HTTP Basic. Publique atrás de HTTPS quando houver acesso remoto.
+- Webhooks e fotos externas recusam destinos internos/reservados e redirects; DNS é validado e fixado para cada cliente HTTP.
+- Importadores QSA/OAB sem arquivo e conectores PNCP/Querido Diário sem integração configurada retornam erro, sem gerar dados de demonstração. Para QSA/OAB use upload de arquivo oficial; para diários use a sincronização existente ou investigação por nome.
+- Retratos de presidentes e ministros são distribuídos em `web/static/autoridades`, associados por nome completo exato e armazenados no SQLite quando não existe imagem válida. Fontes, autores e licenças estão em `/fontes-fotos` e `/autoridades/fontes.json`. Fotos manuais válidas são preservadas.
+- Atualização dos retratos: `python3 scripts/atualizar_fotos_autoridades.py` (requer requests). O script respeita limites de requisições e conserva o catálogo anterior em caso de falha.
+- O frontend exige Node.js 22.17+; o Docker usa Node 22. SvelteKit 3, Svelte 5 e Tailwind 4 substituem as versões antigas.

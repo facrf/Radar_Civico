@@ -6,9 +6,11 @@ pub mod dossie;
 pub mod geo;
 pub mod grafo;
 pub mod investigar;
+pub mod photos;
 pub mod politico;
 pub mod politicos_duplicados;
 pub mod routes;
+pub mod security;
 
 pub use dossie::{
     dossie_cnpj_handler, dossie_cpf_handler, AlertaDossie, BeneficioEmergencialItem,
@@ -364,7 +366,7 @@ pub fn criar_router(pool: DbPool) -> Router {
     }
 
     router
-        .layer(CorsLayer::permissive())
+        .layer(CorsLayer::new())
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())

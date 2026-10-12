@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import type { DossieCnpj } from '$lib/types';
+	import type { DossieCnpj } from '#lib/types';
 
 	export let dossie: DossieCnpj;
 

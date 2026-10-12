@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { browser } from '$app/environment';
-	import type { SubgrafoData } from '$lib/types';
+	import { browser } from '$app/env';
+	import type { SubgrafoData } from '#lib/types';
 
 	export let dados: SubgrafoData;
 	let container: HTMLElement;

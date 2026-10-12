@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '#lib/page';
 	import { onMount } from 'svelte';
-	import GrafoRede from '$lib/components/GrafoRede.svelte';
-	import type { SubgrafoData } from '$lib/types';
+	import GrafoRede from '#lib/components/GrafoRede.svelte';
+	import type { SubgrafoData } from '#lib/types';
 
-	let id = $page.params.id;
+	let id = ($page.params.id ?? "");
 	let grau = 2;
 	let subgrafo: SubgrafoData | null = null;
 	let loading = true;

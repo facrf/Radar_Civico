@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import type { ItemBusca } from '$lib/types';
+	import type { ItemBusca } from '#lib/types';
 
 	let query = '';
 	let request: AbortController | null = null;
@@ -198,11 +198,10 @@
 				{@const badge = corTipo(item.tipo)}
 				{@const urlDossie = obterUrlDossie(item)}
 				{@const urlGrafo = obterUrlGrafo(item)}
-				<a
-					href={urlDossie}
+				<div
 					class="p-4 hover:bg-slate-750/90 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 group cursor-pointer border-l-4 border-transparent hover:border-emerald-500 block no-underline"
 				>
-					<div class="flex items-start sm:items-center gap-3">
+					<a href={urlDossie} class="flex items-start sm:items-center gap-3">
 						<span class={`px-2.5 py-1 text-xs font-semibold rounded-full tracking-wide border ${badge.bg} ${badge.text} ${badge.border} flex-shrink-0 mt-0.5 sm:mt-0`}>
 							{badge.label}
 						</span>
@@ -220,17 +219,17 @@
 								{/if}
 							</p>
 						</div>
-					</div>
+					</a>
 
 					<div class="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
-						<span
+						<a href={urlDossie}
 							class="px-3 py-1.5 text-xs font-medium bg-emerald-600 group-hover:bg-emerald-500 text-white rounded-lg transition-colors shadow flex items-center gap-1.5"
 						>
 							<span>Ver Dossiê</span>
 							<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
 							</svg>
-						</span>
+						</a>
 						<a
 							href={urlGrafo}
 							on:click|stopPropagation
@@ -243,7 +242,7 @@
 							<span>Grafo</span>
 						</a>
 					</div>
-				</a>
+				</div>
 			{/each}
 		</div>
 	{:else if buscou && !loading}

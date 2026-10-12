@@ -6,7 +6,7 @@
 		ListarPoliticosResponse,
 		RelatorioDuplicadosResponse,
 		ResumoDuplicadosResponse
-	} from '$lib/types';
+	} from '#lib/types';
 
 	let loading = true;
 	let erro: string | null = null;
