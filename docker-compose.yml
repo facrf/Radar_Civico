@@ -10,12 +10,13 @@ services:
     image: radar_civico:latest
     container_name: radar_civico
     ports:
-      - "28080:8080"
+      - "127.0.0.1:28080:8080"
     volumes:
       - ./data:/app/data
     environment:
       - DATA_DIR=/app/data
       - PORT=8080
+      - HOST=0.0.0.0
       - WEB_DIR=/app/web/build
       - RUST_LOG=info
     healthcheck:

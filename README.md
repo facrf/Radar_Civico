@@ -89,7 +89,7 @@ cargo run -p server -- auditar
 
 ### 4. Execução com Docker Compose (Porta 28080)
 
-O sistema já vem configurado por padrão para subir na porta **`28080`** no host (mapeando internamente para a porta `8080` do container):
+O Radar Cívico foi pensado para rodar localmente com dados públicos e banco SQLite na pasta `data/`. Não há tela de login: consultas, configurações, importações e exportações são acessadas diretamente. Por isso, o Compose publica o serviço somente em `127.0.0.1`, na porta **`28080`** do computador, mapeada para a porta `8080` do container. Não exponha essa porta em uma rede compartilhada sem adicionar uma camada de controle de acesso.
 
 ```yaml
 # docker-compose.yml
@@ -100,12 +100,13 @@ services:
       dockerfile: Dockerfile
     container_name: radar_civico
     ports:
-      - "28080:8080"
+      - "127.0.0.1:28080:8080"
     volumes:
       - ./data:/app/data
     environment:
       - DATA_DIR=/app/data
       - PORT=8080
+      - HOST=0.0.0.0
       - WEB_DIR=/app/web/build
       - RUST_LOG=info
     restart: unless-stopped
@@ -171,6 +172,8 @@ volumes:
 
 5. Clique em **Deploy the stack**.
 6. Acesse a aplicação em **`http://<ip-do-servidor>:28080`**.
+
+O acesso pela rede do servidor exige alterar o mapeamento de porta. Como a aplicação não solicita login, faça isso somente em uma rede confiável ou atrás de uma camada de autenticação.
 
 ---
 
