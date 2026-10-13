@@ -10,7 +10,7 @@ use crate::error::{Result, StorageError};
 static MEM_DB_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub fn apply_pragmas(conn: &Connection) -> Result<()> {
-    conn.busy_timeout(Duration::from_secs(15))?;
+    conn.busy_timeout(Duration::from_secs(60))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
@@ -18,14 +18,14 @@ pub fn apply_pragmas(conn: &Connection) -> Result<()> {
          PRAGMA temp_store = MEMORY;
          PRAGMA mmap_size = 30000000000;
          PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 15000;",
+         PRAGMA busy_timeout = 60000;",
     )?;
     Ok(())
 }
 
 /// Configura PRAGMAs de alta performance especificamente para operações de ingestão massiva no SQLite.
 pub fn aplicar_pragmas_ingestao(conn: &Connection) -> Result<()> {
-    conn.busy_timeout(Duration::from_secs(15))?;
+    conn.busy_timeout(Duration::from_secs(60))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
@@ -33,7 +33,7 @@ pub fn aplicar_pragmas_ingestao(conn: &Connection) -> Result<()> {
          PRAGMA temp_store = MEMORY;
          PRAGMA wal_autocheckpoint = 100000;
          PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 15000;",
+         PRAGMA busy_timeout = 60000;",
     )?;
     Ok(())
 }
@@ -43,7 +43,8 @@ pub fn restaurar_pragmas_padrao(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -64000;
-         PRAGMA wal_autocheckpoint = 1000;",
+         PRAGMA wal_autocheckpoint = 1000;
+         PRAGMA busy_timeout = 60000;",
     )?;
     Ok(())
 }
@@ -243,7 +244,7 @@ impl DbPool {
     }
 
     pub fn get(&self) -> Result<PooledConnection> {
-        self.get_timeout(Duration::from_secs(15))
+        self.get_timeout(Duration::from_secs(60))
     }
 
     /// Limita conexões ativas e ociosas, aguardando no máximo o prazo informado.
@@ -356,13 +357,18 @@ impl DbPool {
 
 /// Inicia uma transação com comportamento IMMEDIATE e retentativas em caso de contenção de bloqueio (SQLITE_LOCKED/BUSY).
 pub fn transaction_immediate(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
+    transaction_immediate_ref(conn)
+}
+
+/// Inicia uma transação com comportamento IMMEDIATE a partir de uma referência imutável de Connection,
+/// executando retentativas com backoff progressivo até 60 segundos em caso de contenção.
+pub fn transaction_immediate_ref(conn: &Connection) -> Result<rusqlite::Transaction<'_>> {
     let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(10);
+    let timeout = std::time::Duration::from_secs(60);
     let mut attempts = 0u32;
     loop {
         attempts += 1;
-        match rusqlite::Transaction::new_unchecked(&*conn, rusqlite::TransactionBehavior::Immediate)
-        {
+        match rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate) {
             Ok(tx) => {
                 if start.elapsed() >= Duration::from_millis(500) {
                     tracing::info!(
@@ -386,15 +392,24 @@ pub fn transaction_immediate(conn: &mut Connection) -> Result<rusqlite::Transact
                         err.code == rusqlite::ErrorCode::DatabaseLocked
                             || err.code == rusqlite::ErrorCode::DatabaseBusy
                             || err.extended_code == 262
+                            || err.extended_code == 5
                     }
                     _ => false,
                 };
                 if is_locked && start.elapsed() < timeout {
-                    std::thread::sleep(std::time::Duration::from_millis(15));
+                    let sleep_ms = std::cmp::min(250, 25 * (attempts as u64));
+                    std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
                     continue;
                 }
                 if let rusqlite::Error::SqliteFailure(error, _) = &e {
-                    tracing::warn!(stage = "transaction", wait_ms = start.elapsed().as_millis() as u64, attempts, sqlite_code = ?error.code, sqlite_extended_code = error.extended_code, "Falha ao iniciar transação SQLite");
+                    tracing::warn!(
+                        stage = "transaction",
+                        wait_ms = start.elapsed().as_millis() as u64,
+                        attempts,
+                        sqlite_code = ?error.code,
+                        sqlite_extended_code = error.extended_code,
+                        "Falha ao iniciar transação SQLite"
+                    );
                 }
                 return Err(StorageError::Sqlite(e));
             }
@@ -555,5 +570,44 @@ mod pool_regressions {
             .query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))
             .unwrap();
         assert_eq!((cache, sync, checkpoint), (-64000, 1, 1000));
+    }
+
+    #[test]
+    fn test_transaction_immediate_aguarda_e_adquire_apos_liberacao() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pool = DbPool::open_with_size(temp_dir.path().join("concorrencia.db"), 4).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute("CREATE TABLE teste_bloqueio (id INTEGER PRIMARY KEY, valor TEXT);", []).unwrap();
+        }
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let barrier_clone = barrier.clone();
+        let pool_clone = pool.clone();
+
+        let t1 = std::thread::spawn(move || {
+            let mut conn = pool_clone.get().unwrap();
+            let tx = transaction_immediate(&mut conn).unwrap();
+            tx.execute("INSERT INTO teste_bloqueio VALUES (1, 't1');", []).unwrap();
+            barrier_clone.wait();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            tx.commit().unwrap();
+        });
+
+        let pool_clone2 = pool.clone();
+        let t2 = std::thread::spawn(move || {
+            let mut conn = pool_clone2.get().unwrap();
+            barrier.wait();
+            let tx = transaction_immediate(&mut conn).unwrap();
+            tx.execute("INSERT INTO teste_bloqueio VALUES (2, 't2');", []).unwrap();
+            tx.commit().unwrap();
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        let conn = pool.get().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM teste_bloqueio;", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 2);
     }
 }

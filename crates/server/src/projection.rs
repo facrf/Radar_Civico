@@ -16,10 +16,7 @@ pub fn refresh_if_needed(conn: &Connection) -> Result<usize> {
 pub fn refresh(conn: &Connection) -> Result<usize> {
     crate::identity::register_sql(conn)?;
     if conn.is_autocommit() {
-        let tx = storage::rusqlite::Transaction::new_unchecked(
-            conn,
-            storage::rusqlite::TransactionBehavior::Immediate,
-        )?;
+        let tx = storage::transaction_immediate_ref(conn)?;
         let result = refresh(&tx)?;
         tx.commit()?;
         return Ok(result);
@@ -115,10 +112,7 @@ pub fn ensure_company(conn: &Connection, root: &str) -> Result<()> {
     if root.len() != 8 || !root.bytes().all(|b| b.is_ascii_digit()) {
         return Ok(());
     }
-    let tx = storage::rusqlite::Transaction::new_unchecked(
-        conn,
-        storage::rusqlite::TransactionBehavior::Immediate,
-    )?;
+    let tx = storage::transaction_immediate_ref(conn)?;
     let uuid = format!("cnpj_{root}");
     let loaded:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM conexoes_rede e JOIN nos_rede n ON n.id=e.destino_id WHERE n.uuid=?1 AND e.tipo_relacao='SOCIO_ADMINISTRADOR')",[&uuid],|r|r.get(0))?;
     if loaded {

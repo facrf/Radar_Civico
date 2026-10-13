@@ -429,10 +429,27 @@ pub(crate) fn sqlite_http_error(error: storage::StorageError) -> ConfigError {
                 "importer_id": if namespace == "importer" { Some(&id) } else { None },
             })),
         ),
-        error => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"erro": error.to_string()})),
-        ),
+        error => {
+            let msg = error.to_string();
+            let is_locked = msg.contains("database locked")
+                || msg.contains("database is locked")
+                || msg.contains("DatabaseBusy")
+                || msg.contains("DatabaseLocked");
+            let status = if is_locked {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            let user_msg = if is_locked {
+                "O banco de dados está ocupado no momento com outra operação de escrita. Aguarde a conclusão da tarefa ativa e tente novamente.".to_string()
+            } else {
+                msg
+            };
+            (
+                status,
+                Json(json!({"erro": user_msg})),
+            )
+        }
     }
 }
 
@@ -620,7 +637,7 @@ pub async fn atualizar_job_concluido(
 ) {
     if matches!(status, "CONCLUIDO" | "PARCIAL") {
         if let Err(error) = pool
-            .run_blocking(|conn| crate::projection::refresh(conn))
+            .run_blocking(|conn| crate::projection::refresh_if_needed(conn))
             .await
         {
             let details =
@@ -3066,7 +3083,7 @@ pub async fn upload_arquivo_handler(
                     tipo_final = format!("ZIP_{tp}");
                 }
             }
-            crate::projection::refresh(&conn).map_err(std::io::Error::other)?;
+            crate::projection::refresh_if_needed(&conn).map_err(std::io::Error::other)?;
             conn.commit().map_err(std::io::Error::other)?;
             Ok((total_count, tipo_final))
         })
@@ -3108,7 +3125,7 @@ pub async fn upload_arquivo_handler(
                 .from_reader(input);
 
             let result = processar_csv_records(&conn, &mut reader, &tipo_clone)?;
-            crate::projection::refresh(&conn).map_err(std::io::Error::other)?;
+            crate::projection::refresh_if_needed(&conn).map_err(std::io::Error::other)?;
             conn.commit().map_err(std::io::Error::other)?;
             Ok(result)
         })

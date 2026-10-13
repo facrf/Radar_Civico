@@ -163,10 +163,7 @@ pub fn sincronizar_alertas_combustivel(
     parametros: &crate::routes::config::ParametrosAuditoria,
 ) -> Result<usize, storage::StorageError> {
     if conn.is_autocommit() {
-        let tx = storage::rusqlite::Transaction::new_unchecked(
-            conn,
-            storage::rusqlite::TransactionBehavior::Immediate,
-        )?;
+        let tx = storage::transaction_immediate_ref(conn)?;
         let result = sincronizar_alertas_combustivel(&tx, parametros)?;
         tx.commit()?;
         return Ok(result);
@@ -414,10 +411,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
     parametros: &crate::routes::config::ParametrosAuditoria,
 ) -> Result<usize, storage::StorageError> {
     if conn.is_autocommit() {
-        let tx = storage::rusqlite::Transaction::new_unchecked(
-            conn,
-            storage::rusqlite::TransactionBehavior::Immediate,
-        )?;
+        let tx = storage::transaction_immediate_ref(conn)?;
         let result = sincronizar_alertas_sistema_com_parametros(&tx, parametros)?;
         tx.commit()?;
         return Ok(result);

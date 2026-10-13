@@ -27,7 +27,7 @@ pub fn get_or_init_importer_manager(pool: &DbPool) -> Arc<ImporterManager> {
     let sink = Arc::new(BatchSink::new(pool.clone()));
     let manager = ImporterManager::new(sink).with_completion_hook(|pool| {
         let conn = pool.get()?;
-        crate::projection::refresh(&conn)?;
+        crate::projection::refresh_if_needed(&conn)?;
         Ok(())
     });
     if let Err(error) = manager.restore() {
@@ -137,7 +137,7 @@ pub async fn iniciar_importer_handler(
                 "mensagem": "Processo de importação iniciado com sucesso em background"
             })),
         ),
-        Err(ingestion::IngestionError::Storage(error @ storage::StorageError::Conflict { .. })) => {
+        Err(ingestion::IngestionError::Storage(error)) => {
             crate::config::sqlite_http_error(error)
         }
         Err(e) => {

@@ -26,10 +26,10 @@ pub fn load(conn: &Connection, namespace: &str, id: &str) -> Result<Option<Strin
             Ok(value) => return Ok(value),
             Err(error) if matches!(&error, rusqlite::Error::SqliteFailure(code, _) if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)) =>
             {
-                if started.elapsed() >= std::time::Duration::from_secs(10) {
+                if started.elapsed() >= std::time::Duration::from_secs(60) {
                     return Err(error.into());
                 }
-                std::thread::sleep(std::time::Duration::from_millis(15));
+                std::thread::sleep(std::time::Duration::from_millis(25));
             }
             Err(error) => return Err(error.into()),
         }

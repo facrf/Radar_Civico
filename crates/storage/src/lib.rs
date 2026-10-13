@@ -12,7 +12,8 @@ pub use batch::{
 };
 pub use connection::{
     aplicar_pragmas_ingestao, apply_pragmas, desativar_indices_tse, executar_manutencao_db,
-    recriar_indices_tse, restaurar_pragmas_padrao, transaction_immediate, DbPool, PooledConnection,
+    recriar_indices_tse, restaurar_pragmas_padrao, transaction_immediate, transaction_immediate_ref,
+    DbPool, PooledConnection,
 };
 pub use error::{Result, StorageError};
 pub use migrations::run_migrations;

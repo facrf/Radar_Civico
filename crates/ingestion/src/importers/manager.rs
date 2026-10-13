@@ -183,7 +183,29 @@ impl ImporterManager {
             .get_importer(id)
             .ok_or_else(|| IngestionError::Custom(format!("Importador '{}' não encontrado", id)))?;
 
-        let ctx = {
+        {
+            let contexts = self.contexts.read().map_err(|_| {
+                IngestionError::Custom("Falha de trava ao registrar contexto".into())
+            })?;
+            if contexts
+                .get(id)
+                .is_some_and(|existing| existing.get_progress().is_running)
+            {
+                return Err(IngestionError::Custom(format!(
+                    "Importador '{}' já está em execução",
+                    id
+                )));
+            }
+        }
+
+        let ctx = Arc::new(ImportContext::new(id));
+        let mut conn = self.sink.pool().get()?;
+        let progress = ctx.get_progress();
+        let json = serde_json::to_string(&progress)
+            .map_err(|e| IngestionError::Parse(e.to_string()))?;
+        storage::jobs::save_exclusive(&mut conn, "importer", id, &json)?;
+
+        {
             let mut contexts = self.contexts.write().map_err(|_| {
                 IngestionError::Custom("Falha de trava ao registrar contexto".into())
             })?;
@@ -196,15 +218,8 @@ impl ImporterManager {
                     id
                 )));
             }
-            let ctx = Arc::new(ImportContext::new(id));
-            let mut conn = self.sink.pool().get()?;
-            let progress = ctx.get_progress();
-            let json = serde_json::to_string(&progress)
-                .map_err(|e| IngestionError::Parse(e.to_string()))?;
-            storage::jobs::save_exclusive(&mut conn, "importer", id, &json)?;
             contexts.insert(id.to_string(), Arc::clone(&ctx));
-            ctx
-        };
+        }
 
         let importer_cloned = Arc::clone(&importer);
         let ctx_cloned = Arc::clone(&ctx);
