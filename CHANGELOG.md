@@ -12,6 +12,10 @@ Todas as alterações relevantes neste projeto são documentadas neste arquivo.
 - **Conclusão durável:** Fila de resultados ao lado do banco, consulta de status sem conexão do pool quando a conclusão está pendente, retentativas e recuperação no arranque. Snapshot final e histórico são gravados atomicamente, sem duplicação na reaplicação.
 - **Polling:** Consultas sem sobreposição, cancelamento ao trocar job ou sair da página, intervalo crescente após falhas e indicação de persistência pendente.
 - **Diagnóstico:** Logs distinguem espera por conexão, trava de transação, operação e conclusão; a duração de 15 segundos não é tratada como prova de esgotamento do pool.
+- **Mitigação de database locked:** Ampliação do `busy_timeout` do SQLite de 15s para 60s, alinhado com o pool de conexões e retentativas de transações imediatas (`transaction_immediate` e `transaction_immediate_ref`) com backoff progressivo (25ms a 250ms), abrangendo os códigos de erro 262 e 5 (`SQLITE_BUSY`).
+- **Desacoplamento de projeção de grafo:** Substituição de `projection::refresh` incondicional por `projection::refresh_if_needed`, evitando retenção de travas de escrita por mais de 2 minutos durante a conclusão de jobs e inicialização de serviços.
+- **Concorrência em importadores:** Desacoplamento da trava em memória de contextos no `ImporterManager::start` antes da persistência no banco, prevenindo bloqueio do polling `/api/importers` ao iniciar cargas.
+- **Mapeamento HTTP de contenção:** Respostas amigáveis com status 503 (Service Unavailable) para requisições que encontram o banco temporariamente ocupado com operações de escrita.
 - **Validação:** Regressões com banco em arquivo, HTTP mockado, falhas após lotes confirmados, conflito entre endpoints, recuperação após reinício e timers controlados no frontend.
 
 ## [0.1.3] - 2026-10-08

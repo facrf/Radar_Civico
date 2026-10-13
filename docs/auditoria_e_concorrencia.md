@@ -14,12 +14,12 @@ SqliteFailure(Error { code: DatabaseLocked, extended_code: 262 }, Some("database
 Isso ocorre porque:
 1. O SQLite em conexões com cache compartilhado utiliza travas a nível de tabela (*table-level locks*).
 2. Transações iniciadas por padrão com `DEFERRED` começam em modo leitura e tentam upgrade para escrita no primeiro `INSERT`/`UPDATE`. Quando múltiplos threads realizam esse upgrade simultaneamente, o SQLite não consegue promover ambas e rejeita uma delas imediatamente.
-3. O `PRAGMA busy_timeout` tradicional do SQLite **não** suspende a execução durante bloqueios de tabela em shared cache, retornando o erro `262` imediatamente.
+3. O `PRAGMA busy_timeout` tradicional do SQLite **não** suspende a execução durante bloqueios de tabela em shared cache, retornando o erro `262` imediatamente caso o timeout interno da aplicação não seja alinhado com o tempo de retenção do driver.
 
-### Solução Arquitetural: `transaction_immediate`
-Para eliminar essa falha, foi introduzida a função `storage::connection::transaction_immediate`:
-* **Comportamento `IMMEDIATE`:** Adquire a trava de escrita no momento em que a transação é aberta (`BEGIN IMMEDIATE;`), prevenindo impasses de deadlock durante upgrades posteriores.
-* **Retentativa com Backoff Exponencial:** Caso a trava de banco esteja temporariamente retida por outra transação ativa, o worker realiza retentativas em loop com intervalo incremental até 10 segundos antes de propagar qualquer erro.
+### Solução Arquitetural: `transaction_immediate` e `transaction_immediate_ref`
+Para eliminar contenções e erros de `database locked` sob operações concorrentes:
+* **Comportamento `IMMEDIATE`:** Adquire a trava de escrita no momento exato em que a transação é aberta (`BEGIN IMMEDIATE;`), prevenindo deadlocks durante upgrades posteriores.
+* **Alinhamento de Timeouts e Backoff Progressivo:** O timeout de conexões no pool, a rotina de transações imediatas e o SQLite foram unificados em **60 segundos** (`busy_timeout = 60000`). Se o banco estiver retido por outra escrita (códigos `DatabaseBusy`, `DatabaseLocked`, 262 e 5), o worker executa retentativas com backoff progressivo (25ms a 250ms com jitter) até o limite de 60s.
 * **Pragmas Obrigatórios Padronizados:**
   ```sql
   PRAGMA journal_mode = WAL;
@@ -27,10 +27,13 @@ Para eliminar essa falha, foi introduzida a função `storage::connection::trans
   PRAGMA cache_size = -64000;
   PRAGMA temp_store = MEMORY;
   PRAGMA foreign_keys = ON;
-  PRAGMA busy_timeout = 15000;
+  PRAGMA busy_timeout = 60000;
   ```
 
-Todas as operações em lote (`crates/storage/src/batch.rs`), conectores de ingestão (`crates/ingestion/src/importers/connectors.rs`), migrações (`crates/storage/src/migrations/mod.rs`) e rotas de upload (`crates/server/src/routes/config.rs`) foram atualizadas para consumir esse protocolo.
+### Desacoplamento da Projeção de Grafo e Contenção no Gerenciador de Importadores
+* **Projeção Sob Demanda (`refresh_if_needed`):** Em bases volumosas (>2,6 milhões de relacionamentos), o rebuild incondicional de grafo retinha travas exclusivas por mais de 2 minutos. Foi adotada a verificação baseada em flags/triggers de sujeira (`refresh_if_needed`), impedindo que finalizações de jobs bloqueiem o banco quando não há alterações no grafo.
+* **Liberação de Lock em Memória (`ImporterManager::start`):** O lock de leitura/escrita em memória dos contextos de importação agora é liberado antes da chamada de gravação de estado no banco de dados (`save_exclusive`), evitando que a sondagem de status `/api/importers` bloqueie threads de controle.
+* **Tratamento de Contenção HTTP 503:** Erros residuais de contenção temporária de escrita são convertidos pelo servidor em `503 Service Unavailable` com mensagem orientativa, em vez de falhas internas genéricas.
 
 ---
 
