@@ -1,14 +1,18 @@
 pub mod alertas;
+pub mod analysis;
 pub mod api;
 pub mod busca;
 pub mod config;
 pub mod dossie;
+pub mod export;
 pub mod geo;
 pub mod grafo;
+pub mod identity;
 pub mod investigar;
 pub mod photos;
 pub mod politico;
 pub mod politicos_duplicados;
+pub mod projection;
 pub mod routes;
 pub mod security;
 
@@ -420,3 +424,6 @@ mod local_access_tests {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
+
+#[cfg(test)]
+mod regression;

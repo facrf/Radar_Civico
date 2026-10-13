@@ -121,6 +121,9 @@ impl ImportContext {
             {
                 p.is_running = false;
                 p.finished_at = Some(Utc::now().to_rfc3339());
+            } else {
+                p.is_running = true;
+                p.finished_at = None;
             }
         }
     }

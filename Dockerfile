@@ -64,6 +64,7 @@ COPY --from=web-builder /app/web/build /app/web/build
 
 ENV DATA_DIR=/app/data
 ENV PORT=8080
+ENV HOST=0.0.0.0
 ENV WEB_DIR=/app/web/build
 ENV RUST_LOG=info
 

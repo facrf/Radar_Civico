@@ -428,6 +428,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         |r| r.get(0),
     )?;
     sincronizar_alertas_combustivel(conn, parametros)?;
+    crate::analysis::run(conn, parametros.janela_triangulacao_dias)?;
 
     // 2. Sincroniza conflitos OAB da tabela alertas_incompatibilidade
     {
@@ -790,17 +791,14 @@ pub fn sincronizar_alertas_sistema_com_parametros(
 
     // 8. Sincroniza empresas com capital social desproporcional ao faturamento
     {
+        conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS capital_alertas_ativos(id INTEGER PRIMARY KEY); DELETE FROM capital_alertas_ativos;")?;
         let mut stmt = conn.prepare(
-            "SELECT d.fornecedor_cnpj_cpf, d.fornecedor_nome,
-                    COALESCE(MAX(q.capital_social), 0.0),
-                    (SUM(d.valor_liquido_centavos)/100.0),
-                    COUNT(d.id),
-                    COALESCE(d.parlamentar_nome, 'PARLAMENTAR')
-             FROM despesas_parlamentares d
-             JOIN empresas_qsa q ON q.cnpj_basico = SUBSTR(REPLACE(REPLACE(REPLACE(d.fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', ''), 1, 8)
-             WHERE d.fornecedor_cnpj_cpf IS NOT NULL AND length(d.fornecedor_cnpj_cpf) >= 14
-             GROUP BY d.fornecedor_cnpj_cpf, d.fornecedor_nome
-             HAVING (SUM(d.valor_liquido_centavos)/100.0) >= 100000.0 AND COALESCE(MAX(q.capital_social), 0.0) <= 5000.0",
+            "SELECT d.documento,d.nome,
+                    (SELECT MAX(q.capital_social) FROM empresas_qsa q WHERE q.cnpj_basico=substr(REPLACE(REPLACE(REPLACE(d.documento,'.',''),'/',''),'-',''),1,8)),
+                    d.total/100.0,d.quantidade,d.parlamentar
+             FROM (SELECT fornecedor_cnpj_cpf AS documento,fornecedor_nome AS nome,SUM(valor_liquido_centavos) AS total,COUNT(*) AS quantidade,MIN(parlamentar_nome) AS parlamentar
+                   FROM despesas_parlamentares WHERE length(fornecedor_cnpj_cpf)>=14 GROUP BY fornecedor_cnpj_cpf,fornecedor_nome) d
+             WHERE d.total>=10000000 AND (SELECT MAX(q.capital_social) FROM empresas_qsa q WHERE q.cnpj_basico=substr(REPLACE(REPLACE(REPLACE(d.documento,'.',''),'/',''),'-',''),1,8)) BETWEEN 0.01 AND 5000.0",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -833,7 +831,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         "regra": "Empresa faturou valor expressivo com capital social ínfimo (possível empresa de fachada)"
                     });
 
-                    registrar_alerta(
+                    let id = registrar_alerta(
                         conn,
                         &NovoAlerta {
                             tipo: "CAPITAL_DESPROPORCIONAL".to_string(),
@@ -853,9 +851,15 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                             detalhes_json: Some(detalhes.to_string()),
                         },
                     )?;
+                    conn.execute(
+                        "INSERT OR IGNORE INTO temp.capital_alertas_ativos(id) VALUES (?1)",
+                        [id],
+                    )?;
                 }
             }
         }
+        conn.execute("DELETE FROM alertas_auditoria WHERE tipo='CAPITAL_DESPROPORCIONAL' AND id NOT IN (SELECT id FROM temp.capital_alertas_ativos)",[])?;
+        conn.execute_batch("DROP TABLE temp.capital_alertas_ativos")?;
     }
 
     // 9. Sincroniza fornecedores recém-criados (< 180 dias de fundação formal ao emitir despesa CEAP)

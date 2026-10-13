@@ -177,6 +177,26 @@ O acesso pela rede do servidor exige alterar o mapeamento de porta. Como a aplic
 
 ---
 
+## Confiabilidade da importação e das análises
+
+O upload valida os campos, valores monetários e erros de leitura/gravação. Um CSV ou ZIP é confirmado em uma única transação: erro em qualquer entrada reverte o upload completo. Arquivos não reconhecidos são rejeitados. O contador informa as linhas efetivamente gravadas. Se a auditoria falhar depois da confirmação dos dados, a resposta e a interface exibem o aviso de análise pendente.
+
+Para receitas e despesas eleitorais, importe primeiro os candidatos. Os arquivos financeiros precisam fornecer `SQ_CANDIDATO` e `ANO_ELEICAO`; a candidatura deve existir e ser única. Documentos, datas e valores ausentes não são inventados. Valores monetários usam o padrão brasileiro ou decimal com ponto e até duas casas decimais.
+
+Dossiês distinguem identidade confirmada por documento completo de vínculos possíveis por nome ou CPF mascarado. Doações possíveis não entram no total confirmado nem geram alertas de triangulação. A máscara sozinha não comprova que pessoas em bases diferentes são a mesma pessoa.
+
+A auditoria principal executa triangulação e ubiquidade com evidências explícitas:
+
+* **Triangulação:** exige documento completo do doador/sócio, candidatura vinculada, data e órgão de posse cadastrados em `cargos_autoridades`, contrato do mesmo órgão com modalidade `INEXIGIBILIDADE` e assinatura dentro da janela configurada. Dados insuficientes não geram um alerta.
+* **Ubiquidade:** exige `PARLAMENTAR_ID`, `EMITIDO_EM` em formato RFC 3339 com fuso, `MUNICIPIO_EMISSAO`, `UF_EMISSAO`, `LATITUDE_EMISSAO`, `LONGITUDE_EMISSAO` e `PRESENCIAL=1` no CSV CEAP. Datas sem horário, localização presumida e despesas sem comprovação de presença não acionam essa regra.
+* **Capital social:** despesas são agregadas antes do cruzamento com sócios. Capital desconhecido ou zero legado não é tratado como evidência de capital ínfimo. O upload QSA aceita `CAPITAL_SOCIAL` e `DATA_INICIO_ATIVIDADE` quando a fonte os fornece.
+
+Os grafos são atualizados após importações e em segundo plano no arranque. A projeção usa as empresas relacionadas aos dados financeiros; outros QSA são carregados por CNPJ sob demanda, sem copiar a base nacional inteira. Nós de sócios mascarados permanecem separados por empresa e nome. Relações trazem fonte e indicação de confiança. Grafos conservam os limites de 10 mil nós e 50 mil arestas por consulta.
+
+Exportações CSV/JSON são geradas linha a linha em arquivo temporário e transmitidas ao navegador, evitando montar toda a tabela na memória. Na execução nativa, o servidor escuta em `127.0.0.1` por padrão; no Docker, `HOST=0.0.0.0` permite o acesso pela porta que o Compose publica somente em localhost.
+
+---
+
 ## 📡 Endpoints da API REST
 
 * `GET /health` - Verificação de saúde da aplicação (utilizado pelo healthcheck do Docker).

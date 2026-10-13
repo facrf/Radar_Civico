@@ -248,6 +248,7 @@ export interface PainelPncp {
 }
 
 export interface DoacaoSocioTse {
+    confianca_vinculo: 'CONFIRMADO' | 'POSSIVEL';
 	socio_nome: string;
 	doador_doc: string;
 	candidato_nome: string;
@@ -260,6 +261,7 @@ export interface DoacaoSocioTse {
 }
 
 export interface CandidaturaSocioTse {
+    confianca_vinculo: 'CONFIRMADO' | 'POSSIVEL';
 	socio_nome: string;
 	politico_id: number;
 	nome_urna: string;
@@ -284,6 +286,7 @@ export interface DiarioItem {
 }
 
 export interface DossieCnpj {
+    avisos_identidade: string[];
 	cnpj: string;
 	cnpj_formatado: string;
 	razao_social: string;
@@ -300,6 +303,7 @@ export interface DossieCnpj {
 }
 
 export interface EmpresaSocioItem {
+    confianca_vinculo: 'CONFIRMADO' | 'POSSIVEL';
 	cnpj: string;
 	cnpj_formatado: string;
 	razao_social: string;
@@ -309,6 +313,7 @@ export interface EmpresaSocioItem {
 }
 
 export interface DoacaoEleitoralItem {
+    confianca_vinculo: 'CONFIRMADO' | 'POSSIVEL';
 	id: number;
 	doador_cpf_cnpj: string;
 	doador_nome: string;
@@ -322,6 +327,7 @@ export interface DoacaoEleitoralItem {
 }
 
 export interface CandidaturaItemCpf {
+    confianca_vinculo: 'CONFIRMADO' | 'POSSIVEL';
 	politico_id: number;
 	nome_urna: string;
 	ano_eleicao: number;
@@ -349,6 +355,7 @@ export interface RegistroProfissionalItem {
 }
 
 export interface DossieCpf {
+    avisos_identidade: string[];
 	cpf_mascarado: string;
 	nome: string;
 	score_risco: 'BAIXO' | 'MEDIO' | 'ALTO' | 'CRITICO';

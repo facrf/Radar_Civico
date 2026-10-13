@@ -31,6 +31,8 @@ pub struct PncpContratoItem {
     pub data_assinatura: String,
     #[serde(rename = "dataVigenciaFim", default)]
     pub data_vigencia_fim: Option<String>,
+    #[serde(rename = "modalidadeNome", alias = "modalidade", default)]
+    pub modalidade: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,8 +112,8 @@ impl PncpClient {
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO contratos_publicos (
                     orgao_contratante, fornecedor_cnpj, valor_contratado,
-                    objeto, data_assinatura, data_termino
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    objeto, data_assinatura, data_termino,modalidade
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6,?7)",
             )?;
 
             for c in contratos {
@@ -124,6 +126,7 @@ impl PncpClient {
                     c.objeto_contrato,
                     c.data_assinatura,
                     c.data_vigencia_fim,
+                    c.modalidade,
                 ])?;
             }
         }

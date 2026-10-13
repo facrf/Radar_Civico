@@ -407,6 +407,8 @@ pub struct UploadResponse {
     pub tipo_detectado: String,
     pub registros_inseridos: usize,
     pub mensagem: String,
+    #[serde(default)]
+    pub avisos: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -616,6 +618,19 @@ pub async fn atualizar_job_concluido(
     status: &str,
     mensagem: &str,
 ) {
+    if matches!(status, "CONCLUIDO" | "PARCIAL") {
+        if let Err(error) = pool
+            .run_blocking(|conn| crate::projection::refresh(conn))
+            .await
+        {
+            let details =
+                format!("{mensagem}. Dados preservados; falha ao atualizar rede: {error}");
+            if let Err(error) = concluir_job(pool, job_id, progresso, "ERRO", &details).await {
+                tracing::error!(job_id,error=%error,"Falha ao persistir conclusão da rede");
+            }
+            return;
+        }
+    }
     if let Err(error) = concluir_job(pool, job_id, progresso, status, mensagem).await {
         tracing::error!(job_id, stage = "completion", error = %error, "Falha ao persistir conclusão; resultado pendente requer recuperação");
     }
@@ -1850,16 +1865,15 @@ pub async fn import_status_handler() -> Json<ImportProgress> {
 }
 
 fn find_col(headers: &csv::StringRecord, candidates: &[&str]) -> Option<usize> {
-    for (i, h) in headers.iter().enumerate() {
-        let h_norm = h.trim().to_uppercase().replace(['"', '\'', '_', ' '], "");
-        for &c in candidates {
-            let c_norm = c.to_uppercase().replace(['"', '\'', '_', ' '], "");
-            if h_norm == c_norm || h_norm.contains(&c_norm) {
-                return Some(i);
-            }
-        }
-    }
-    None
+    let normalize = |s: &str| {
+        s.trim()
+            .trim_start_matches('\u{feff}')
+            .to_uppercase()
+            .replace(['"', '\'', '_', ' '], "")
+    };
+    candidates
+        .iter()
+        .find_map(|c| headers.iter().position(|h| normalize(h) == normalize(c)))
 }
 
 fn detectar_delimitador(sample: &[u8]) -> u8 {
@@ -1887,22 +1901,142 @@ fn detectar_delimitador(sample: &[u8]) -> u8 {
     }
 }
 
-fn parse_f64_valor(val: &str) -> f64 {
-    let cleaned = val.trim().replace("R$", "").replace(' ', "");
-    if cleaned.is_empty() {
-        return 0.0;
+fn parse_f64_valor(value: &str) -> std::io::Result<f64> {
+    storage::Money::parse(value)
+        .map(|v| v.reais())
+        .map_err(std::io::Error::other)
+}
+
+fn required_field<'a>(
+    record: &'a csv::StringRecord,
+    column: Option<usize>,
+    name: &str,
+) -> std::io::Result<&'a str> {
+    column
+        .and_then(|i| record.get(i))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "Linha {}: campo obrigatório ausente: {name}",
+                record.position().map(|p| p.line()).unwrap_or(0)
+            ))
+        })
+}
+
+fn upload_date(value: &str) -> std::io::Result<Option<String>> {
+    if value.trim().is_empty() {
+        return Ok(None);
     }
-    if cleaned.contains(',') && cleaned.contains('.') {
-        cleaned
-            .replace('.', "")
-            .replace(',', ".")
-            .parse::<f64>()
-            .unwrap_or(0.0)
-    } else if cleaned.contains(',') {
-        cleaned.replace(',', ".").parse::<f64>().unwrap_or(0.0)
-    } else {
-        cleaned.parse::<f64>().unwrap_or(0.0)
+    let day = value.trim().split('T').next().unwrap_or(value);
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
+        .or_else(|_| chrono::NaiveDate::parse_from_str(day, "%d/%m/%Y"))
+        .map(|d| Some(d.format("%Y-%m-%d").to_string()))
+        .map_err(std::io::Error::other)
+}
+fn optional_csv<'a>(
+    headers: &csv::StringRecord,
+    record: &'a csv::StringRecord,
+    aliases: &[&str],
+) -> Option<&'a str> {
+    find_col(headers, aliases)
+        .and_then(|i| record.get(i))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+}
+fn ceap_evidence(
+    conn: &rusqlite::Connection,
+    headers: &csv::StringRecord,
+    record: &csv::StringRecord,
+) -> std::io::Result<(
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<f64>,
+    Option<f64>,
+    bool,
+)> {
+    let person = optional_csv(headers, record, &["PARLAMENTAR_ID"])
+        .map(str::parse::<i64>)
+        .transpose()
+        .map_err(std::io::Error::other)?;
+    if let Some(id) = person {
+        let found: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM politicos WHERE id=?1)",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(std::io::Error::other)?;
+        if !found {
+            return Err(std::io::Error::other("PARLAMENTAR_ID não encontrado"));
+        }
     }
+    let time = optional_csv(headers, record, &["EMITIDO_EM"])
+        .map(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|d| d.with_timezone(&chrono::Utc).to_rfc3339())
+        })
+        .transpose()
+        .map_err(std::io::Error::other)?;
+    let city = optional_csv(headers, record, &["MUNICIPIO_EMISSAO"]).map(str::to_owned);
+    let uf = optional_csv(headers, record, &["UF_EMISSAO"]).map(str::to_uppercase);
+    let lat = optional_csv(headers, record, &["LATITUDE_EMISSAO"])
+        .map(str::parse::<f64>)
+        .transpose()
+        .map_err(std::io::Error::other)?;
+    let lon = optional_csv(headers, record, &["LONGITUDE_EMISSAO"])
+        .map(str::parse::<f64>)
+        .transpose()
+        .map_err(std::io::Error::other)?;
+    if lat.is_some_and(|v| !v.is_finite() || !(-90.0..=90.0).contains(&v))
+        || lon.is_some_and(|v| !v.is_finite() || !(-180.0..=180.0).contains(&v))
+    {
+        return Err(std::io::Error::other("Coordenada inválida"));
+    }
+    let presence = match optional_csv(headers, record, &["PRESENCIAL"])
+        .unwrap_or("0")
+        .to_uppercase()
+        .as_str()
+    {
+        "1" | "TRUE" | "SIM" => true,
+        "0" | "FALSE" | "NAO" | "NÃO" => false,
+        _ => {
+            return Err(std::io::Error::other(
+                "PRESENCIAL deve ser 0/1, false/true ou não/sim",
+            ))
+        }
+    };
+    if presence
+        && (person.is_none()
+            || time.is_none()
+            || city.is_none()
+            || uf.is_none()
+            || lat.is_none()
+            || lon.is_none())
+    {
+        return Err(std::io::Error::other("Despesa presencial exige parlamentar, horário com fuso, município/UF e coordenadas explícitas"));
+    }
+    Ok((person, time, city, uf, lat, lon, presence))
+}
+
+fn candidatura_upload(
+    conn: &rusqlite::Connection,
+    record: &csv::StringRecord,
+    headers: &csv::StringRecord,
+) -> std::io::Result<i64> {
+    let sq = required_field(record, find_col(headers, &["SQ_CANDIDATO"]), "SQ_CANDIDATO")?;
+    let ano = required_field(record, find_col(headers, &["ANO_ELEICAO"]), "ANO_ELEICAO")?
+        .parse::<i32>()
+        .map_err(std::io::Error::other)?;
+    let mut stmt = conn.prepare("SELECT c.id FROM candidaturas c JOIN politicos p ON p.id=c.politico_id WHERE p.sq_candidato=?1 AND c.ano_eleicao=?2 LIMIT 2").map_err(std::io::Error::other)?;
+    let ids = stmt
+        .query_map(rusqlite::params![sq, ano], |r| r.get::<_, i64>(0))
+        .map_err(std::io::Error::other)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(std::io::Error::other)?;
+    match ids.as_slice() { [id] => Ok(*id), _ => Err(std::io::Error::other(format!("Candidatura ausente ou ambígua para SQ_CANDIDATO={sq}, ano={ano}. Importe os candidatos primeiro."))) }
 }
 
 fn detectar_tipo_por_cabecalho(headers: &csv::StringRecord) -> String {
@@ -1985,10 +2119,18 @@ fn detectar_tipo_por_cabecalho(headers: &csv::StringRecord) -> String {
 }
 
 fn processar_csv_records<R: std::io::Read>(
-    conn: &mut rusqlite::Connection,
+    conn: &rusqlite::Connection,
     reader: &mut csv::Reader<R>,
     tipo_solicitado: &str,
 ) -> std::io::Result<(usize, String)> {
+    if conn.is_autocommit() {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(std::io::Error::other)?;
+        let result = processar_csv_records(&tx, reader, tipo_solicitado)?;
+        tx.commit().map_err(std::io::Error::other)?;
+        return Ok(result);
+    }
     let headers = reader.headers()?.clone();
     let tipo_detectado = if tipo_solicitado != "AUTO" && !tipo_solicitado.is_empty() {
         tipo_solicitado.to_string()
@@ -2072,19 +2214,17 @@ fn processar_csv_records<R: std::io::Read>(
                 ],
             );
 
-            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
+            let tx = conn;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR REPLACE INTO empresas_qsa (
-                        cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                        cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, qualificacao_socio, capital_social, data_inicio_atividade
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
                 ).map_err(std::io::Error::other)?;
 
-                for record in reader.records().flatten() {
-                    let cnpj_raw = col_cnpj_basico
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("00000000")
-                        .trim();
+                for record in reader.records() {
+                    let record = record.map_err(std::io::Error::other)?;
+                    let cnpj_raw = required_field(&record, col_cnpj_basico, "CNPJ_BASICO")?;
                     let cnpj_digits: String =
                         cnpj_raw.chars().filter(|c| c.is_ascii_digit()).collect();
                     let cnpj_basico = if cnpj_digits.len() >= 8 {
@@ -2115,10 +2255,7 @@ fn processar_csv_records<R: std::io::Read>(
                         .and_then(|i| record.get(i))
                         .unwrap_or("EMPRESA S/A")
                         .trim();
-                    let socio_nome = col_socio_nome
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("HOLDING / SOCIO")
-                        .trim();
+                    let socio_nome = required_field(&record, col_socio_nome, "NOME_SOCIO")?;
                     let socio_doc_raw = col_socio_doc
                         .and_then(|i| record.get(i))
                         .unwrap_or("")
@@ -2133,22 +2270,33 @@ fn processar_csv_records<R: std::io::Read>(
                         .unwrap_or("HOLDING / PARTICIPACAO")
                         .trim();
 
+                    if cnpj_basico.len() != 8 {
+                        return Err(std::io::Error::other("CNPJ básico deve ter 8 dígitos"));
+                    }
+                    let capital = optional_csv(&headers, &record, &["CAPITAL_SOCIAL"])
+                        .map(parse_f64_valor)
+                        .transpose()?;
+                    let opening = upload_date(
+                        optional_csv(&headers, &record, &["DATA_INICIO_ATIVIDADE"]).unwrap_or(""),
+                    )?;
                     if !cnpj_basico.is_empty() && (!socio_nome.is_empty() || !socio_doc.is_empty())
                     {
-                        let _ = stmt.execute(rusqlite::params![
-                            cnpj_basico,
-                            cnpj_ordem,
-                            cnpj_dv,
-                            razao,
-                            socio_doc,
-                            socio_nome,
-                            qualif
-                        ]);
-                        count += 1;
+                        count += stmt
+                            .execute(rusqlite::params![
+                                cnpj_basico,
+                                cnpj_ordem,
+                                cnpj_dv,
+                                razao,
+                                socio_doc,
+                                socio_nome,
+                                qualif,
+                                capital,
+                                opening
+                            ])
+                            .map_err(std::io::Error::other)?;
                     }
                 }
             }
-            tx.commit().map_err(std::io::Error::other)?;
         }
         "CONSELHOS_OAB" | "REGISTROS_PROFISSIONAIS" | "OAB" => {
             let col_nome = find_col(
@@ -2178,7 +2326,7 @@ fn processar_csv_records<R: std::io::Read>(
             );
             let col_tipo = find_col(&headers, &["TIPO_INSCRICAO", "TIPO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
+            let tx = conn;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR REPLACE INTO registros_profissionais (
@@ -2186,14 +2334,12 @@ fn processar_csv_records<R: std::io::Read>(
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
                 ).map_err(std::io::Error::other)?;
 
-                for record in reader.records().flatten() {
-                    let nome = col_nome.and_then(|i| record.get(i)).unwrap_or("").trim();
+                for record in reader.records() {
+                    let record = record.map_err(std::io::Error::other)?;
+                    let nome = required_field(&record, col_nome, "nome")?;
                     let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
-                    let orgao = col_orgao
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("OAB")
-                        .trim();
-                    let reg = col_reg.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let orgao = required_field(&record, col_orgao, "orgao")?;
+                    let reg = required_field(&record, col_reg, "registro")?;
                     let uf = col_uf.and_then(|i| record.get(i)).unwrap_or("BR").trim();
                     let sit = col_sit
                         .and_then(|i| record.get(i))
@@ -2205,13 +2351,12 @@ fn processar_csv_records<R: std::io::Read>(
                         .trim();
 
                     if !nome.is_empty() && !reg.is_empty() {
-                        let _ = stmt
-                            .execute(rusqlite::params![nome, cpf, orgao, reg, uf, sit, tipo_ins]);
-                        count += 1;
+                        count += stmt
+                            .execute(rusqlite::params![nome, cpf, orgao, reg, uf, sit, tipo_ins])
+                            .map_err(std::io::Error::other)?;
                     }
                 }
             }
-            tx.commit().map_err(std::io::Error::other)?;
         }
         "PNCP_CONTRATOS" | "PNCP" => {
             let col_orgao = find_col(
@@ -2233,49 +2378,45 @@ fn processar_csv_records<R: std::io::Read>(
             );
             let col_dt_fim = find_col(&headers, &["DATA_TERMINO", "DATAVIGENCIAFIM", "DT_TERMINO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
+            let tx = conn;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO contratos_publicos (
-                        orgao_contratante, fornecedor_cnpj, valor_contratado, objeto, data_assinatura, data_termino
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+                        orgao_contratante, fornecedor_cnpj, valor_contratado, objeto, data_assinatura, data_termino, modalidade
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
                 ).map_err(std::io::Error::other)?;
 
-                for record in reader.records().flatten() {
-                    let orgao = col_orgao
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("ORGAO PUBLICO")
-                        .trim();
-                    let cnpj = col_cnpj
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("00000000000100")
-                        .trim();
+                for record in reader.records() {
+                    let record = record.map_err(std::io::Error::other)?;
+                    let orgao = required_field(&record, col_orgao, "orgao")?;
+                    let cnpj = required_field(&record, col_cnpj, "CNPJ")?;
                     let valor = col_valor
                         .and_then(|i| record.get(i))
                         .map(parse_f64_valor)
-                        .unwrap_or(0.0);
+                        .transpose()?
+                        .ok_or_else(|| {
+                            std::io::Error::other("Valor monetário obrigatório ausente")
+                        })?;
                     let objeto = col_objeto
                         .and_then(|i| record.get(i))
                         .unwrap_or("FORNECIMENTO")
                         .trim();
-                    let dt_ass = col_dt_ass
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("2024-01-01")
-                        .trim();
-                    let dt_fim = col_dt_fim
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("2025-01-01")
-                        .trim();
+                    let dt_ass = col_dt_ass.and_then(|i| record.get(i)).unwrap_or("").trim();
+                    let dt_fim = col_dt_fim.and_then(|i| record.get(i)).unwrap_or("").trim();
 
+                    let dt_ass = upload_date(dt_ass)?;
+                    let dt_fim = upload_date(dt_fim)?;
+                    let modalidade =
+                        optional_csv(&headers, &record, &["MODALIDADE", "MODALIDADE_LICITACAO"]);
                     if !cnpj.is_empty() {
-                        let _ = stmt.execute(rusqlite::params![
-                            orgao, cnpj, valor, objeto, dt_ass, dt_fim
-                        ]);
-                        count += 1;
+                        count += stmt
+                            .execute(rusqlite::params![
+                                orgao, cnpj, valor, objeto, dt_ass, dt_fim, modalidade
+                            ])
+                            .map_err(std::io::Error::other)?;
                     }
                 }
             }
-            tx.commit().map_err(std::io::Error::other)?;
         }
         "CEAP_NOTAS" | "CEAP" => {
             let col_parlamentar = find_col(
@@ -2306,48 +2447,54 @@ fn processar_csv_records<R: std::io::Read>(
                 &["CNPJCPF", "FORNECEDOR_CNPJ_CPF", "CNPJ_FORNECEDOR"],
             );
 
-            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
+            let tx = conn;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO despesas_parlamentares (
                         casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado, data_emissao,
-                        categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, numero_documento
-                     ) VALUES ('CAMARA', ?1, ?2, ?3, 'GERAL', ?4, ?5, ?6, ?7)"
+                        categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, numero_documento,
+                        parlamentar_id,emitido_em,municipio_emissao,uf_emissao,latitude_emissao,longitude_emissao,presencial
+                     ) VALUES ('CAMARA', ?1, ?2, ?3, ?8, ?4, ?5, ?6, ?7,?9,?10,?11,?12,?13,?14,?15)"
                 ).map_err(std::io::Error::other)?;
 
-                for record in reader.records().flatten() {
-                    let parl = col_parlamentar
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("PARLAMENTAR")
-                        .trim();
+                for record in reader.records() {
+                    let record = record.map_err(std::io::Error::other)?;
+                    let parl = required_field(&record, col_parlamentar, "parlamentar")?;
                     let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
-                    let dt = col_data
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("2024-01-01")
-                        .trim();
-                    let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("NF-0").trim();
+
+                    let doc = required_field(&record, col_doc, "documento")?;
                     let valor = col_valor
                         .and_then(|i| record.get(i))
                         .map(parse_f64_valor)
-                        .unwrap_or(0.0);
+                        .transpose()?
+                        .ok_or_else(|| {
+                            std::io::Error::other("Valor monetário obrigatório ausente")
+                        })?;
                     let forn_nome = col_forn_nome
                         .and_then(|i| record.get(i))
                         .unwrap_or("FORNECEDOR")
                         .trim();
-                    let forn_doc = col_forn_doc
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("00000000000100")
-                        .trim();
+                    let forn_doc = required_field(&record, col_forn_doc, "fornecedor")?;
 
+                    let dt = upload_date(required_field(&record, col_data, "DATA_EMISSAO")?)?;
+                    let category = optional_csv(
+                        &headers,
+                        &record,
+                        &["CATEGORIA_DESPESA", "TXT_DESCRICAO", "TXTDESCRICAO"],
+                    )
+                    .unwrap_or("GERAL");
+                    let (person, time, city, uf, lat, lon, presence) =
+                        ceap_evidence(tx, &headers, &record)?;
                     if !forn_doc.is_empty() {
-                        let _ = stmt.execute(rusqlite::params![
-                            parl, cpf, dt, forn_nome, forn_doc, valor, doc
-                        ]);
-                        count += 1;
+                        count += stmt
+                            .execute(rusqlite::params![
+                                parl, cpf, dt, forn_nome, forn_doc, valor, doc, category, person,
+                                time, city, uf, lat, lon, presence
+                            ])
+                            .map_err(std::io::Error::other)?;
                     }
                 }
             }
-            tx.commit().map_err(std::io::Error::other)?;
         }
         "TSE_RECEITAS" => {
             let col_doc = find_col(
@@ -2368,45 +2515,42 @@ fn processar_csv_records<R: std::io::Read>(
             let col_data = find_col(&headers, &["DT_RECEITA", "DATA_RECEITA", "DATA"]);
             let col_desc = find_col(&headers, &["DS_RECEITA", "DESCRICAO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
+            let tx = conn;
             {
                 let mut stmt = tx
                     .prepare_cached(
                         "INSERT INTO receitas_campanha (
                         candidatura_id, doador_cpf_cnpj, doador_nome, valor, data_receita, descricao
-                     ) VALUES (NULL, ?1, ?2, ?3, ?4, ?5)",
+                     ) VALUES (?6, ?1, ?2, ?3, ?4, ?5)",
                     )
                     .map_err(std::io::Error::other)?;
 
-                for record in reader.records().flatten() {
-                    let doc = col_doc
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("00000000000")
-                        .trim();
-                    let nome = col_nome
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("DOADOR")
-                        .trim();
+                for record in reader.records() {
+                    let record = record.map_err(std::io::Error::other)?;
+                    let doc = required_field(&record, col_doc, "documento")?;
+                    let nome = required_field(&record, col_nome, "nome")?;
                     let valor = col_valor
                         .and_then(|i| record.get(i))
                         .map(parse_f64_valor)
-                        .unwrap_or(0.0);
-                    let data = col_data
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("2024-01-01")
-                        .trim();
+                        .transpose()?
+                        .ok_or_else(|| {
+                            std::io::Error::other("Valor monetário obrigatório ausente")
+                        })?;
+                    let data = col_data.and_then(|i| record.get(i)).unwrap_or("").trim();
                     let desc = col_desc
                         .and_then(|i| record.get(i))
                         .unwrap_or("DOACAO")
                         .trim();
 
                     if !doc.is_empty() {
-                        let _ = stmt.execute(rusqlite::params![doc, nome, valor, data, desc]);
-                        count += 1;
+                        let data = upload_date(data)?;
+                        let candidatura = candidatura_upload(&tx, &record, &headers)?;
+                        count += stmt
+                            .execute(rusqlite::params![doc, nome, valor, data, desc, candidatura])
+                            .map_err(std::io::Error::other)?;
                     }
                 }
             }
-            tx.commit().map_err(std::io::Error::other)?;
         }
         "TSE_DESPESAS" => {
             let col_doc = find_col(
@@ -2431,86 +2575,77 @@ fn processar_csv_records<R: std::io::Read>(
             let col_data = find_col(&headers, &["DT_DESPESA", "DATA_DESPESA", "DATA"]);
             let col_desc = find_col(&headers, &["DS_DESPESA", "DESCRICAO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
+            let tx = conn;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO despesas_campanha (
                         candidatura_id, fornecedor_cpf_cnpj, fornecedor_nome, valor, data_despesa, descricao
-                     ) VALUES (NULL, ?1, ?2, ?3, ?4, ?5)"
+                     ) VALUES (?6, ?1, ?2, ?3, ?4, ?5)"
                 ).map_err(std::io::Error::other)?;
 
-                for record in reader.records().flatten() {
-                    let doc = col_doc
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("00000000000100")
-                        .trim();
-                    let nome = col_nome
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("FORNECEDOR")
-                        .trim();
+                for record in reader.records() {
+                    let record = record.map_err(std::io::Error::other)?;
+                    let doc = required_field(&record, col_doc, "documento")?;
+                    let nome = required_field(&record, col_nome, "nome")?;
                     let valor = col_valor
                         .and_then(|i| record.get(i))
                         .map(parse_f64_valor)
-                        .unwrap_or(0.0);
-                    let data = col_data
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("2024-01-01")
-                        .trim();
+                        .transpose()?
+                        .ok_or_else(|| {
+                            std::io::Error::other("Valor monetário obrigatório ausente")
+                        })?;
+                    let data = col_data.and_then(|i| record.get(i)).unwrap_or("").trim();
                     let desc = col_desc
                         .and_then(|i| record.get(i))
                         .unwrap_or("DESPESA")
                         .trim();
 
                     if !doc.is_empty() {
-                        let _ = stmt.execute(rusqlite::params![doc, nome, valor, data, desc]);
-                        count += 1;
+                        let data = upload_date(data)?;
+                        let candidatura = candidatura_upload(&tx, &record, &headers)?;
+                        count += stmt
+                            .execute(rusqlite::params![doc, nome, valor, data, desc, candidatura])
+                            .map_err(std::io::Error::other)?;
                     }
                 }
             }
-            tx.commit().map_err(std::io::Error::other)?;
         }
         "TSE_CANDIDATOS" => {
-            let col_sq = find_col(&headers, &["SQ_CANDIDATO"]);
-            let col_nome = find_col(&headers, &["NM_CANDIDATO", "NOME_COMPLETO"]);
-            let col_urna = find_col(&headers, &["NM_URNA_CANDIDATO", "NOME_URNA"]);
-            let col_cpf = find_col(&headers, &["NR_CPF_CANDIDATO", "CPF_MASCARADO"]);
-
-            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
-            {
-                let mut stmt = tx
-                    .prepare_cached(
-                        "INSERT OR IGNORE INTO politicos (
-                        sq_candidato, cpf_mascarado, nome_completo, nome_urna
-                     ) VALUES (?1, ?2, ?3, ?4)",
-                    )
+            let tx = conn;
+            for record in reader.records() {
+                let record = record.map_err(std::io::Error::other)?;
+                let get = |aliases: &[&str], name: &str| {
+                    required_field(&record, find_col(&headers, aliases), name)
+                };
+                let sq = get(&["SQ_CANDIDATO"], "SQ_CANDIDATO")?;
+                let nome = get(&["NM_CANDIDATO", "NOME_COMPLETO"], "NM_CANDIDATO")?;
+                let urna = find_col(&headers, &["NM_URNA_CANDIDATO", "NOME_URNA"])
+                    .and_then(|i| record.get(i))
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or(nome);
+                let cpf = find_col(&headers, &["NR_CPF_CANDIDATO", "CPF_MASCARADO"])
+                    .and_then(|i| record.get(i));
+                let ano = get(&["ANO_ELEICAO"], "ANO_ELEICAO")?
+                    .parse::<i32>()
                     .map_err(std::io::Error::other)?;
-
-                for record in reader.records().flatten() {
-                    let sq = col_sq.and_then(|i| record.get(i)).unwrap_or("").trim();
-                    let nome = col_nome
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("CANDIDATO")
-                        .trim();
-                    let urna = col_urna
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("URNA")
-                        .trim();
-                    let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
-
-                    if !sq.is_empty() || !nome.is_empty() {
-                        let _ = stmt.execute(rusqlite::params![sq, cpf, nome, urna]);
-                        count += 1;
-                    }
-                }
+                let cargo =
+                    ingestion::tse_ckan::normalizar_cargo(get(&["DS_CARGO", "CARGO"], "DS_CARGO")?);
+                let partido = get(&["SG_PARTIDO", "SIGLA_PARTIDO", "PARTIDO"], "SG_PARTIDO")?;
+                let uf = get(&["SG_UF", "UF"], "SG_UF")?;
+                let municipio =
+                    find_col(&headers, &["NM_UE", "MUNICIPIO"]).and_then(|i| record.get(i));
+                let situacao = find_col(&headers, &["DS_SIT_TOT_TURNO", "SITUACAO_TOTALIZACAO"])
+                    .and_then(|i| record.get(i));
+                tx.execute("INSERT INTO politicos(sq_candidato,cpf_mascarado,nome_completo,nome_urna) VALUES (?1,?2,?3,?4) ON CONFLICT(sq_candidato) DO UPDATE SET cpf_mascarado=excluded.cpf_mascarado,nome_completo=excluded.nome_completo,nome_urna=excluded.nome_urna", rusqlite::params![sq, cpf, nome, urna]).map_err(std::io::Error::other)?;
+                count += tx.execute("INSERT INTO candidaturas(politico_id,ano_eleicao,cargo,sigla_partido,uf,municipio,situacao_totalizacao) SELECT id,?2,?3,?4,?5,?6,?7 FROM politicos WHERE sq_candidato=?1 ON CONFLICT(politico_id,ano_eleicao,cargo) DO UPDATE SET sigla_partido=excluded.sigla_partido,uf=excluded.uf,municipio=excluded.municipio,situacao_totalizacao=excluded.situacao_totalizacao", rusqlite::params![sq,ano,cargo,partido,uf,municipio,situacao]).map_err(std::io::Error::other)?;
             }
-            tx.commit().map_err(std::io::Error::other)?;
         }
         "DIARIOS_OFICIAIS" => {
             let col_doc = find_col(&headers, &["DOADOR_CPF_CNPJ", "CPF_CNPJ", "DOCUMENTO"]);
             let col_termo = find_col(&headers, &["TERMO_PESQUISADO", "TERMO", "NOME"]);
             let col_mun = find_col(&headers, &["MUNICIPIO_UF", "MUNICIPIO", "UF"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
+            let tx = conn;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO cache_consultas_diario (
@@ -2518,8 +2653,9 @@ fn processar_csv_records<R: std::io::Read>(
                      ) VALUES (?1, ?2, ?3, 1, '{\"fonte\":\"upload_manual\"}')"
                 ).map_err(std::io::Error::other)?;
 
-                for record in reader.records().flatten() {
-                    let doc = col_doc.and_then(|i| record.get(i)).unwrap_or("").trim();
+                for record in reader.records() {
+                    let record = record.map_err(std::io::Error::other)?;
+                    let doc = required_field(&record, col_doc, "documento")?;
                     let termo = col_termo
                         .and_then(|i| record.get(i))
                         .unwrap_or("NOME")
@@ -2530,12 +2666,12 @@ fn processar_csv_records<R: std::io::Read>(
                         .trim();
 
                     if !termo.is_empty() {
-                        let _ = stmt.execute(rusqlite::params![doc, termo, mun]);
-                        count += 1;
+                        count += stmt
+                            .execute(rusqlite::params![doc, termo, mun])
+                            .map_err(std::io::Error::other)?;
                     }
                 }
             }
-            tx.commit().map_err(std::io::Error::other)?;
         }
         "AUXILIO_EMERGENCIAL" | "BENEFICIOS_SOCIAIS" | "AUXILIO" | "CGU_AUXILIO" => {
             let col_cpf = find_col(
@@ -2569,7 +2705,7 @@ fn processar_csv_records<R: std::io::Read>(
             );
             let col_enq = find_col(&headers, &["ENQUADRAMENTO", "TIPO_BENEFICIARIO", "TIPO"]);
 
-            let tx = storage::transaction_immediate(conn).map_err(std::io::Error::other)?;
+            let tx = conn;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO beneficios_emergenciais (
@@ -2577,10 +2713,11 @@ fn processar_csv_records<R: std::io::Read>(
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
                 ).map_err(std::io::Error::other)?;
 
-                for record in reader.records().flatten() {
+                for record in reader.records() {
+                    let record = record.map_err(std::io::Error::other)?;
                     let raw_cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
                     if raw_cpf.is_empty() {
-                        continue;
+                        return Err(std::io::Error::other("CPF_BENEFICIARIO ausente"));
                     }
                     let cpf_mascarado = ingestion::mascarar_cpf(raw_cpf);
                     let nome = col_nome
@@ -2603,28 +2740,27 @@ fn processar_csv_records<R: std::io::Read>(
                         .and_then(|i| record.get(i))
                         .map(|s| s.trim().to_string());
                     let val_str = col_valor.and_then(|i| record.get(i)).unwrap_or("0");
-                    let valor = parse_f64_valor(val_str);
+                    let valor = parse_f64_valor(val_str)?;
                     let enq = col_enq
                         .and_then(|i| record.get(i))
                         .map(|s| s.trim().to_string());
 
-                    let _ = stmt.execute(rusqlite::params![
-                        cpf_mascarado,
-                        nome,
-                        mun,
-                        uf,
-                        mes,
-                        parcela,
-                        valor,
-                        enq
-                    ]);
-                    count += 1;
+                    count += stmt
+                        .execute(rusqlite::params![
+                            cpf_mascarado,
+                            nome,
+                            mun,
+                            uf,
+                            mes,
+                            parcela,
+                            valor,
+                            enq
+                        ])
+                        .map_err(std::io::Error::other)?;
                 }
             }
-            tx.commit().map_err(std::io::Error::other)?;
 
             // Roda auditoria automática para criar alertas de auxilio indevido
-            let _ = auditor::executar_auditoria_auxilio_sqlite(conn);
         }
         "EMENDAS_PARLAMENTARES" | "EMENDAS" => {
             let col_ano = find_col(
@@ -2681,7 +2817,8 @@ fn processar_csv_records<R: std::io::Read>(
             );
 
             let mut novas_emendas = Vec::new();
-            for record in reader.records().flatten() {
+            for record in reader.records() {
+                let record = record.map_err(std::io::Error::other)?;
                 let ano = col_ano
                     .and_then(|i| record.get(i))
                     .and_then(|s| s.parse::<i32>().ok())
@@ -2719,10 +2856,12 @@ fn processar_csv_records<R: std::io::Read>(
                 let val_emp = col_val_emp
                     .and_then(|i| record.get(i))
                     .map(parse_f64_valor)
+                    .transpose()?
                     .unwrap_or(0.0);
                 let val_pago = col_val_pago
                     .and_then(|i| record.get(i))
                     .map(parse_f64_valor)
+                    .transpose()?
                     .unwrap_or(0.0);
 
                 if !numero.is_empty() {
@@ -2742,15 +2881,15 @@ fn processar_csv_records<R: std::io::Read>(
             }
 
             if !novas_emendas.is_empty() {
-                count = storage::batch_insert_emendas_parlamentares(conn, &novas_emendas)
-                    .map_err(std::io::Error::other)?;
+                let tx = conn;
+                for e in novas_emendas {
+                    count += tx.execute("INSERT INTO emendas_parlamentares(politico_id,autor_nome,ano,numero_emenda,tipo_emenda,localidade_destino,uf,beneficiario,valor_empenhado,valor_pago) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", rusqlite::params![e.politico_id,e.autor_nome,e.ano,e.numero_emenda,e.tipo_emenda,e.localidade_destino,e.uf,e.beneficiario,e.valor_empenhado,e.valor_pago]).map_err(std::io::Error::other)?;
+                }
             }
         }
-        _ => {
-            for _ in reader.records().flatten() {
-                count += 1;
-            }
-        }
+        _ => return Err(std::io::Error::other(format!(
+            "Tipo de CSV não suportado: {tipo_detectado}. Selecione o tipo e confira o cabeçalho."
+        ))),
     }
 
     Ok((count, tipo_detectado))
@@ -2774,6 +2913,7 @@ pub async fn upload_arquivo_handler(
 
     let mut nome_arquivo = String::from("desconhecido");
     let mut tamanho_total: usize = 0;
+    let mut file_seen = false;
     let mut tipo_escolhido = String::from("AUTO");
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| {
@@ -2784,10 +2924,22 @@ pub async fn upload_arquivo_handler(
     })? {
         let name = field.name().unwrap_or("").to_string();
         if name == "tipo" {
-            if let Ok(bytes) = field.bytes().await {
-                tipo_escolhido = String::from_utf8_lossy(&bytes).trim().to_uppercase();
-            }
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"erro":e.to_string()}))))?;
+            tipo_escolhido = String::from_utf8(bytes.to_vec())
+                .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"erro":e.to_string()}))))?
+                .trim()
+                .to_uppercase();
         } else if let Some(file_name) = field.file_name() {
+            if file_seen {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"erro":"Envie um arquivo CSV ou um ZIP contendo vários CSVs"})),
+                ));
+            }
+            file_seen = true;
             nome_arquivo = file_name.to_string();
             while let Some(chunk) = field.chunk().await.map_err(|e| {
                 (
@@ -2837,6 +2989,7 @@ pub async fn upload_arquivo_handler(
 
     let temp_path = temp_file.path().to_path_buf();
     let is_zip = nome_arquivo.to_lowercase().ends_with(".zip");
+    let temp_file = std::sync::Arc::new(temp_file);
 
     let (registros_inseridos, tipo_detectado) = if is_zip {
         let zip_path = temp_path.clone();
@@ -2844,9 +2997,12 @@ pub async fn upload_arquivo_handler(
         let tipo_clone = tipo_escolhido.clone();
 
         tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
-            let mut conn = pool_clone
+            let _file_guard = temp_file;
+            let mut connection = pool_clone
                 .get()
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let conn =
+                storage::transaction_immediate(&mut connection).map_err(std::io::Error::other)?;
             let file = std::fs::File::open(&zip_path)?;
             let mut archive = zip::ZipArchive::new(file)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -2885,11 +3041,13 @@ pub async fn upload_arquivo_handler(
                         .flexible(true)
                         .from_reader(input);
 
-                    let (cnt, tp) = processar_csv_records(&mut conn, &mut reader, &tipo_clone)?;
+                    let (cnt, tp) = processar_csv_records(&conn, &mut reader, &tipo_clone)?;
                     total_count += cnt;
                     tipo_final = format!("ZIP_{tp}");
                 }
             }
+            crate::projection::refresh(&conn).map_err(std::io::Error::other)?;
+            conn.commit().map_err(std::io::Error::other)?;
             Ok((total_count, tipo_final))
         })
         .await
@@ -2911,9 +3069,12 @@ pub async fn upload_arquivo_handler(
         let tipo_clone = tipo_escolhido.clone();
 
         tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
-            let mut conn = pool_clone
+            let _file_guard = temp_file;
+            let mut connection = pool_clone
                 .get()
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let conn =
+                storage::transaction_immediate(&mut connection).map_err(std::io::Error::other)?;
             let mut file = std::fs::File::open(&csv_path)?;
             let mut sample = [0u8; 2048];
             use std::io::Read;
@@ -2927,7 +3088,10 @@ pub async fn upload_arquivo_handler(
                 .flexible(true)
                 .from_reader(file);
 
-            processar_csv_records(&mut conn, &mut reader, &tipo_clone)
+            let result = processar_csv_records(&conn, &mut reader, &tipo_clone)?;
+            crate::projection::refresh(&conn).map_err(std::io::Error::other)?;
+            conn.commit().map_err(std::io::Error::other)?;
+            Ok(result)
         })
         .await
         .map_err(|e| {
@@ -2944,6 +3108,24 @@ pub async fn upload_arquivo_handler(
         })?
     };
 
+    let mut avisos = Vec::new();
+    // O lote de dados já foi confirmado. Uma falha na análise precisa ser informada,
+    // sem apresentar a importação persistida como se tivesse sido revertida.
+    let kind = tipo_detectado.clone();
+    let audit = pool
+        .run_blocking(move |conn| {
+            if kind.contains("AUXILIO") || kind.contains("BENEFICIOS") {
+                auditor::executar_auditoria_auxilio_sqlite(conn)
+                    .map_err(|e| storage::StorageError::Pool(e.to_string()))?;
+            }
+            crate::alertas::sincronizar_alertas_sistema(conn)
+        })
+        .await;
+    if let Err(error) = audit {
+        avisos.push(format!(
+            "Dados importados; auditoria pendente por erro: {error}"
+        ));
+    }
     if let Ok(conn) = pool.get() {
         let _ = conn.execute(
             "INSERT INTO historico_sincronizacao (fonte, status, detalhes, registros_afetados, data_fim) 
@@ -2961,6 +3143,7 @@ pub async fn upload_arquivo_handler(
         arquivo: nome_arquivo,
         tipo_detectado,
         registros_inseridos,
+        avisos,
         mensagem: format!(
             "Arquivo processado com sucesso via streams assíncronos. Total de {registros_inseridos} registros catalogados."
         ),
@@ -3461,142 +3644,53 @@ pub async fn exportar_tabela_handler(
         .trim()
         .to_lowercase();
 
-    let conn = pool.get().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"erro": format!("Falha na conexão SQLite: {e}")})),
-        )
-    })?;
-
-    // Obter colunas
-    let mut pragma_stmt = conn
-        .prepare(&format!("PRAGMA table_info({tabela_clean})"))
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro": format!("Falha ao inspecionar colunas: {e}")})),
-            )
-        })?;
-
-    let colunas: Vec<String> = pragma_stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro": format!("Falha ao mapear colunas: {e}")})),
-            )
-        })?
-        .flatten()
-        .collect();
-
-    if colunas.is_empty() {
+    if !matches!(formato.as_str(), "csv" | "json") {
         return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"erro": format!("Tabela '{tabela_clean}' não possui colunas")})),
+            StatusCode::BAD_REQUEST,
+            Json(json!({"erro":"Formato deve ser csv ou json"})),
         ));
     }
-
-    let mut select_stmt = conn
-        .prepare(&format!("SELECT * FROM {tabela_clean}"))
+    let table = tabela_clean.clone();
+    let format = formato.clone();
+    let temporary = pool
+        .run_blocking(move |conn| crate::export::table_file(conn, &table, &format))
+        .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro": format!("Falha ao preparar consulta: {e}")})),
+                Json(json!({"erro":format!("Falha na exportação: {e}")})),
             )
         })?;
-
-    if formato == "json" {
-        let mut rows_json = Vec::new();
-        let mut rows = select_stmt.query([]).map_err(|e| {
+    let file = tokio::fs::File::from_std(temporary.reopen().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"erro":e.to_string()})),
+        )
+    })?);
+    // O descritor permanece aberto enquanto a resposta transmite o arquivo.
+    let stream = ReaderStream::new(file);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(if formato == "json" {
+            "application/json; charset=utf-8"
+        } else {
+            "text/csv; charset=utf-8"
+        }),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"{tabela_clean}.{formato}\""
+        ))
+        .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro": format!("Falha na consulta: {e}")})),
+                Json(json!({"erro":e.to_string()})),
             )
-        })?;
-
-        while let Ok(Some(row)) = rows.next() {
-            let mut obj = serde_json::Map::new();
-            for (idx, col_name) in colunas.iter().enumerate() {
-                let val: rusqlite::types::Value =
-                    row.get(idx).unwrap_or(rusqlite::types::Value::Null);
-                let json_val = match val {
-                    rusqlite::types::Value::Null => serde_json::Value::Null,
-                    rusqlite::types::Value::Integer(i) => json!(i),
-                    rusqlite::types::Value::Real(f) => json!(f),
-                    rusqlite::types::Value::Text(s) => json!(s),
-                    rusqlite::types::Value::Blob(b) => {
-                        json!(format!("[BLOB {} bytes]", b.len()))
-                    }
-                };
-                obj.insert(col_name.clone(), json_val);
-            }
-            rows_json.push(serde_json::Value::Object(obj));
-        }
-
-        let body_str =
-            serde_json::to_string_pretty(&rows_json).unwrap_or_else(|_| "[]".to_string());
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json; charset=utf-8"),
-        );
-        let disp = format!("attachment; filename=\"{tabela_clean}.json\"");
-        if let Ok(val) = HeaderValue::from_str(&disp) {
-            headers.insert(header::CONTENT_DISPOSITION, val);
-        }
-
-        Ok((headers, Body::from(body_str)))
-    } else {
-        // Formato CSV (padrão)
-        let mut csv_out = String::new();
-        csv_out.push_str(&colunas.join(";"));
-        csv_out.push('\n');
-
-        let mut rows = select_stmt.query([]).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro": format!("Falha na consulta: {e}")})),
-            )
-        })?;
-
-        while let Ok(Some(row)) = rows.next() {
-            let mut row_vals = Vec::new();
-            for idx in 0..colunas.len() {
-                let val: rusqlite::types::Value =
-                    row.get(idx).unwrap_or(rusqlite::types::Value::Null);
-                let val_str = match val {
-                    rusqlite::types::Value::Null => String::new(),
-                    rusqlite::types::Value::Integer(i) => i.to_string(),
-                    rusqlite::types::Value::Real(f) => f.to_string(),
-                    rusqlite::types::Value::Text(s) => {
-                        let escaped = s.replace('"', "\"\"");
-                        if escaped.contains(';') || escaped.contains('\n') || escaped.contains('"')
-                        {
-                            format!("\"{escaped}\"")
-                        } else {
-                            escaped
-                        }
-                    }
-                    rusqlite::types::Value::Blob(b) => format!("[BLOB {}B]", b.len()),
-                };
-                row_vals.push(val_str);
-            }
-            csv_out.push_str(&row_vals.join(";"));
-            csv_out.push('\n');
-        }
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("text/csv; charset=utf-8"),
-        );
-        let disp = format!("attachment; filename=\"{tabela_clean}.csv\"");
-        if let Ok(val) = HeaderValue::from_str(&disp) {
-            headers.insert(header::CONTENT_DISPOSITION, val);
-        }
-
-        Ok((headers, Body::from(csv_out)))
-    }
+        })?,
+    );
+    Ok((headers, Body::from_stream(stream)))
 }
 
 #[cfg(test)]
@@ -3798,6 +3892,8 @@ mod tests {
         {
             let mut conn = pool.get().unwrap();
             run_migrations(&mut conn).unwrap();
+            conn.execute("INSERT INTO politicos(sq_candidato,nome_completo,nome_urna) VALUES ('SQ10','CANDIDATO','CANDIDATO')",[]).unwrap();
+            conn.execute("INSERT INTO candidaturas(politico_id,ano_eleicao,cargo,sigla_partido,uf) VALUES (1,2024,'PREFEITO','ABC','SP')",[]).unwrap();
         }
 
         let app = crate::criar_router(pool);
@@ -3807,8 +3903,8 @@ mod tests {
             "--{boundary}\r\n\
              Content-Disposition: form-data; name=\"arquivo\"; filename=\"receitas.csv\"\r\n\
              Content-Type: text/csv\r\n\r\n\
-             SQ_CANDIDATO;NR_CPF_CNPJ_DOADOR;NM_DOADOR;VR_RECEITA;DT_RECEITA\r\n\
-             SQ10;11122233344;DOADOR TESTE;500.00;2024-08-10\r\n\
+             SQ_CANDIDATO;ANO_ELEICAO;NR_CPF_CNPJ_DOADOR;NM_DOADOR;VR_RECEITA;DT_RECEITA\r\n\
+             SQ10;2024;11122233344;DOADOR TESTE;500.00;2024-08-10\r\n\
              --{boundary}--\r\n"
         );
 
@@ -4787,6 +4883,102 @@ mod synchronization_regressions {
                 .unwrap()
                 .unwrap()
                 .contains("CONCLUIDO")
+        );
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    fn database() -> storage::DbPool {
+        let pool = DbPool::open_in_memory().unwrap();
+        storage::run_migrations(&mut pool.get().unwrap()).unwrap();
+        pool
+    }
+    fn upload(
+        conn: &rusqlite::Connection,
+        data: &str,
+        kind: &str,
+    ) -> std::io::Result<(usize, String)> {
+        let mut reader = csv::ReaderBuilder::new()
+            .delimiter(b';')
+            .from_reader(data.as_bytes());
+        processar_csv_records(conn, &mut reader, kind)
+    }
+    #[test]
+    fn upload_vincula_candidatura_e_nao_confunde_colunas() {
+        let pool = database();
+        let conn = pool.get().unwrap();
+        upload(&conn,"SQ_CANDIDATO;ANO_ELEICAO;NM_CANDIDATO;DS_CARGO;SG_PARTIDO;SG_UF\nSQ1;2024;MARIA;PREFEITO;ABC;SP\n","TSE_CANDIDATOS").unwrap();
+        assert_eq!(upload(&conn,"SQ_CANDIDATO;ANO_ELEICAO;NR_CPF_CNPJ_DOADOR;NM_DOADOR;VR_RECEITA\nSQ1;2024;12311122201;JOAO;100,50\n","TSE_RECEITAS").unwrap().0,1);
+        let (name, cents, id): (String, i64, i64) = conn
+            .query_row(
+                "SELECT doador_nome,valor_centavos,candidatura_id FROM receitas_campanha",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "JOAO");
+        assert_eq!(cents, 10050);
+        assert_eq!(id, 1);
+        assert!(upload(&conn,"SQ_CANDIDATO;ANO_ELEICAO;NR_CPF_CNPJ_DOADOR;NM_DOADOR;VR_RECEITA\nSQ1;2022;12311122201;JOAO;100\n","TSE_RECEITAS").is_err());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM receitas_campanha", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    #[test]
+    fn upload_reverte_lote_quando_valor_ou_banco_falha() {
+        let pool = database();
+        let conn = pool.get().unwrap();
+        let data="ORGAO_CONTRATANTE;FORNECEDOR_CNPJ;VALOR_CONTRATADO\nPREFEITURA;12345678000190;100,50\nPREFEITURA;12345678000190;INVALIDO\n";
+        assert!(upload(&conn, data, "PNCP").is_err());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM contratos_publicos", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        conn.execute_batch("CREATE TRIGGER forbid BEFORE INSERT ON contratos_publicos BEGIN SELECT RAISE(ABORT,'falha provocada'); END;").unwrap();
+        assert!(upload(
+            &conn,
+            "ORGAO_CONTRATANTE;FORNECEDOR_CNPJ;VALOR_CONTRATADO\nPREFEITURA;12345678000190;100\n",
+            "PNCP"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("falha provocada"));
+    }
+    #[test]
+    fn upload_rejeita_utf8_invalido_e_tipo_desconhecido() {
+        let pool = database();
+        let conn = pool.get().unwrap();
+        let bytes=b"CNPJ_BASICO;RAZAO_SOCIAL;NOME_SOCIO;CPF_CNPJ_SOCIO\n12345678;EMPRESA;JOAO;***111222**\n87654321;EMPRESA;\xff;***333444**\n";
+        let mut reader = csv::ReaderBuilder::new()
+            .delimiter(b';')
+            .from_reader(bytes.as_slice());
+        assert!(processar_csv_records(&conn, &mut reader, "QSA").is_err());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM empresas_qsa", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(upload(&conn, "QUALQUER;COISA\n1;2\n", "AUTO").is_err());
+    }
+    #[test]
+    fn evidencias_presenciais_exigem_horario_identidade_e_coordenadas() {
+        let pool = database();
+        let conn = pool.get().unwrap();
+        let data="TXNOMEPARLAMENTAR;DATA_EMISSAO;VLRLIQUIDO;FORNECEDOR;CNPJCPF;PRESENCIAL\nJOAO;2024-01-01;10;EMPRESA;12345678000190;1\n";
+        assert!(upload(&conn, data, "CEAP").is_err());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM despesas_parlamentares", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
         );
     }
 }

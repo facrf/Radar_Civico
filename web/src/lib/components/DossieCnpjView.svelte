@@ -55,6 +55,9 @@
 </script>
 
 <div class="space-y-8">
+    {#each dossie.avisos_identidade || [] as aviso}
+        <p class="p-4 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm">{aviso}</p>
+    {/each}
 	<!-- Cabeçalho do Dossiê CNPJ -->
 	<div class="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-6 sm:p-8 shadow-xl">
 		<div class="flex flex-col md:flex-row md:items-start justify-between gap-6">
@@ -124,7 +127,7 @@
 				<span class="text-lg sm:text-xl font-bold text-amber-400 mt-1 block">
 					{formatarMoeda(dossie.tse.total_doacoes_socios)}
 				</span>
-				<span class="text-[11px] text-slate-500">{dossie.tse.doacoes.length} repasses eleitorais</span>
+				<span class="text-[11px] text-slate-500">{dossie.tse.doacoes.length} repasses listados; total apenas confirmado</span>
 			</div>
 
 			<div class="bg-slate-900/60 p-4 rounded-xl border border-slate-700/40">
@@ -454,7 +457,8 @@
 								{#each dossie.tse.doacoes as d}
 									<div class="p-3 rounded-xl bg-slate-900/60 border border-slate-700/50 space-y-1.5 text-xs">
 										<div class="flex items-center justify-between">
-											<span class="text-slate-400">Doador: <strong class="text-white">{d.socio_nome}</strong></span>
+											<span class="text-xs text-amber-300">{d.confianca_vinculo==='CONFIRMADO' ? 'Identidade confirmada' : 'Vínculo possível'}</span>
+                                            <span class="text-slate-400">Doador: <strong class="text-white">{d.socio_nome}</strong></span>
 											<span class="font-mono text-amber-400 font-bold">{formatarMoeda(d.valor)}</span>
 										</div>
 										<div class="flex items-center justify-between text-[11px] text-slate-300">
@@ -484,7 +488,7 @@
 									<div class="p-2.5 rounded-lg bg-slate-900/60 border border-slate-700/40 flex items-center justify-between">
 										<div>
 											<a href={`/dossie/${c.politico_id}`} class="font-semibold text-emerald-300 hover:underline">
-												{c.nome_urna} ({c.socio_nome})
+												{c.nome_urna} ({c.socio_nome}) — {c.confianca_vinculo==='CONFIRMADO' ? 'confirmado' : 'vínculo possível'}
 											</a>
 											<span class="text-[11px] text-slate-400 block">{c.cargo} • {c.partido} ({c.ano} - {c.uf})</span>
 										</div>

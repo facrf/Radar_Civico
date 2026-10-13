@@ -53,6 +53,7 @@
 		arquivo: string;
 		tipo_detectado: string;
 		registros_inseridos: number;
+        avisos?: string[];
 		mensagem: string;
 	}
 
@@ -2471,7 +2472,10 @@
 				<div class="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs space-y-1">
 					<p class="font-bold text-sm text-emerald-400">✅ Carga Finalizada com Sucesso!</p>
 					<p>{resultadoUpload.mensagem}</p>
-					<p class="text-slate-400">Tipo Detectado: <span class="font-mono text-emerald-300">{resultadoUpload.tipo_detectado}</span> | Registros Inseridos: <strong class="text-white">{resultadoUpload.registros_inseridos}</strong></p>
+					{#each resultadoUpload.avisos || [] as aviso}
+                        <p class="mt-2 text-sm text-amber-300">{aviso}</p>
+                    {/each}
+                    <p class="text-slate-400">Tipo Detectado: <span class="font-mono text-emerald-300">{resultadoUpload.tipo_detectado}</span> | Registros Inseridos: <strong class="text-white">{resultadoUpload.registros_inseridos}</strong></p>
 				</div>
 			{/if}
 

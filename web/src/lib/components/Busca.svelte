@@ -121,21 +121,14 @@
 	}
 
 	function obterUrlGrafo(item: ItemBusca): string {
-		if (item.id) {
-			return `/grafo/${item.id}?grau=2`;
-		}
-		const doc = item.documento || item.identificador || '';
-		const digitos = doc.replace(/\D/g, '');
-		const t = (item.tipo || '').toUpperCase();
-
-		if (t === 'EMPRESA_QSA' || digitos.length === 14 || digitos.length === 8) {
-			return `/grafo/cnpj_${digitos}?grau=2`;
-		}
-		if (t === 'SOCIO' || t === 'SOCIO_QSA') {
-			return `/grafo/socio_${encodeURIComponent(item.nome || item.titulo || doc)}?grau=2`;
-		}
-		return `/grafo/${encodeURIComponent(doc || item.titulo || '')}?grau=2`;
-	}
+        const tipo=(item.tipo || '').toUpperCase();
+        const doc=item.documento || item.identificador || '';
+        const digits=doc.replace(/\D/g,'');
+        if (tipo==='POLITICO' && item.id) return `/grafo/politico_${item.id}?grau=2`;
+        if (digits.length===14 || digits.length===8) return `/grafo/cnpj_${digits.slice(0,8)}?grau=2`;
+        if (digits.length===11 && !doc.includes('*')) return `/grafo/doc_${digits}?grau=2`;
+        return `/grafo/socio_${encodeURIComponent(item.nome || item.titulo || doc)}?grau=2`;
+    }
 	onDestroy(() => request?.abort());
 </script>
 

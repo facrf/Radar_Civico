@@ -93,6 +93,18 @@ async fn main() -> Result<()> {
     let web_dir = env::var("WEB_DIR").unwrap_or_else(|_| "web/build".into());
     let restored = server::photos::restore_catalog(&pool, Path::new(&web_dir))?;
     info!("Retratos locais de autoridades vinculados: {restored}");
+    if !eh_auditoria {
+        let graph_pool = pool.clone();
+        tokio::spawn(async move {
+            match graph_pool
+                .run_blocking(|conn| server::projection::refresh(conn))
+                .await
+            {
+                Ok(relations) => info!("Rede de relacionamentos atualizada: {relations} relações"),
+                Err(error) => tracing::error!("Falha ao atualizar rede: {error}"),
+            }
+        });
+    }
     if eh_auditoria {
         println!("=== Radar Cívico: Executando Varredura do Motor de Auditoria ===");
         let conn = pool.get()?;
@@ -134,7 +146,7 @@ async fn main() -> Result<()> {
 
     let app = criar_router(pool);
 
-    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let bind_addr = format!("{}:{}", host, port);
 

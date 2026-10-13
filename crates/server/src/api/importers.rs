@@ -25,7 +25,11 @@ pub fn get_or_init_importer_manager(pool: &DbPool) -> Arc<ImporterManager> {
         return m.clone();
     }
     let sink = Arc::new(BatchSink::new(pool.clone()));
-    let manager = ImporterManager::new(sink);
+    let manager = ImporterManager::new(sink).with_completion_hook(|pool| {
+        let conn = pool.get()?;
+        crate::projection::refresh(&conn)?;
+        Ok(())
+    });
     if let Err(error) = manager.restore() {
         tracing::error!("Falha ao restaurar importadores: {error}");
     }

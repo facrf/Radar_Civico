@@ -112,6 +112,7 @@ pub struct PainelPncp {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DoacaoSocioTse {
+    pub confianca_vinculo: String,
     pub socio_nome: String,
     pub doador_doc: String,
     pub candidato_nome: String,
@@ -125,6 +126,7 @@ pub struct DoacaoSocioTse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CandidaturaSocioTse {
+    pub confianca_vinculo: String,
     pub socio_nome: String,
     pub politico_id: i64,
     pub nome_urna: String,
@@ -152,6 +154,7 @@ pub struct DiarioItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DossieCnpjResponse {
+    pub avisos_identidade: Vec<String>,
     pub cnpj: String,
     pub cnpj_formatado: String,
     pub razao_social: String,
@@ -169,6 +172,7 @@ pub struct DossieCnpjResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EmpresaSocioItem {
+    pub confianca_vinculo: String,
     pub cnpj: String,
     pub cnpj_formatado: String,
     pub razao_social: String,
@@ -179,6 +183,7 @@ pub struct EmpresaSocioItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DoacaoEleitoralItem {
+    pub confianca_vinculo: String,
     pub id: i64,
     pub doador_cpf_cnpj: String,
     pub doador_nome: String,
@@ -193,6 +198,7 @@ pub struct DoacaoEleitoralItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CandidaturaItemCpf {
+    pub confianca_vinculo: String,
     pub politico_id: i64,
     pub nome_urna: String,
     pub ano_eleicao: i32,
@@ -223,6 +229,7 @@ pub struct RegistroProfissionalItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DossieCpfResponse {
+    pub avisos_identidade: Vec<String>,
     pub cpf_mascarado: String,
     pub nome: String,
     pub score_risco: String, // "BAIXO" | "MEDIO" | "ALTO" | "CRITICO"
@@ -478,7 +485,7 @@ pub async fn dossie_cnpj_handler(
             .prepare(
                 "SELECT DISTINCT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social
                  FROM empresas_qsa
-                 WHERE socio_cpf_cnpj_mascarado = ?1 AND cnpj_basico != ?2
+                 WHERE socio_cpf_cnpj_mascarado = ?1 AND cnpj_basico != ?2 AND TRIM(UPPER(socio_nome))=?3
                  LIMIT 8",
             )
             .ok();
@@ -486,7 +493,11 @@ pub async fn dossie_cnpj_handler(
         if let Some(mut stmt) = stmt_outras {
             let rows = stmt
                 .query_map(
-                    [&socio.documento_mascarado, &cnpj_basico.to_string()],
+                    [
+                        &socio.documento_mascarado,
+                        &cnpj_basico.to_string(),
+                        &socio.nome.trim().to_uppercase(),
+                    ],
                     |row| {
                         let b: String = row.get(0)?;
                         let o: String = row.get(1)?;
@@ -497,7 +508,15 @@ pub async fn dossie_cnpj_handler(
                             cnpj: c_full.clone(),
                             cnpj_formatado: formatar_cnpj(&c_full),
                             razao_social: r,
-                            vinculo: format!("Sócio comum: {}", socio.nome),
+                            vinculo: format!(
+                                "{}: {}",
+                                if crate::identity::complete(&socio.documento_mascarado) {
+                                    "Sócio comum"
+                                } else {
+                                    "Possível sócio comum"
+                                },
+                                socio.nome
+                            ),
                         })
                     },
                 )
@@ -703,9 +722,6 @@ pub async fn dossie_cnpj_handler(
             continue;
         }
 
-        let miolo_opt = extrair_miolo_cpf(&socio.documento_mascarado);
-        let nome_norm = normalizar_nome(&socio.nome);
-
         // Doações Eleitorais do Sócio
         let mut sql_doacoes = String::from(
             "SELECT rc.doador_cpf_cnpj, rc.valor, rc.data_receita,
@@ -716,18 +732,16 @@ pub async fn dossie_cnpj_handler(
              WHERE 1=0 ",
         );
 
-        let mut params_doacoes: Vec<String> = Vec::new();
-        if let Some(ref miolo) = miolo_opt {
-            sql_doacoes.push_str("OR rc.doador_cpf_cnpj LIKE ? ");
-            params_doacoes.push(format!("%{}%", miolo));
-            donation_conditions.push("rc.doador_cpf_cnpj LIKE ?");
-            donation_params.push(format!("%{}%", miolo));
-        }
-        if !nome_norm.is_empty() && nome_norm.len() >= 5 {
-            sql_doacoes.push_str("OR rc.doador_nome LIKE ? ");
-            params_doacoes.push(format!("%{}%", nome_norm));
-            donation_conditions.push("rc.doador_nome LIKE ?");
-            donation_params.push(format!("%{}%", nome_norm));
+        let (condition, params_doacoes, confirmed) = crate::identity::predicate(
+            "rc.doador_cpf_cnpj",
+            "rc.doador_nome",
+            &socio.documento_mascarado,
+            &socio.nome,
+        );
+        sql_doacoes.push_str(&format!("OR ({condition}) "));
+        if confirmed {
+            donation_conditions.push(condition);
+            donation_params.extend(params_doacoes.clone());
         }
         sql_doacoes.push_str("LIMIT 20");
 
@@ -736,6 +750,7 @@ pub async fn dossie_cnpj_handler(
                 let rusqlite_params = rusqlite::params_from_iter(params_doacoes.iter());
                 if let Ok(rows) = stmt.query_map(rusqlite_params, |r| {
                     Ok(DoacaoSocioTse {
+                        confianca_vinculo: if confirmed { "CONFIRMADO" } else { "POSSIVEL" }.into(),
                         socio_nome: socio.nome.clone(),
                         doador_doc: r.get(0)?,
                         valor: r.get(1)?,
@@ -762,15 +777,13 @@ pub async fn dossie_cnpj_handler(
              WHERE 1=0 ",
         );
 
-        let mut params_cand: Vec<String> = Vec::new();
-        if let Some(ref miolo) = miolo_opt {
-            sql_cand.push_str("OR p.cpf_mascarado LIKE ? ");
-            params_cand.push(format!("%{}%", miolo));
-        }
-        if !nome_norm.is_empty() && nome_norm.len() >= 5 {
-            sql_cand.push_str("OR p.nome_completo LIKE ? ");
-            params_cand.push(format!("%{}%", nome_norm));
-        }
+        let (condition, params_cand, confirmed) = crate::identity::predicate(
+            "p.cpf_mascarado",
+            "p.nome_completo",
+            &socio.documento_mascarado,
+            &socio.nome,
+        );
+        sql_cand.push_str(&format!("OR ({condition}) "));
         sql_cand.push_str("LIMIT 10");
 
         if !params_cand.is_empty() {
@@ -778,6 +791,7 @@ pub async fn dossie_cnpj_handler(
                 let rusqlite_params = rusqlite::params_from_iter(params_cand.iter());
                 if let Ok(rows) = stmt.query_map(rusqlite_params, |r| {
                     Ok(CandidaturaSocioTse {
+                        confianca_vinculo: if confirmed { "CONFIRMADO" } else { "POSSIVEL" }.into(),
                         socio_nome: socio.nome.clone(),
                         politico_id: r.get(0)?,
                         nome_urna: r.get(1)?,
@@ -835,7 +849,10 @@ pub async fn dossie_cnpj_handler(
     // REGRA 1: Triangulação Eleitoral (Sócio doou para político que comprou da empresa via CEAP)
     for comprador in &compradores {
         let comprador_norm = normalizar_nome(&comprador.parlamentar_nome);
-        for doacao in &doacoes_socios {
+        for doacao in doacoes_socios
+            .iter()
+            .filter(|d| d.confianca_vinculo == "CONFIRMADO")
+        {
             let candidato_norm = normalizar_nome(&doacao.candidato_nome);
             if comprador_norm == candidato_norm
                 || (comprador_norm.len() >= 8 && candidato_norm.contains(&comprador_norm))
@@ -985,6 +1002,19 @@ pub async fn dossie_cnpj_handler(
     };
 
     Ok(Json(DossieCnpjResponse {
+        avisos_identidade: if socios.iter().any(|s| {
+            !crate::identity::complete(&s.documento_mascarado) && !s.outras_empresas.is_empty()
+        }) || doacoes_socios
+            .iter()
+            .any(|d| d.confianca_vinculo == "POSSIVEL")
+            || candidaturas_socios
+                .iter()
+                .any(|c| c.confianca_vinculo == "POSSIVEL")
+        {
+            vec!["Correspondências por nome e CPF mascarado são vínculos possíveis. As doações possíveis não compõem o total confirmado nem geram alertas de triangulação.".into()]
+        } else {
+            vec![]
+        },
         cnpj: cnpj_completo_digits,
         cnpj_formatado,
         razao_social,
@@ -1101,7 +1131,7 @@ pub async fn dossie_cpf_handler(
         if !qsa_cpf_candidates.is_empty() {
             let placeholders = vec!["?"; qsa_cpf_candidates.len()].join(", ");
             let sql_qsa = format!(
-                "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio
+                "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio, socio_cpf_cnpj_mascarado
                  FROM empresas_qsa
                  WHERE socio_cpf_cnpj_mascarado IN ({})
                  LIMIT 30",
@@ -1117,6 +1147,7 @@ pub async fn dossie_cpf_handler(
                         r.get::<_, String>(3)?,
                         r.get::<_, String>(4)?,
                         r.get::<_, Option<String>>(5)?,
+                        r.get::<_, String>(6)?,
                     ))
                 }) {
                     for r in rows.flatten() {
@@ -1127,7 +1158,7 @@ pub async fn dossie_cpf_handler(
         } else if !termo_nome.is_empty() {
             let termo_fim = format!("{}~", termo_nome);
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio
+                "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio, socio_cpf_cnpj_mascarado
                  FROM empresas_qsa
                  WHERE socio_nome >= ?1 AND socio_nome < ?2
                  LIMIT 30",
@@ -1140,6 +1171,7 @@ pub async fn dossie_cpf_handler(
                         r.get::<_, String>(3)?,
                         r.get::<_, String>(4)?,
                         r.get::<_, Option<String>>(5)?,
+                        r.get::<_, String>(6)?,
                     ))
                 }) {
                     for r in rows.flatten() {
@@ -1150,7 +1182,7 @@ pub async fn dossie_cpf_handler(
 
             if qsa_records.is_empty() {
                 if let Ok(mut stmt) = conn.prepare(
-                    "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio
+                    "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_nome, qualificacao_socio, socio_cpf_cnpj_mascarado
                      FROM empresas_qsa
                      WHERE razao_social >= ?1 AND razao_social < ?2
                      LIMIT 30",
@@ -1163,6 +1195,7 @@ pub async fn dossie_cpf_handler(
                             r.get::<_, String>(3)?,
                             r.get::<_, String>(4)?,
                             r.get::<_, Option<String>>(5)?,
+                        r.get::<_, String>(6)?,
                         ))
                     }) {
                         for r in rows.flatten() {
@@ -1173,16 +1206,20 @@ pub async fn dossie_cpf_handler(
             }
         }
 
+        let names = qsa_records
+            .iter()
+            .map(|r| r.4.trim().to_uppercase())
+            .collect::<std::collections::HashSet<_>>();
+        let ambiguous = names.len() > 1;
         for r in qsa_records {
             let c_full = format!("{}{}{}", r.0, r.1, r.2);
-            if nome_identificado.is_empty()
+            if !ambiguous
+                && nome_identificado.is_empty()
                 && !r.4.is_empty()
                 && r.4 != "HOLDING / SOCIO"
                 && !r.4.contains("***")
             {
                 nome_identificado = r.4.clone();
-            } else if nome_identificado.is_empty() && !r.3.is_empty() {
-                nome_identificado = r.3.clone();
             }
 
             // Consulta CEAP da empresa
@@ -1254,6 +1291,15 @@ pub async fn dossie_cpf_handler(
                         }
 
             empresas_socio.push(EmpresaSocioItem {
+                confianca_vinculo: if crate::identity::complete(&cpf_param)
+                    && crate::identity::complete(&r.6)
+                    && crate::identity::digits(&cpf_param) == crate::identity::digits(&r.6)
+                {
+                    "CONFIRMADO"
+                } else {
+                    "POSSIVEL"
+                }
+                .into(),
                 cnpj: c_full.clone(),
                 cnpj_formatado: formatar_cnpj(&c_full),
                 razao_social: r.3,
@@ -1275,27 +1321,19 @@ pub async fn dossie_cpf_handler(
              JOIN politicos p ON c.politico_id = p.id
              WHERE 1=0 ",
         );
-        let mut params: Vec<String> = Vec::new();
-
-        if let Some(ref m) = miolo_opt {
-            sql_doac.push_str("OR rc.doador_cpf_cnpj LIKE ? OR rc.doador_cpf_cnpj LIKE ? ");
-            params.push(format!("%{}%", m));
-            params.push(format!("%{}.{}%", &m[0..3], &m[3..6]));
-        }
-        if !nome_identificado.is_empty() {
-            sql_doac.push_str("OR rc.doador_nome LIKE ? ");
-            params.push(format!("%{}%", normalizar_nome(&nome_identificado)));
-        } else if !termo_nome.is_empty() {
-            sql_doac.push_str("OR rc.doador_nome LIKE ? ");
-            params.push(format!("%{}%", termo_nome));
-        }
-        sql_doac.push_str("ORDER BY rc.data_receita DESC LIMIT 30");
-
+        let (condition, params, confirmed) = crate::identity::predicate(
+            "rc.doador_cpf_cnpj",
+            "rc.doador_nome",
+            &cpf_param,
+            &termo_nome,
+        );
+        sql_doac.push_str(&format!("OR ({condition}) LIMIT 30"));
         if !params.is_empty() {
             if let Ok(mut stmt) = conn.prepare(&sql_doac) {
                 let rusqlite_params = rusqlite::params_from_iter(params.iter());
                 if let Ok(rows) = stmt.query_map(rusqlite_params, |r| {
                     Ok(DoacaoEleitoralItem {
+                        confianca_vinculo: if confirmed { "CONFIRMADO" } else { "POSSIVEL" }.into(),
                         id: r.get(0)?,
                         doador_cpf_cnpj: r.get(1)?,
                         doador_nome: r.get(2)?,
@@ -1328,22 +1366,15 @@ pub async fn dossie_cpf_handler(
              JOIN candidaturas c ON c.politico_id = p.id
              WHERE 1=0 ",
         );
-        let mut params: Vec<String> = Vec::new();
-
-        if let Some(ref m) = miolo_opt {
-            sql_pol.push_str("OR p.cpf_mascarado LIKE ? OR p.cpf_mascarado LIKE ? ");
-            params.push(format!("%{}%", m));
-            params.push(format!("%{}.{}%", &m[0..3], &m[3..6]));
-        }
-        if !nome_identificado.is_empty() {
-            sql_pol.push_str("OR p.nome_completo LIKE ? ");
-            params.push(format!("%{}%", normalizar_nome(&nome_identificado)));
-        } else if !termo_nome.is_empty() {
-            sql_pol.push_str("OR p.nome_completo LIKE ? ");
-            params.push(format!("%{}%", termo_nome));
-        }
-        sql_pol.push_str("ORDER BY c.ano_eleicao DESC LIMIT 15");
-
+        let (condition, params, confirmed) = crate::identity::predicate(
+            "p.cpf_mascarado",
+            "p.nome_completo",
+            &cpf_param,
+            &termo_nome,
+        );
+        sql_pol.push_str(&format!(
+            "OR ({condition}) ORDER BY c.ano_eleicao DESC LIMIT 15"
+        ));
         if !params.is_empty() {
             if let Ok(mut stmt) = conn.prepare(&sql_pol) {
                 let rusqlite_params = rusqlite::params_from_iter(params.iter());
@@ -1365,6 +1396,8 @@ pub async fn dossie_cpf_handler(
                             nome_identificado = r.2.clone();
                         }
                         candidaturas.push(CandidaturaItemCpf {
+                            confianca_vinculo: if confirmed { "CONFIRMADO" } else { "POSSIVEL" }
+                                .into(),
                             politico_id: r.0,
                             nome_urna: r.1,
                             ano_eleicao: r.3,
@@ -1388,19 +1421,13 @@ pub async fn dossie_cpf_handler(
              FROM beneficios_emergenciais
              WHERE 1=0 ",
         );
-        let mut params: Vec<String> = Vec::new();
-
-        if let Some(ref m) = miolo_opt {
-            sql_ben.push_str("OR cpf_mascarado LIKE ? OR cpf_mascarado LIKE ? ");
-            params.push(format!("%{}%", m));
-            params.push(format!("%{}.{}%", &m[0..3], &m[3..6]));
-        }
-        if !nome_identificado.is_empty() {
-            sql_ben.push_str("OR nome_beneficiario LIKE ? ");
-            params.push(format!("%{}%", normalizar_nome(&nome_identificado)));
-        }
-        sql_ben.push_str("LIMIT 15");
-
+        let (condition, params, _confirmed) = crate::identity::predicate(
+            "cpf_mascarado",
+            "nome_beneficiario",
+            &cpf_param,
+            &termo_nome,
+        );
+        sql_ben.push_str(&format!("OR ({condition}) LIMIT 15"));
         if !params.is_empty() {
             if let Ok(mut stmt) = conn.prepare(&sql_ben) {
                 let rusqlite_params = rusqlite::params_from_iter(params.iter());
@@ -1439,19 +1466,9 @@ pub async fn dossie_cpf_handler(
              FROM registros_profissionais
              WHERE 1=0 ",
         );
-        let mut params: Vec<String> = Vec::new();
-
-        if let Some(ref m) = miolo_opt {
-            sql_reg.push_str("OR cpf_mascarado LIKE ? OR cpf_mascarado LIKE ? ");
-            params.push(format!("%{}%", m));
-            params.push(format!("%{}.{}%", &m[0..3], &m[3..6]));
-        }
-        if !nome_identificado.is_empty() {
-            sql_reg.push_str("OR pessoa_nome LIKE ? ");
-            params.push(format!("%{}%", normalizar_nome(&nome_identificado)));
-        }
-        sql_reg.push_str("LIMIT 5");
-
+        let (condition, params, _confirmed) =
+            crate::identity::predicate("cpf_mascarado", "pessoa_nome", &cpf_param, &termo_nome);
+        sql_reg.push_str(&format!("OR ({condition}) LIMIT 5"));
         if !params.is_empty() {
             if let Ok(mut stmt) = conn.prepare(&sql_reg) {
                 let rusqlite_params = rusqlite::params_from_iter(params.iter());
@@ -1556,9 +1573,24 @@ pub async fn dossie_cpf_handler(
         });
     }
 
+    if empresas_socio
+        .iter()
+        .any(|e| e.confianca_vinculo == "POSSIVEL")
+        || !crate::identity::complete(&cpf_param)
+    {
+        for alerta in &mut alertas {
+            alerta.severidade = "INFO".into();
+            alerta.descricao = format!("Identidade não confirmada: {}", alerta.descricao);
+        }
+    }
     let score_risco = calcular_score_risco(&alertas);
 
     Ok(Json(DossieCpfResponse {
+        avisos_identidade: if !crate::identity::complete(&cpf_param) || !empresas_socio.is_empty() {
+            vec!["CPF mascarado e nome não identificam uma pessoa de forma única. As empresas listadas são vínculos possíveis e não comprovam que todos os registros pertencem à mesma pessoa.".into()]
+        } else {
+            vec![]
+        },
         cpf_mascarado: cpf_formatado,
         nome: nome_identificado,
         score_risco,

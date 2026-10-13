@@ -28,6 +28,7 @@ pub struct ImporterManager {
     importers: Arc<RwLock<HashMap<String, Arc<dyn SourceImporter>>>>,
     contexts: Arc<RwLock<HashMap<String, Arc<ImportContext>>>>,
     sink: Arc<BatchSink>,
+    completion_hook: Option<Arc<dyn Fn(&storage::DbPool) -> Result<()> + Send + Sync>>,
 }
 
 impl ImporterManager {
@@ -36,7 +37,17 @@ impl ImporterManager {
             importers: Arc::new(RwLock::new(HashMap::new())),
             contexts: Arc::new(RwLock::new(HashMap::new())),
             sink,
+            completion_hook: None,
         }
+    }
+
+    /// Executa a projeção da aplicação após uma importação bem-sucedida.
+    pub fn with_completion_hook(
+        mut self,
+        hook: impl Fn(&storage::DbPool) -> Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.completion_hook = Some(Arc::new(hook));
+        self
     }
 
     /// Recupera os últimos snapshots depois da recuperação de tarefas no arranque.
@@ -200,6 +211,8 @@ impl ImporterManager {
         let sink_cloned = Arc::clone(&self.sink);
 
         let persistence_pool = self.sink.pool().clone();
+        let hook_pool = persistence_pool.clone();
+        let completion_hook = self.completion_hook.clone();
         tokio::spawn(async move {
             let monitor = ctx_cloned.clone();
             let mut worker = tokio::spawn(async move {
@@ -215,6 +228,28 @@ impl ImporterManager {
                                 "Operação cancelada pelo usuário",
                             );
                         } else {
+                            if let Some(hook) = completion_hook {
+                                ctx_cloned.set_stage(
+                                    ImportStage::Processando,
+                                    "Atualizando rede de relacionamentos...",
+                                );
+                                let result =
+                                    tokio::task::spawn_blocking(move || hook(&hook_pool)).await;
+                                match result {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(error)) => {
+                                        ctx_cloned.set_error(format!(
+                                            "Dados importados; falha ao construir rede: {error}"
+                                        ));
+                                        return;
+                                    }
+                                    Err(error) => {
+                                        ctx_cloned
+                                            .set_error(format!("Falha no worker da rede: {error}"));
+                                        return;
+                                    }
+                                }
+                            }
                             ctx_cloned.finish("Importação finalizada com sucesso");
                         }
                     }

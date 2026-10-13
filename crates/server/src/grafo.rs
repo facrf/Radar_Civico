@@ -223,6 +223,41 @@ pub async fn grafo_subgrafo_handler(
 
     let result = pool
         .run_blocking(move |conn| {
+            if let Some(root) = id.strip_prefix("cnpj_") {
+                crate::projection::ensure_company(conn, root)?;
+            }
+
+            let id = if id.parse::<i64>().is_ok() {
+                let projected = format!("politico_{id}");
+                let found: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM nos_rede WHERE uuid=?1)",
+                    [&projected],
+                    |r| r.get(0),
+                )?;
+                if found {
+                    projected
+                } else {
+                    id
+                }
+            } else {
+                id
+            };
+            let id = if id.starts_with("socio_") {
+                let name = id.trim_start_matches("socio_");
+                let mut stmt = conn.prepare(
+                    "SELECT uuid FROM nos_rede WHERE nome=?1 AND tipo='PESSOA_FISICA' LIMIT 2",
+                )?;
+                let ids = stmt
+                    .query_map([name], |r| r.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                if ids.len() == 1 {
+                    ids[0].clone()
+                } else {
+                    id
+                }
+            } else {
+                id
+            };
             let graph = GrafoSincronizado::carregar_vizinhanca(conn, &id, grau);
             Ok(match graph {
                 Ok(graph) => formatar_subgrafo(&graph, &id, grau).ok_or(StatusCode::NOT_FOUND),

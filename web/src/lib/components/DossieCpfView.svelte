@@ -35,10 +35,13 @@
 		}
 	}
 
-	$: totalDoacoesFeitas = dossie.doacoes_eleitorais.reduce((acc, d) => acc + d.valor, 0);
+	$: totalDoacoesFeitas = dossie.doacoes_eleitorais.filter(d => d.confianca_vinculo==='CONFIRMADO').reduce((acc, d) => acc + d.valor, 0);
 </script>
 
 <div class="space-y-8">
+    {#each dossie.avisos_identidade || [] as aviso}
+        <p class="p-4 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm">{aviso}</p>
+    {/each}
 	<!-- Cabeçalho do Dossiê CPF -->
 	<div class="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-6 sm:p-8 shadow-xl">
 		<div class="flex flex-col md:flex-row md:items-start justify-between gap-6">

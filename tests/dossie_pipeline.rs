@@ -86,34 +86,53 @@ async fn test_pipeline_completo_dossie_analitico_cnpj_e_cpf() {
     let data_cnpj: DossieCnpjResponse = serde_json::from_slice(&bytes_cnpj).unwrap();
 
     assert_eq!(data_cnpj.cnpj, "27403781000111");
-    assert_eq!(data_cnpj.razao_social, "BAL MAQ ASSISTENCIA TECNICA DE MAQUINAS LTDA");
+    assert_eq!(
+        data_cnpj.razao_social,
+        "BAL MAQ ASSISTENCIA TECNICA DE MAQUINAS LTDA"
+    );
     assert_eq!(data_cnpj.qsa.total_socios, 1);
     assert_eq!(data_cnpj.qsa.socios[0].nome, "CARLOS SILVA");
     assert_eq!(data_cnpj.qsa.empresas_interligadas.len(), 1);
-    assert_eq!(data_cnpj.qsa.empresas_interligadas[0].razao_social, "SILVA HOLDINGS PARTICIPACOES LTDA");
+    assert_eq!(
+        data_cnpj.qsa.empresas_interligadas[0].razao_social,
+        "SILVA HOLDINGS PARTICIPACOES LTDA"
+    );
 
     // Validação CEAP
     assert_eq!(data_cnpj.ceap.total_faturado, 50000.0);
     assert_eq!(data_cnpj.ceap.total_notas, 1);
     assert_eq!(data_cnpj.ceap.compradores.len(), 1);
-    assert_eq!(data_cnpj.ceap.compradores[0].parlamentar_nome, "DEPUTADO JOAO SANTOS");
+    assert_eq!(
+        data_cnpj.ceap.compradores[0].parlamentar_nome,
+        "DEPUTADO JOAO SANTOS"
+    );
 
     // Validação PNCP
     assert_eq!(data_cnpj.pncp.total_contratado, 1500000.0);
     assert_eq!(data_cnpj.pncp.total_contratos, 1);
-    assert_eq!(data_cnpj.pncp.orgaos_contratantes[0].orgao, "MINISTERIO DA EDUCACAO");
+    assert_eq!(
+        data_cnpj.pncp.orgaos_contratantes[0].orgao,
+        "MINISTERIO DA EDUCACAO"
+    );
 
     // Validação Heurística TSE
-    assert_eq!(data_cnpj.tse.total_doacoes_socios, 10000.0);
-    assert_eq!(data_cnpj.tse.doacoes[0].candidato_nome, "DEPUTADO JOAO SANTOS");
+    assert_eq!(data_cnpj.tse.total_doacoes_socios, 0.0);
+    assert_eq!(data_cnpj.tse.doacoes[0].confianca_vinculo, "POSSIVEL");
+    assert_eq!(
+        data_cnpj.tse.doacoes[0].candidato_nome,
+        "DEPUTADO JOAO SANTOS"
+    );
 
     // Validação de Triangulação Detectada (Sócio doou para deputado que contratou a empresa)
     let triangulacao = data_cnpj
         .alertas
         .iter()
         .find(|a| a.tipo == "TRIANGULACAO_HUB");
-    assert!(triangulacao.is_some(), "Alerta de triangulação eleitoral deve ser gerado");
-    assert_eq!(data_cnpj.score_risco, "CRITICO");
+    assert!(
+        triangulacao.is_none(),
+        "Identidade mascarada não comprova triangulação"
+    );
+    assert_ne!(data_cnpj.score_risco, "CRITICO");
 
     // ------------------------------------------------------------------------
     // Teste 2: Dossiê com CNPJ formatado 27.403.781/0001-11
@@ -144,9 +163,9 @@ async fn test_pipeline_completo_dossie_analitico_cnpj_e_cpf() {
 
     assert_eq!(data_cpf.nome, "CARLOS SILVA");
     assert_eq!(data_cpf.empresas_socio.len(), 2);
-    assert_eq!(data_cpf.doacoes_eleitorais.len(), 1);
-    assert_eq!(data_cpf.doacoes_eleitorais[0].valor, 10000.0);
+    assert!(data_cpf.doacoes_eleitorais.is_empty());
+    assert!(!data_cpf.avisos_identidade.is_empty());
     assert_eq!(data_cpf.total_faturado_empresas_ceap, 50000.0);
     assert_eq!(data_cpf.total_contratado_empresas_pncp, 1500000.0);
-    assert_eq!(data_cpf.score_risco, "CRITICO");
+    assert_eq!(data_cpf.score_risco, "BAIXO");
 }
