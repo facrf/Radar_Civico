@@ -30,7 +30,7 @@ pub async fn processar_stream_despesas_tse<R: AsyncRead + Unpin + Send>(
     let headers = csv_reader
         .headers()
         .await
-        .map_err(|e| IngestionError::Csv(e))?
+        .map_err(IngestionError::Csv)?
         .clone();
 
     let col_sq = headers.iter().position(|h| h.trim() == "SQ_CANDIDATO");
@@ -65,7 +65,7 @@ pub async fn processar_stream_despesas_tse<R: AsyncRead + Unpin + Send>(
     let mut records_stream = csv_reader.into_records();
 
     while let Some(record_res) = records_stream.next().await {
-        let record = record_res.map_err(|e| IngestionError::Csv(e))?;
+        let record = record_res.map_err(IngestionError::Csv)?;
 
         let fornecedor_nome = col_forn_nome
             .and_then(|idx| record.get(idx))

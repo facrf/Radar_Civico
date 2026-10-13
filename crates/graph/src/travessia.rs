@@ -67,6 +67,7 @@ impl GrafoSincronizado {
         Ok(caminhos_encontrados)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn dfs_caminhos(
         &self,
         atual: NodeIndex,
@@ -77,7 +78,7 @@ impl GrafoSincronizado {
         caminho_arestas: &mut Vec<ArestaRede>,
         resultados: &mut Vec<CaminhoRede>,
     ) -> crate::Result<()> {
-        if atual == destino && caminho_arestas.len() > 0 {
+        if atual == destino && !caminho_arestas.is_empty() {
             let nos = caminho_nos
                 .iter()
                 .filter_map(|&idx| self.grafo.node_weight(idx).cloned())
@@ -146,6 +147,7 @@ impl GrafoSincronizado {
         ciclos
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn dfs_ciclos(
         &self,
         origem: NodeIndex,

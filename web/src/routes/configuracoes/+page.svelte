@@ -309,6 +309,22 @@
 		{ id: 'configuracoes_sistema', nome: 'Configurações de Identidade' }
 	];
 
+	interface ToastNotificacao {
+		id: number;
+		tipo: 'erro' | 'sucesso' | 'info';
+		mensagem: string;
+	}
+	let toasts: ToastNotificacao[] = [];
+	let toastCounter = 0;
+
+	function mostrarToast(mensagem: string, tipo: 'erro' | 'sucesso' | 'info' = 'erro') {
+		const id = ++toastCounter;
+		toasts = [...toasts, { id, tipo, mensagem }];
+		setTimeout(() => {
+			toasts = toasts.filter((t) => t.id !== id);
+		}, 5000);
+	}
+
 	async function carregarIdentidade() {
 		try {
 			const res = await fetch('/api/v1/config/identidade');
@@ -460,7 +476,7 @@
 			const data = await res.json();
 			iniciarPollingJob(data.job_id);
 		} catch (e: any) {
-			alert(`Erro na sincronização do TSE: ${e.message}`);
+			mostrarToast(`Erro na sincronização do TSE: ${e.message}`, 'erro');
 		} finally {
 			sincronizandoTse = false;
 		}
@@ -484,7 +500,7 @@
 			const data = await res.json();
 			iniciarPollingJob(data.job_id);
 		} catch (e: any) {
-			alert(`Erro ao iniciar ingestão: ${e.message}`);
+			mostrarToast(`Erro ao iniciar ingestão: ${e.message}`, 'erro');
 		} finally {
 			disparandoFonte = null;
 		}
@@ -518,7 +534,7 @@
 			const data = await res.json();
 			iniciarPollingJob(data.job_id);
 		} catch (e: any) {
-			alert(`Erro na sincronização da Câmara: ${e.message}`);
+			mostrarToast(`Erro na sincronização da Câmara: ${e.message}`, 'erro');
 		} finally {
 			sincronizandoCamara = false;
 		}
@@ -541,7 +557,7 @@
 			const data = await res.json();
 			iniciarPollingJob(data.job_id);
 		} catch (e: any) {
-			alert(`Erro na sincronização de autoridades: ${e.message}`);
+			mostrarToast(`Erro na sincronização de autoridades: ${e.message}`, 'erro');
 		} finally {
 			sincronizandoAutoridades = false;
 		}
@@ -569,7 +585,7 @@
 			const data = await res.json();
 			iniciarPollingJob(data.job_id);
 		} catch (e: any) {
-			alert(`Erro na sincronização do Querido Diário: ${e.message}`);
+			mostrarToast(`Erro na sincronização do Querido Diário: ${e.message}`, 'erro');
 		} finally {
 			sincronizandoDiarios = false;
 		}
@@ -602,7 +618,7 @@
 			const data = await res.json();
 			iniciarPollingJob(data.job_id);
 		} catch (e: any) {
-			alert(`Erro na sincronização unificada: ${e.message}`);
+			mostrarToast(`Erro na sincronização unificada: ${e.message}`, 'erro');
 		} finally {
 			sincronizandoTudo = false;
 		}
@@ -626,7 +642,7 @@
 			const data = await res.json();
 			iniciarPollingJob(data.job_id);
 		} catch (e: any) {
-			alert(`Erro na deduplicação: ${e.message}`);
+			mostrarToast(`Erro na deduplicação: ${e.message}`, 'erro');
 		} finally {
 			deduplicandoMassa = false;
 		}
@@ -848,10 +864,10 @@
 			} else {
 				const err = await res.json();
                 if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
-				alert(err.erro || 'Falha ao iniciar importação');
+				mostrarToast(err.erro || 'Falha ao iniciar importação', 'erro');
 			}
 		} catch (e: any) {
-			alert(e.message || 'Erro de rede ao iniciar importação');
+			mostrarToast(e.message || 'Erro de rede ao iniciar importação', 'erro');
 		} finally {
 			acaoImporterId = null;
 		}
@@ -866,10 +882,10 @@
 			} else {
 				const err = await res.json();
                 if (res.status === 409 && err.job_id) iniciarPollingJob(err.job_id);
-				alert(err.erro || 'Falha ao cancelar importação');
+				mostrarToast(err.erro || 'Falha ao cancelar importação', 'erro');
 			}
 		} catch (e: any) {
-			alert(e.message || 'Erro de rede ao cancelar importação');
+			mostrarToast(e.message || 'Erro de rede ao cancelar importação', 'erro');
 		} finally {
 			acaoImporterId = null;
 		}
@@ -2814,4 +2830,31 @@
 			</div>
 		</div>
 	{/if}
+
+	{#if toasts.length > 0}
+		<div class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 max-w-md w-full pointer-events-none">
+			{#each toasts as toast (toast.id)}
+				<div class="pointer-events-auto flex items-center justify-between p-4 rounded-xl shadow-2xl border backdrop-blur-md transition-all {toast.tipo === 'erro' ? 'bg-red-950/90 border-red-500/50 text-red-200' : toast.tipo === 'sucesso' ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-200' : 'bg-slate-900/90 border-slate-700 text-slate-200'}">
+					<div class="flex items-center gap-3">
+						{#if toast.tipo === 'erro'}
+							<span class="text-red-400 font-bold">⚠️</span>
+						{:else if toast.tipo === 'sucesso'}
+							<span class="text-emerald-400 font-bold">✓</span>
+						{:else}
+							<span class="text-sky-400 font-bold">ℹ</span>
+						{/if}
+						<span class="text-sm font-medium">{toast.mensagem}</span>
+					</div>
+					<button
+						type="button"
+						on:click={() => (toasts = toasts.filter((t) => t.id !== toast.id))}
+						class="text-xs opacity-70 hover:opacity-100 ml-3 p-1 cursor-pointer"
+					>
+						✕
+					</button>
+				</div>
+			{/each}
+		</div>
+	{/if}
 </div>
+

@@ -151,6 +151,12 @@ impl CeapClient {
     }
 }
 
+impl Default for CeapClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

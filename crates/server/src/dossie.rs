@@ -542,7 +542,7 @@ pub async fn dossie_cnpj_handler(
     let pncp_limit = pagination.pncp_limit.unwrap_or(50).clamp(1, 50);
     let pncp_offset = pagination.pncp_offset.unwrap_or(0).min(i64::MAX as usize);
     let (total_faturado_ceap, total_notas_ceap, total_contratado_pncp, total_contratos_pncp) =
-        supplier_totals(&conn, &cnpj_basico).map_err(database_error)?;
+        supplier_totals(&conn, cnpj_basico).map_err(database_error)?;
     let mut compradores_map: std::collections::HashMap<String, (f64, usize)> =
         std::collections::HashMap::new();
     let mut stmt=conn.prepare("SELECT parlamentar_nome,COALESCE(SUM(valor_liquido_centavos),0),COUNT(*) FROM despesas_parlamentares WHERE fornecedor_cnpj_cpf LIKE ?1 GROUP BY parlamentar_nome").map_err(database_error)?;

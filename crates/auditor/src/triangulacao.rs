@@ -272,21 +272,21 @@ mod identity_regressions {
             data_assinatura: data,
         };
         assert!(
-            auditar_triangulacao(&[doador.clone()], &[socio.clone()], &[contrato.clone()])
+            auditar_triangulacao(&[doador.clone()], &[socio.clone()], std::slice::from_ref(&contrato))
                 .is_empty()
         );
         for doc in ["", "***.123.456-**", "-4"] {
             doador.doador_cpf_cnpj = doc.into();
             socio.socio_cpf_cnpj = doc.into();
             assert!(
-                auditar_triangulacao(&[doador.clone()], &[socio.clone()], &[contrato.clone()])
+                auditar_triangulacao(&[doador.clone()], &[socio.clone()], std::slice::from_ref(&contrato))
                     .is_empty()
             );
         }
         doador.doador_cpf_cnpj = "123.456.789-00".into();
         socio.socio_cpf_cnpj = "12345678900".into();
         assert_eq!(
-            auditar_triangulacao(&[doador.clone()], &[socio.clone()], &[contrato.clone()]).len(),
+            auditar_triangulacao(&[doador.clone()], &[socio.clone()], std::slice::from_ref(&contrato)).len(),
             1
         );
         let mut limite = contrato;

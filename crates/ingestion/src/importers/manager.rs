@@ -23,12 +23,14 @@ pub struct ImporterSummary {
     pub last_error: Option<String>,
 }
 
+pub type ImporterCompletionHook = Arc<dyn Fn(&storage::DbPool) -> Result<()> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct ImporterManager {
     importers: Arc<RwLock<HashMap<String, Arc<dyn SourceImporter>>>>,
     contexts: Arc<RwLock<HashMap<String, Arc<ImportContext>>>>,
     sink: Arc<BatchSink>,
-    completion_hook: Option<Arc<dyn Fn(&storage::DbPool) -> Result<()> + Send + Sync>>,
+    completion_hook: Option<ImporterCompletionHook>,
 }
 
 impl ImporterManager {

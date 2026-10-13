@@ -135,6 +135,12 @@ impl QueridoDiarioClient {
     }
 }
 
+impl Default for QueridoDiarioClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Simple urlencoding helper to avoid extra external crate
 mod urlencoding {
     pub fn encode(s: &str) -> String {

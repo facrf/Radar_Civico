@@ -25,12 +25,44 @@ pub struct FornecedorHubAlerta {
 impl GrafoSincronizado {
     /// Calcula a Betweenness Centrality de todos os nós no grafo utilizando o algoritmo de Brandes
     pub fn calcular_betweenness_centrality(&self) -> HashMap<NodeIndex, f64> {
+        self.calcular_betweenness_centrality_amostrado(None)
+    }
+
+    /// Calcula a Betweenness Centrality (exata para grafos pequenos, ou aproximada com amostragem de pivôs para grafos grandes)
+    pub fn calcular_betweenness_centrality_amostrado(
+        &self,
+        max_fontes: Option<usize>,
+    ) -> HashMap<NodeIndex, f64> {
         let mut cb: HashMap<NodeIndex, f64> =
             self.grafo.node_indices().map(|idx| (idx, 0.0)).collect();
 
         let node_indices: Vec<NodeIndex> = self.grafo.node_indices().collect();
+        let total_nodes = node_indices.len();
+        if total_nodes == 0 {
+            return cb;
+        }
 
-        for &s in &node_indices {
+        // Determina nós de origem: se max_fontes informado ou grafo > 500 nós, realiza amostragem uniforme
+        let fontes: Vec<NodeIndex> = match max_fontes {
+            Some(limite) if limite < total_nodes => {
+                let passo = (total_nodes / limite).max(1);
+                node_indices.iter().step_by(passo).take(limite).copied().collect()
+            }
+            None if total_nodes > 500 => {
+                let limite = 250;
+                let passo = (total_nodes / limite).max(1);
+                node_indices.iter().step_by(passo).take(limite).copied().collect()
+            }
+            _ => node_indices.clone(),
+        };
+
+        let escala = if !fontes.is_empty() && fontes.len() < total_nodes {
+            total_nodes as f64 / fontes.len() as f64
+        } else {
+            1.0
+        };
+
+        for &s in &fontes {
             let mut stack = Vec::new();
             let mut p: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
             let mut sigma: HashMap<NodeIndex, f64> = HashMap::new();
@@ -50,20 +82,26 @@ impl GrafoSincronizado {
 
             while let Some(v) = q.pop_front() {
                 stack.push(v);
-                let d_v = d[&v];
+                let d_v = d.get(&v).copied().unwrap_or(0);
 
                 for edge in self.grafo.edges_directed(v, Direction::Outgoing) {
                     let w = edge.target();
-                    // Primeiro encontro com w
-                    if d[&w] < 0 {
-                        d.insert(w, d_v + 1);
-                        q.push_back(w);
-                    }
-                    // Caminho mais curto para w passando por v
-                    if d[&w] == d_v + 1 {
-                        let sigma_v = sigma[&v];
-                        *sigma.get_mut(&w).unwrap() += sigma_v;
-                        p.get_mut(&w).unwrap().push(v);
+                    if let Some(dw) = d.get_mut(&w) {
+                        // Primeiro encontro com w
+                        if *dw < 0 {
+                            *dw = d_v + 1;
+                            q.push_back(w);
+                        }
+                        // Caminho mais curto para w passando por v
+                        if *dw == d_v + 1 {
+                            let sigma_v = sigma.get(&v).copied().unwrap_or(0.0);
+                            if let Some(sw) = sigma.get_mut(&w) {
+                                *sw += sigma_v;
+                            }
+                            if let Some(pw) = p.get_mut(&w) {
+                                pw.push(v);
+                            }
+                        }
                     }
                 }
             }
@@ -72,12 +110,25 @@ impl GrafoSincronizado {
                 node_indices.iter().map(|&idx| (idx, 0.0)).collect();
 
             while let Some(w) = stack.pop() {
-                for &v in &p[&w] {
-                    let c = (sigma[&v] / sigma[&w]) * (1.0 + delta[&w]);
-                    *delta.get_mut(&v).unwrap() += c;
+                let sigma_w = sigma.get(&w).copied().unwrap_or(1.0);
+                let delta_w = delta.get(&w).copied().unwrap_or(0.0);
+                if let Some(predecessores) = p.get(&w) {
+                    for &v in predecessores {
+                        let sigma_v = sigma.get(&v).copied().unwrap_or(0.0);
+                        let c = if sigma_w > 0.0 {
+                            (sigma_v / sigma_w) * (1.0 + delta_w)
+                        } else {
+                            0.0
+                        };
+                        if let Some(dv) = delta.get_mut(&v) {
+                            *dv += c;
+                        }
+                    }
                 }
                 if w != s {
-                    *cb.get_mut(&w).unwrap() += delta[&w];
+                    if let Some(cb_w) = cb.get_mut(&w) {
+                        *cb_w += delta_w * escala;
+                    }
                 }
             }
         }

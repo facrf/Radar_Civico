@@ -109,7 +109,10 @@ pub async fn obter_status_handler(
         Err(error) => return error,
     };
     match status {
-        Some(status) => (StatusCode::OK, Json(serde_json::to_value(status).unwrap())),
+        Some(status) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(status).unwrap_or_default()),
+        ),
         None => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({

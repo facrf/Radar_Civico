@@ -893,9 +893,11 @@ pub async fn baixar_e_processar_pacote_tse(conn: &mut Connection, url: &str) -> 
         .timeout(Duration::from_secs(120))
         .build()?;
     let file = baixar_pacote_tse(&client, url).await?;
-    processar_zip_tse_reader(conn, file.reopen()?, |name, n| {
+    let count = processar_zip_tse_reader(conn, file.reopen()?, |name, n| {
         tracing::trace!(arquivo = name, registros = n, "Lote TSE persistido")
-    })
+    })?;
+    let _ = storage::checkpoint_passivo(conn);
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -914,7 +916,7 @@ mod tests {
             for index in 0..4 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = [0u8; 2048];
-                socket.read(&mut request).await.unwrap();
+                let _ = socket.read(&mut request).await.unwrap();
                 let status = if index == 1 { "500 Error" } else { "200 OK" };
                 socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{index}").as_bytes()).await.unwrap();
                 requests.send(index).unwrap();

@@ -77,6 +77,12 @@ pub fn recriar_indices_tse(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Executa um checkpoint passivo no WAL sem bloquear leituras ou escritas ativas.
+pub fn checkpoint_passivo(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
+    Ok(())
+}
+
 /// Executa rotina de manutenção periódica do banco SQLite (otimização de consultas e checkpoint do WAL)
 pub fn executar_manutencao_db(conn: &Connection) -> Result<()> {
     conn.execute_batch(

@@ -9,7 +9,9 @@ use crate::importers::sink::BatchSink;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Default)]
 pub enum ImportStage {
+    #[default]
     Idle,
     Conectando,
     Baixando,
@@ -22,11 +24,6 @@ pub enum ImportStage {
     Erro,
 }
 
-impl Default for ImportStage {
-    fn default() -> Self {
-        ImportStage::Idle
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportProgress {

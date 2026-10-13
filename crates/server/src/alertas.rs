@@ -1242,7 +1242,7 @@ fn carregar_auxilio_indevido(
     sql.push_str(" ORDER BY a.valor_recebido DESC, a.id DESC");
 
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
-    let offset = params.offset.unwrap_or(0).max(0);
+    let offset = params.offset.unwrap_or(0);
 
     sql.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
 

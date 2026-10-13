@@ -554,13 +554,15 @@ pub fn mesclar_politicos_db(
     }
 
     // 4. Copia campos cadastrais e sq_candidato se faltarem no canônico
-    let (cpf_dup, nasc_dup, grau_dup, ocup_dup, sq_dup): (
+    type CamposCadastrais = (
         Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
-    ) = tx
+    );
+
+    let (cpf_dup, nasc_dup, grau_dup, ocup_dup, sq_dup): CamposCadastrais = tx
         .query_row(
             "SELECT cpf_mascarado, data_nascimento, grau_instrucao, ocupacao, sq_candidato FROM politicos WHERE id = ?1",
             [id_duplicado],
@@ -568,13 +570,7 @@ pub fn mesclar_politicos_db(
         )
         .unwrap_or((None, None, None, None, None));
 
-    let (cpf_can, nasc_can, grau_can, ocup_can, sq_can): (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = tx
+    let (cpf_can, nasc_can, grau_can, ocup_can, sq_can): CamposCadastrais = tx
         .query_row(
             "SELECT cpf_mascarado, data_nascimento, grau_instrucao, ocupacao, sq_candidato FROM politicos WHERE id = ?1",
             [id_canonico],

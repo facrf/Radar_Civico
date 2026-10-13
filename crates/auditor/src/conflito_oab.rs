@@ -41,7 +41,7 @@ pub fn is_cargo_incompativel(cargo: &str) -> bool {
         .filter(|s| !s.is_empty())
         .collect();
 
-    let has_word = |target: &str| words.iter().any(|&w| w == target);
+    let has_word = |target: &str| words.contains(&target);
 
     if has_word("SECRETARIO")
         || has_word("SECRETÁRIO")

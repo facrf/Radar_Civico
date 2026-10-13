@@ -1876,7 +1876,7 @@ pub use ingestion::progress::ImportProgress;
 pub async fn import_status_handler() -> Json<ImportProgress> {
     let progress = ingestion::progress::get_import_progress()
         .read()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .clone();
     Json(progress)
 }
@@ -1961,11 +1961,7 @@ fn optional_csv<'a>(
         .map(str::trim)
         .filter(|v| !v.is_empty())
 }
-fn ceap_evidence(
-    conn: &rusqlite::Connection,
-    headers: &csv::StringRecord,
-    record: &csv::StringRecord,
-) -> std::io::Result<(
+type CeapEvidencia = (
     Option<i64>,
     Option<String>,
     Option<String>,
@@ -1973,7 +1969,13 @@ fn ceap_evidence(
     Option<f64>,
     Option<f64>,
     bool,
-)> {
+);
+
+fn ceap_evidence(
+    conn: &rusqlite::Connection,
+    headers: &csv::StringRecord,
+    record: &csv::StringRecord,
+) -> std::io::Result<CeapEvidencia> {
     let person = optional_csv(headers, record, &["PARLAMENTAR_ID"])
         .map(str::parse::<i64>)
         .transpose()
@@ -2561,7 +2563,7 @@ fn processar_csv_records<R: std::io::Read>(
 
                     if !doc.is_empty() {
                         let data = upload_date(data)?;
-                        let candidatura = candidatura_upload(&tx, &record, &headers)?;
+                        let candidatura = candidatura_upload(tx, &record, &headers)?;
                         count += stmt
                             .execute(rusqlite::params![doc, nome, valor, data, desc, candidatura])
                             .map_err(std::io::Error::other)?;
@@ -2619,7 +2621,7 @@ fn processar_csv_records<R: std::io::Read>(
 
                     if !doc.is_empty() {
                         let data = upload_date(data)?;
-                        let candidatura = candidatura_upload(&tx, &record, &headers)?;
+                        let candidatura = candidatura_upload(tx, &record, &headers)?;
                         count += stmt
                             .execute(rusqlite::params![doc, nome, valor, data, desc, candidatura])
                             .map_err(std::io::Error::other)?;

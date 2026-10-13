@@ -111,19 +111,15 @@ impl OabScraperClient {
         let nome_upper = nome.trim().to_uppercase();
 
         let query = if uf.is_some() {
-            format!(
-                "SELECT pessoa_nome, numero_registro, seccional_uf, situacao_registro, tipo_inscricao, payload_json
+            "SELECT pessoa_nome, numero_registro, seccional_uf, situacao_registro, tipo_inscricao, payload_json
                  FROM registros_profissionais
                  WHERE orgao_emissor = 'OAB' AND pessoa_nome = ?1 AND seccional_uf = ?2
-                 LIMIT 1"
-            )
+                 LIMIT 1".to_string()
         } else {
-            format!(
-                "SELECT pessoa_nome, numero_registro, seccional_uf, situacao_registro, tipo_inscricao, payload_json
+            "SELECT pessoa_nome, numero_registro, seccional_uf, situacao_registro, tipo_inscricao, payload_json
                  FROM registros_profissionais
                  WHERE orgao_emissor = 'OAB' AND pessoa_nome = ?1
-                 LIMIT 1"
-            )
+                 LIMIT 1".to_string()
         };
 
         let mut stmt = conn.prepare_cached(&query)?;
@@ -165,7 +161,7 @@ impl OabScraperClient {
         registro: &OabConsultaResult,
         cpf_mascarado: Option<&str>,
     ) -> Result<i64> {
-        let cpf_masc = cpf_mascarado.map(|c| mascarar_cpf(c));
+        let cpf_masc = cpf_mascarado.map(mascarar_cpf);
 
         conn.execute(
             "INSERT INTO registros_profissionais (
@@ -190,6 +186,12 @@ impl OabScraperClient {
 
         let id = conn.last_insert_rowid();
         Ok(id)
+    }
+}
+
+impl Default for OabScraperClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

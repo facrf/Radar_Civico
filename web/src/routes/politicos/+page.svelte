@@ -99,10 +99,10 @@
 				carregarResumoDuplicados();
 				carregarPoliticos(false);
 			} else {
-				alert(data.mensagem || 'Falha ao unificar registros.');
+				msgAuditoria = data.mensagem || 'Falha ao unificar registros.';
 			}
 		} catch (e: any) {
-			alert(`Erro: ${e?.message || 'Falha na requisição'}`);
+			msgAuditoria = `Erro: ${e?.message || 'Falha na requisição'}`;
 		} finally {
 			mesclandoIds[idDuplicado] = false;
 		}
@@ -130,10 +130,10 @@
 				carregarResumoDuplicados();
 				carregarPoliticos(false);
 			} else {
-				alert(data.mensagem || 'Falha na unificação automática.');
+				msgAuditoria = data.mensagem || 'Falha na unificação automática.';
 			}
 		} catch (e: any) {
-			alert(`Erro: ${e?.message || 'Falha na requisição'}`);
+			msgAuditoria = `Erro: ${e?.message || 'Falha na requisição'}`;
 		} finally {
 			mesclandoAutomatico = false;
 		}
@@ -169,10 +169,10 @@
 				}
 				dados.politicos = [...dados.politicos];
 			} else {
-				alert(data.mensagem || 'Não foi possível obter a foto deste político.');
+				msgAuditoria = data.mensagem || 'Não foi possível obter a foto deste político.';
 			}
 		} catch (err: any) {
-			alert(`Erro ao buscar foto: ${err?.message || 'Falha na conexão'}`);
+			msgAuditoria = `Erro ao buscar foto: ${err?.message || 'Falha na conexão'}`;
 		} finally {
 			buscandoFotosCards[politico.id] = false;
 		}

@@ -44,8 +44,8 @@ impl BatchSink {
     {
         let pool = self.pool.clone();
         spawn_blocking(move || {
-            let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
-            aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
+            let mut conn = pool.get().map_err(IngestionError::Storage)?;
+            aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
             let tx = storage::transaction_immediate(&mut conn)?;
             let result = f(&tx)?;
             tx.commit().map_err(storage::StorageError::from)?;
@@ -61,9 +61,9 @@ impl BatchSink {
         }
         let pool = self.pool.clone();
         spawn_blocking(move || {
-            let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
-            aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
-            batch_insert_receitas(&mut conn, &records).map_err(|e| IngestionError::Storage(e))
+            let mut conn = pool.get().map_err(IngestionError::Storage)?;
+            aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
+            batch_insert_receitas(&mut conn, &records).map_err(IngestionError::Storage)
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?
@@ -75,9 +75,9 @@ impl BatchSink {
         }
         let pool = self.pool.clone();
         spawn_blocking(move || {
-            let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
-            aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
-            batch_insert_despesas(&mut conn, &records).map_err(|e| IngestionError::Storage(e))
+            let mut conn = pool.get().map_err(IngestionError::Storage)?;
+            aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
+            batch_insert_despesas(&mut conn, &records).map_err(IngestionError::Storage)
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?
@@ -89,9 +89,9 @@ impl BatchSink {
         }
         let pool = self.pool.clone();
         spawn_blocking(move || {
-            let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
-            aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
-            batch_insert_candidatos_tse(&mut conn, &records).map_err(|e| IngestionError::Storage(e))
+            let mut conn = pool.get().map_err(IngestionError::Storage)?;
+            aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
+            batch_insert_candidatos_tse(&mut conn, &records).map_err(IngestionError::Storage)
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?
@@ -103,9 +103,9 @@ impl BatchSink {
         }
         let pool = self.pool.clone();
         spawn_blocking(move || {
-            let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
-            aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
-            batch_insert_bens_candidato(&mut conn, &records).map_err(|e| IngestionError::Storage(e))
+            let mut conn = pool.get().map_err(IngestionError::Storage)?;
+            aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
+            batch_insert_bens_candidato(&mut conn, &records).map_err(IngestionError::Storage)
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?
@@ -120,10 +120,10 @@ impl BatchSink {
         }
         let pool = self.pool.clone();
         spawn_blocking(move || {
-            let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
-            aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
+            let mut conn = pool.get().map_err(IngestionError::Storage)?;
+            aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
             batch_insert_despesas_parlamentares(&mut conn, &records)
-                .map_err(|e| IngestionError::Storage(e))
+                .map_err(IngestionError::Storage)
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?
@@ -135,9 +135,9 @@ impl BatchSink {
         }
         let pool = self.pool.clone();
         spawn_blocking(move || {
-            let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
-            aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
-            batch_insert_beneficios(&mut conn, &records).map_err(|e| IngestionError::Storage(e))
+            let mut conn = pool.get().map_err(IngestionError::Storage)?;
+            aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
+            batch_insert_beneficios(&mut conn, &records).map_err(IngestionError::Storage)
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?
@@ -152,10 +152,10 @@ impl BatchSink {
         }
         let pool = self.pool.clone();
         spawn_blocking(move || {
-            let mut conn = pool.get().map_err(|e| IngestionError::Storage(e))?;
-            aplicar_pragmas_ingestao(&conn).map_err(|e| IngestionError::Storage(e))?;
+            let mut conn = pool.get().map_err(IngestionError::Storage)?;
+            aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
             batch_insert_alertas_beneficio(&mut conn, &records)
-                .map_err(|e| IngestionError::Storage(e))
+                .map_err(IngestionError::Storage)
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?

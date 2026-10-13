@@ -70,11 +70,11 @@ pub fn auditar_recebimento_auxilio(
     // Se ambos tiverem dígitos de CPF, valida a compatibilidade
     if !cpf_pol_clean.is_empty() && !cpf_ben_clean.is_empty() {
         if cpf_pol_clean.len() == 6 && cpf_ben_clean.len() == 11 {
-            if &cpf_ben_clean[3..9] != cpf_pol_clean {
+            if cpf_ben_clean[3..9] != cpf_pol_clean {
                 return None;
             }
         } else if cpf_ben_clean.len() == 6 && cpf_pol_clean.len() == 11 {
-            if &cpf_pol_clean[3..9] != cpf_ben_clean {
+            if cpf_pol_clean[3..9] != cpf_ben_clean {
                 return None;
             }
         } else if cpf_pol_clean != cpf_ben_clean {
@@ -108,9 +108,31 @@ pub fn auditar_recebimento_auxilio(
             .collect();
 
         if !p_tokens.is_empty() && !b_tokens.is_empty() {
-            let tem_termo_comum = p_tokens.iter().any(|pt| b_tokens.contains(pt));
-            if !tem_termo_comum {
+            let eh_cpf_completo = cpf_pol_clean.len() == 11 && cpf_ben_clean.len() == 11;
+            let termos_comuns: Vec<&&str> = p_tokens.iter().filter(|pt| b_tokens.contains(pt)).collect();
+
+            if termos_comuns.is_empty() {
                 return None;
+            }
+
+            // Em caso de CPF mascarado (6 dígitos), evitar falsos positivos de homônimos
+            // que compartilham unicamente um sobrenome de alta frequência no Brasil.
+            if !eh_cpf_completo && p_tokens != b_tokens {
+                const SOBRENOMES_COMUNS: &[&str] = &[
+                    "SILVA", "SANTOS", "OLIVEIRA", "SOUZA", "SOUSA", "RODRIGUES", "FERREIRA",
+                    "ALVES", "PEREIRA", "LIMA", "GOMES", "COSTA", "RIBEIRO", "MARTINS",
+                    "CARVALHO", "ALMEIDA", "LOPES", "SOARES", "FERNANDES", "VIEIRA", "BARBOSA",
+                    "ROCHA", "DIAS", "NASCIMENTO", "ANDRADE", "MOREIRA", "NUNES", "MARQUES",
+                    "MACHADO", "MENDES", "FREITAS", "CARDOSO", "RAMOS", "GONCALVES", "SANTANA",
+                    "TEIXEIRA",
+                ];
+
+                if termos_comuns.len() == 1
+                    && SOBRENOMES_COMUNS.contains(termos_comuns[0])
+                    && p_tokens.first() != b_tokens.first()
+                {
+                    return None;
+                }
             }
         }
     }
@@ -531,4 +553,34 @@ mod tests {
         ).unwrap();
         assert_eq!(count_salvo, 2);
     }
+
+    #[test]
+    fn test_auxilio_indevido_rejeita_homonimo_apenas_sobrenome_comum() {
+        let politico = PoliticoPerfilAuxilio {
+            politico_id: 10,
+            nome: "CARLOS DA SILVA".to_string(),
+            cpf_mascarado: "***.123.456-**".to_string(),
+            total_bens: 500_000.0,
+            tem_mandato_vigente: true,
+            cargo_mandato: Some("VEREADOR".to_string()),
+            ano_mandato: Some(2020),
+        };
+
+        // Beneficiário com primeiro nome completamente diferente, compartilhando apenas o sobrenome comum "SILVA"
+        let beneficio = RegistroAuxilio {
+            beneficio_id: Some(99),
+            cpf_mascarado: "***.123.456-**".to_string(),
+            nome_beneficiario: "ANTONIO DA SILVA".to_string(),
+            valor: 600.0,
+            mes_disponibilizacao: "202004".to_string(),
+            parcela: Some("1".to_string()),
+        };
+
+        let alerta = auditar_recebimento_auxilio(&politico, &beneficio);
+        assert!(
+            alerta.is_none(),
+            "Homônimos de CPF mascarado que compartilham apenas sobrenome comum devem ser descartados"
+        );
+    }
 }
+
