@@ -6,17 +6,17 @@ fn db() -> DbPool {
     p
 }
 fn politician(conn: &storage::rusqlite::Connection) {
-    conn.execute("INSERT INTO politicos(id,sq_candidato,nome_completo,nome_urna,cpf_mascarado) VALUES (42,'SQ42','MARIA','MARIA','12311122201')",[]).unwrap();
+    conn.execute("INSERT INTO politicos(id,sq_candidato,nome_completo,nome_urna,cpf_mascarado) VALUES (42,'SQ42','MARIA','MARIA','12311122207')",[]).unwrap();
     conn.execute("INSERT INTO candidaturas(id,politico_id,ano_eleicao,cargo,sigla_partido,uf) VALUES (42,42,2024,'PREFEITO','ABC','SP')",[]).unwrap();
 }
 #[test]
 fn despesas_nao_multiplicam_por_socios() {
     let p = db();
     let conn = p.get().unwrap();
-    for doc in ["12311122201", "98733344499"] {
+    for doc in ["12311122207", "98733344400"] {
         conn.execute("INSERT INTO empresas_qsa(cnpj_basico,cnpj_ordem,cnpj_dv,razao_social,socio_cpf_cnpj_mascarado,socio_nome,capital_social) VALUES ('12345678','0001','90','EMPRESA',?1,'SOCIO',1000)",[doc]).unwrap();
     }
-    conn.execute("INSERT INTO despesas_parlamentares(casa_legislativa,parlamentar_nome,data_emissao,categoria_despesa,fornecedor_nome,fornecedor_cnpj_cpf,valor_liquido,numero_documento) VALUES ('CAMARA','MARIA','2025-01-01','OUTROS','EMPRESA','12345678000190',60000,'NF1')",[]).unwrap();
+    conn.execute("INSERT INTO despesas_parlamentares(casa_legislativa,parlamentar_nome,data_emissao,categoria_despesa,fornecedor_nome,fornecedor_cnpj_cpf,valor_liquido,numero_documento) VALUES ('CAMARA','MARIA','2025-01-01','OUTROS','EMPRESA','12345678000195',60000,'NF1')",[]).unwrap();
     crate::alertas::sincronizar_alertas_sistema(&conn).unwrap();
     assert_eq!(
         conn.query_row(
@@ -27,7 +27,7 @@ fn despesas_nao_multiplicam_por_socios() {
         .unwrap(),
         0
     );
-    conn.execute("INSERT INTO despesas_parlamentares(casa_legislativa,parlamentar_nome,data_emissao,categoria_despesa,fornecedor_nome,fornecedor_cnpj_cpf,valor_liquido,numero_documento) VALUES ('CAMARA','MARIA','2025-01-02','OUTROS','EMPRESA','12345678000190',60000,'NF2')",[]).unwrap();
+    conn.execute("INSERT INTO despesas_parlamentares(casa_legislativa,parlamentar_nome,data_emissao,categoria_despesa,fornecedor_nome,fornecedor_cnpj_cpf,valor_liquido,numero_documento) VALUES ('CAMARA','MARIA','2025-01-02','OUTROS','EMPRESA','12345678000195',60000,'NF2')",[]).unwrap();
     crate::alertas::sincronizar_alertas_sistema(&conn).unwrap();
     let amount: f64 = conn
         .query_row(
@@ -55,7 +55,7 @@ fn projeção_preserva_ids_e_valores_sem_criar_relacoes_por_mascara() {
     let p = db();
     let conn = p.get().unwrap();
     politician(&conn);
-    conn.execute("INSERT INTO receitas_campanha(candidatura_id,doador_cpf_cnpj,doador_nome,valor,data_receita) VALUES (42,'98733344499','DOADOR',123.45,'2024-09-01')",[]).unwrap();
+    conn.execute("INSERT INTO receitas_campanha(candidatura_id,doador_cpf_cnpj,doador_nome,valor,data_receita) VALUES (42,'98733344400','DOADOR',123.45,'2024-09-01')",[]).unwrap();
     for (root, name) in [("12345678", "JOAO"), ("87654321", "OUTRA PESSOA")] {
         conn.execute("INSERT INTO empresas_qsa(cnpj_basico,cnpj_ordem,cnpj_dv,razao_social,socio_cpf_cnpj_mascarado,socio_nome) VALUES (?1,'0001','90','EMPRESA','***111222**',?2)",params![root,name]).unwrap();
     }
@@ -105,14 +105,14 @@ fn motor_exige_evidencia_e_expurga_alertas_obsoletos() {
     let conn = p.get().unwrap();
     politician(&conn);
     conn.execute("INSERT INTO cargos_autoridades(politico_id,orgao,cargo,esfera,data_posse,origem_dado) VALUES (42,'PREFEITURA','PREFEITO','MUNICIPAL','2025-01-01','ATO_OFICIAL')",[]).unwrap();
-    conn.execute("INSERT INTO receitas_campanha(candidatura_id,doador_cpf_cnpj,doador_nome,valor,data_receita) VALUES (42,'98733344499','DOADOR',1000,'2024-09-01')",[]).unwrap();
-    conn.execute("INSERT INTO empresas_qsa(cnpj_basico,cnpj_ordem,cnpj_dv,razao_social,socio_cpf_cnpj_mascarado,socio_nome) VALUES ('12345678','0001','90','EMPRESA','98733344499','DOADOR')",[]).unwrap();
-    conn.execute("INSERT INTO contratos_publicos(orgao_contratante,fornecedor_cnpj,valor_contratado,data_assinatura,modalidade) VALUES ('PREFEITURA','12345678000190',10000,'2025-02-01','INEXIGIBILIDADE')",[]).unwrap();
+    conn.execute("INSERT INTO receitas_campanha(candidatura_id,doador_cpf_cnpj,doador_nome,valor,data_receita) VALUES (42,'98733344400','DOADOR',1000,'2024-09-01')",[]).unwrap();
+    conn.execute("INSERT INTO empresas_qsa(cnpj_basico,cnpj_ordem,cnpj_dv,razao_social,socio_cpf_cnpj_mascarado,socio_nome) VALUES ('12345678','0001','90','EMPRESA','98733344400','DOADOR')",[]).unwrap();
+    conn.execute("INSERT INTO contratos_publicos(orgao_contratante,fornecedor_cnpj,valor_contratado,data_assinatura,modalidade) VALUES ('PREFEITURA','12345678000195',10000,'2025-02-01','INEXIGIBILIDADE')",[]).unwrap();
     for (i, time, lat, lon, city) in [
         (1, "2025-02-01T12:00:00Z", -23.55, -46.63, "São Paulo"),
         (2, "2025-02-01T13:00:00Z", -3.73, -38.52, "Fortaleza"),
     ] {
-        conn.execute("INSERT INTO despesas_parlamentares(id,casa_legislativa,parlamentar_nome,parlamentar_id,data_emissao,categoria_despesa,fornecedor_nome,fornecedor_cnpj_cpf,valor_liquido,numero_documento,emitido_em,municipio_emissao,uf_emissao,latitude_emissao,longitude_emissao,presencial) VALUES (?1,'CAMARA','MARIA',42,'2025-02-01','ALIMENTACAO','EMPRESA','12345678000190',50,?1,?2,?3,'BR',?4,?5,1)",params![i,time,city,lat,lon]).unwrap();
+        conn.execute("INSERT INTO despesas_parlamentares(id,casa_legislativa,parlamentar_nome,parlamentar_id,data_emissao,categoria_despesa,fornecedor_nome,fornecedor_cnpj_cpf,valor_liquido,numero_documento,emitido_em,municipio_emissao,uf_emissao,latitude_emissao,longitude_emissao,presencial) VALUES (?1,'CAMARA','MARIA',42,'2025-02-01','ALIMENTACAO','EMPRESA','12345678000195',50,?1,?2,?3,'BR',?4,?5,1)",params![i,time,city,lat,lon]).unwrap();
     }
     for _ in 0..2 {
         crate::alertas::sincronizar_alertas_sistema(&conn).unwrap();
@@ -193,7 +193,7 @@ async fn projecao_e_persistencia_concorrentes_nao_perdem_snapshot() {
         politician(&conn);
         let tx = storage::transaction_immediate(&mut conn).unwrap();
         for i in 0..2000 {
-            tx.execute("INSERT INTO receitas_campanha(candidatura_id,doador_cpf_cnpj,doador_nome,valor) VALUES (42,'98733344499','DOADOR',?1)",[i]).unwrap();
+            tx.execute("INSERT INTO receitas_campanha(candidatura_id,doador_cpf_cnpj,doador_nome,valor) VALUES (42,'98733344400','DOADOR',?1)",[i]).unwrap();
         }
         tx.commit().unwrap();
     }
@@ -216,4 +216,50 @@ async fn projecao_e_persistencia_concorrentes_nao_perdem_snapshot() {
     });
     graph.await.unwrap();
     writer.await.unwrap();
+}
+
+#[test]
+fn cache_projecao_reutiliza_e_invalida_alteracoes_transacionais() {
+    let pool = db();
+    let conn = pool.get().unwrap();
+    politician(&conn);
+    crate::projection::refresh_if_needed(&conn).unwrap();
+    conn.execute_batch("CREATE TRIGGER forbid_projection BEFORE DELETE ON conexoes_rede BEGIN SELECT RAISE(ABORT,'reconstrucao indevida'); END;").unwrap();
+    // Uma relação sentinela torna uma reconstrução indevida observável.
+    conn.execute("INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,ano,fonte_dado,metadata_json) SELECT id,id,'TESTE',0,'TESTE',json_object('projection','radar') FROM nos_rede LIMIT 1", []).unwrap();
+    crate::projection::refresh_if_needed(&conn).unwrap();
+    conn.execute("UPDATE politicos SET foto_url='foto'", [])
+        .unwrap();
+    crate::projection::refresh_if_needed(&conn).unwrap();
+    conn.execute_batch("BEGIN; UPDATE politicos SET nome_completo='OUTRO'; ROLLBACK;")
+        .unwrap();
+    crate::projection::refresh_if_needed(&conn).unwrap();
+    conn.execute("UPDATE politicos SET nome_completo='ALTERADO'", [])
+        .unwrap();
+    assert!(crate::projection::refresh_if_needed(&conn).is_err());
+    let dirty: bool = conn
+        .query_row("SELECT dirty FROM projection_state", [], |r| r.get(0))
+        .unwrap();
+    assert!(dirty); // Falha não confirma um cache que nunca foi concluído.
+    conn.execute_batch("DROP TRIGGER forbid_projection")
+        .unwrap();
+    crate::projection::refresh_if_needed(&conn).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT nome FROM nos_rede WHERE uuid='politico_42'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "ALTERADO"
+    );
+}
+
+#[test]
+fn documentos_invalidos_nao_geram_relacoes_financeiras_confirmadas() {
+    let pool = db();
+    let conn = pool.get().unwrap();
+    politician(&conn);
+    conn.execute("INSERT INTO receitas_campanha(candidatura_id,doador_cpf_cnpj,doador_nome,valor) VALUES (42,'00000000000','SEM CPF',100),(42,'98733344499','CPF INVALIDO',100)", []).unwrap();
+    assert_eq!(crate::projection::refresh(&conn).unwrap(), 0);
 }

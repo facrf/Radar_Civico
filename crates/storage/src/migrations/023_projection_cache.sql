@@ -1,0 +1,24 @@
+-- Invalidação transacional, inclusive para alterações feitas fora do importador.
+CREATE TABLE projection_state (id INTEGER PRIMARY KEY CHECK(id=1), dirty INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 0, relations INTEGER NOT NULL DEFAULT 0);
+INSERT INTO projection_state(id) VALUES (1);
+CREATE TRIGGER projection_dirty_politicos_insert AFTER INSERT ON politicos  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_politicos_update AFTER UPDATE ON politicos WHEN OLD.nome_completo IS NOT NEW.nome_completo OR OLD.nome_urna IS NOT NEW.nome_urna OR OLD.cpf_mascarado IS NOT NEW.cpf_mascarado BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_politicos_delete AFTER DELETE ON politicos  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_candidaturas_insert AFTER INSERT ON candidaturas  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_candidaturas_update AFTER UPDATE ON candidaturas  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_candidaturas_delete AFTER DELETE ON candidaturas  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_receitas_campanha_insert AFTER INSERT ON receitas_campanha  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_receitas_campanha_update AFTER UPDATE ON receitas_campanha  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_receitas_campanha_delete AFTER DELETE ON receitas_campanha  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_despesas_campanha_insert AFTER INSERT ON despesas_campanha  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_despesas_campanha_update AFTER UPDATE ON despesas_campanha  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_despesas_campanha_delete AFTER DELETE ON despesas_campanha  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_despesas_parlamentares_insert AFTER INSERT ON despesas_parlamentares  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_despesas_parlamentares_update AFTER UPDATE ON despesas_parlamentares  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_despesas_parlamentares_delete AFTER DELETE ON despesas_parlamentares  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_contratos_publicos_insert AFTER INSERT ON contratos_publicos  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_contratos_publicos_update AFTER UPDATE ON contratos_publicos  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_contratos_publicos_delete AFTER DELETE ON contratos_publicos  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_empresas_qsa_insert AFTER INSERT ON empresas_qsa  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_empresas_qsa_update AFTER UPDATE ON empresas_qsa  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;
+CREATE TRIGGER projection_dirty_empresas_qsa_delete AFTER DELETE ON empresas_qsa  BEGIN UPDATE projection_state SET dirty=1 WHERE id=1 AND dirty=0; END;

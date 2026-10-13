@@ -630,6 +630,7 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration { version:21, name:"centavos_e_tarefas_duraveis", sql:include_str!("021_money_jobs.sql") },
     Migration { version:22, name:"evidencias_analiticas_explicitas", sql:include_str!("022_analysis_evidence.sql") },
+    Migration { version:23, name:"cache_projecao", sql:include_str!("023_projection_cache.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {

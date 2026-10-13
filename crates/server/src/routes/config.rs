@@ -2887,9 +2887,11 @@ fn processar_csv_records<R: std::io::Read>(
                 }
             }
         }
-        _ => return Err(std::io::Error::other(format!(
+        _ => {
+            return Err(std::io::Error::other(format!(
             "Tipo de CSV não suportado: {tipo_detectado}. Selecione o tipo e confira o cabeçalho."
-        ))),
+        )))
+        }
     }
 
     Ok((count, tipo_detectado))
@@ -2915,6 +2917,7 @@ pub async fn upload_arquivo_handler(
     let mut tamanho_total: usize = 0;
     let mut file_seen = false;
     let mut tipo_escolhido = String::from("AUTO");
+    let mut codificacao = String::from("UTF-8");
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| {
         (
@@ -2932,6 +2935,19 @@ pub async fn upload_arquivo_handler(
                 .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"erro":e.to_string()}))))?
                 .trim()
                 .to_uppercase();
+        } else if name == "codificacao" {
+            codificacao = field
+                .text()
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"erro":e.to_string()}))))?
+                .trim()
+                .to_uppercase();
+            if !matches!(codificacao.as_str(), "UTF-8" | "ISO-8859-1") {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"erro":"Codificação inválida: use UTF-8 ou ISO-8859-1"})),
+                ));
+            }
         } else if let Some(file_name) = field.file_name() {
             if file_seen {
                 return Err((
@@ -2995,6 +3011,7 @@ pub async fn upload_arquivo_handler(
         let zip_path = temp_path.clone();
         let pool_clone = pool.clone();
         let tipo_clone = tipo_escolhido.clone();
+        let encoding = codificacao.clone();
 
         tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
             let _file_guard = temp_file;
@@ -3031,10 +3048,13 @@ pub async fn upload_arquivo_handler(
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 if zip_entry.name().to_lowercase().ends_with(".csv") {
                     use std::io::BufRead;
-                    let mut input = std::io::BufReader::new(ingestion::tse_ckan::LimitedRead::new(
+                    let limited = ingestion::tse_ckan::LimitedRead::new(
                         zip_entry,
                         ingestion::tse_ckan::MAX_ZIP_ENTRY_BYTES,
-                    ));
+                    );
+                    let mut input = std::io::BufReader::new(crate::csv_input::CsvInput::new(
+                        limited, &encoding,
+                    )?);
                     let delim = detectar_delimitador(input.fill_buf()?);
                     let mut reader = csv::ReaderBuilder::new()
                         .delimiter(delim)
@@ -3067,6 +3087,7 @@ pub async fn upload_arquivo_handler(
         let csv_path = temp_path.clone();
         let pool_clone = pool.clone();
         let tipo_clone = tipo_escolhido.clone();
+        let encoding = codificacao.clone();
 
         tokio::task::spawn_blocking(move || -> std::io::Result<(usize, String)> {
             let _file_guard = temp_file;
@@ -3075,18 +3096,16 @@ pub async fn upload_arquivo_handler(
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             let conn =
                 storage::transaction_immediate(&mut connection).map_err(std::io::Error::other)?;
-            let mut file = std::fs::File::open(&csv_path)?;
-            let mut sample = [0u8; 2048];
-            use std::io::Read;
-            let n = file.read(&mut sample).unwrap_or(0);
-            let delim = detectar_delimitador(&sample[..n]);
-            use std::io::Seek;
-            let _ = file.seek(std::io::SeekFrom::Start(0));
+            let file = std::fs::File::open(&csv_path)?;
+            let mut input =
+                std::io::BufReader::new(crate::csv_input::CsvInput::new(file, &encoding)?);
+            use std::io::BufRead;
+            let delim = detectar_delimitador(input.fill_buf()?);
 
             let mut reader = csv::ReaderBuilder::new()
                 .delimiter(delim)
                 .flexible(true)
-                .from_reader(file);
+                .from_reader(input);
 
             let result = processar_csv_records(&conn, &mut reader, &tipo_clone)?;
             crate::projection::refresh(&conn).map_err(std::io::Error::other)?;
@@ -4890,6 +4909,68 @@ mod synchronization_regressions {
 #[cfg(test)]
 mod review_regressions {
     use super::*;
+    #[tokio::test]
+    async fn upload_latin1_csv_e_zip_preservam_acentos_e_utf8_rejeita_bytes_invalidos() {
+        use axum::{body::Body, http::Request};
+        use std::io::Write;
+        use tower::ServiceExt;
+        let csv = b"CNPJ_BASICO;RAZAO_SOCIAL;NOME_SOCIO;CPF_CNPJ_SOCIO\n12345678;Empresa S\xe3o Paulo;Jo\xe3o Gon\xe7alves;***111222**\n";
+        for (encoding, zipped, expected) in [
+            ("ISO-8859-1", false, StatusCode::OK),
+            ("ISO-8859-1", true, StatusCode::OK),
+            ("UTF-8", false, StatusCode::BAD_REQUEST),
+        ] {
+            let pool = database();
+            let payload = if zipped {
+                let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+                zip.start_file("socios.csv", zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(csv).unwrap();
+                zip.finish().unwrap().into_inner()
+            } else {
+                csv.to_vec()
+            };
+            let filename = if zipped { "socios.zip" } else { "socios.csv" };
+            let boundary = "radar_latin1";
+            let mut body = format!("--{boundary}\r\nContent-Disposition: form-data; name=\"arquivo\"; filename=\"{filename}\"\r\n\r\n").into_bytes();
+            body.extend(payload);
+            body.extend(format!("\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"codificacao\"\r\n\r\n{encoding}\r\n--{boundary}--\r\n").as_bytes());
+            let response = crate::criar_router(pool.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/config/ingestao/upload")
+                        .header(
+                            "content-type",
+                            format!("multipart/form-data; boundary={boundary}"),
+                        )
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 100000)
+                .await
+                .unwrap();
+            assert_eq!(status, expected, "{}", String::from_utf8_lossy(&bytes));
+            let conn = pool.get().unwrap();
+            if expected == StatusCode::OK {
+                let name: String = conn
+                    .query_row("SELECT socio_nome FROM empresas_qsa", [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(name, "João Gonçalves");
+            } else {
+                assert_eq!(
+                    conn.query_row("SELECT COUNT(*) FROM empresas_qsa", [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+            }
+        }
+    }
+
     fn database() -> storage::DbPool {
         let pool = DbPool::open_in_memory().unwrap();
         storage::run_migrations(&mut pool.get().unwrap()).unwrap();

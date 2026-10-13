@@ -1587,7 +1587,7 @@ pub async fn dossie_cpf_handler(
 
     Ok(Json(DossieCpfResponse {
         avisos_identidade: if !crate::identity::complete(&cpf_param) || !empresas_socio.is_empty() {
-            vec!["CPF mascarado e nome não identificam uma pessoa de forma única. As empresas listadas são vínculos possíveis e não comprovam que todos os registros pertencem à mesma pessoa.".into()]
+            vec!["CPF mascarado, documento inválido ou busca por nome não confirmam uma identidade. As empresas listadas são vínculos possíveis e não comprovam que todos os registros pertencem à mesma pessoa.".into()]
         } else {
             vec![]
         },

@@ -26,6 +26,7 @@ fn save(conn: &Connection, mut alerta: NovoAlerta, key: String, revision: &str) 
 }
 
 pub fn run(conn: &Connection, window: i64) -> Result<()> {
+    crate::identity::register_sql(conn)?;
     let revision = uuid::Uuid::new_v4().to_string();
     let donor = crate::identity::document_sql("r.doador_cpf_cnpj");
     let partner = crate::identity::document_sql("q.socio_cpf_cnpj_mascarado");
@@ -36,7 +37,7 @@ pub fn run(conn: &Connection, window: i64) -> Result<()> {
         JOIN cargos_autoridades a ON a.politico_id=p.id
         JOIN empresas_qsa q ON {partner}={donor}
         JOIN contratos_publicos ct ON substr({supplier},1,8)=q.cnpj_basico AND TRIM(UPPER(ct.orgao_contratante))=TRIM(UPPER(a.orgao))
-        WHERE length({donor}) IN (11,14) AND {donor} NOT GLOB '*[^0-9]*' AND length({supplier})=14 AND {supplier} NOT GLOB '*[^0-9]*'
+        WHERE valid_document({donor}) AND length({supplier})=14 AND valid_document({supplier})
           AND UPPER(ct.modalidade) IN ('INEXIGIBILIDADE','INEXIGIBILIDADE DE LICITACAO','INEXIGIBILIDADE DE LICITAÇÃO')
           AND date(r.data_receita)<=date(a.data_posse) AND c.ano_eleicao<=CAST(substr(a.data_posse,1,4) AS INTEGER)
           AND (a.data_exoneracao IS NULL OR a.data_exoneracao='' OR date(ct.data_assinatura)<=date(a.data_exoneracao))

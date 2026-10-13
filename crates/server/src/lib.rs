@@ -427,3 +427,5 @@ mod local_access_tests {
 
 #[cfg(test)]
 mod regression;
+
+pub mod csv_input;

@@ -97,10 +97,10 @@ async fn main() -> Result<()> {
         let graph_pool = pool.clone();
         tokio::spawn(async move {
             match graph_pool
-                .run_blocking(|conn| server::projection::refresh(conn))
+                .run_blocking(|conn| server::projection::refresh_if_needed(conn))
                 .await
             {
-                Ok(relations) => info!("Rede de relacionamentos atualizada: {relations} relações"),
+                Ok(relations) => info!("Rede de relacionamentos pronta: {relations} relações"),
                 Err(error) => tracing::error!("Falha ao atualizar rede: {error}"),
             }
             ingestion::progress::persist_progress_loop(graph_pool).await;

@@ -1,7 +1,20 @@
 //! Projeção transacional das bases importadas para nós e relações navegáveis.
 use storage::{rusqlite::Connection, Result};
 
+/// Reutiliza apenas a projeção compatível e sem alterações nas fontes.
+pub fn refresh_if_needed(conn: &Connection) -> Result<usize> {
+    let cached: Option<usize> = conn.query_row(
+        "SELECT CASE WHEN dirty=0 AND version=2 THEN relations END FROM projection_state WHERE id=1",
+        [], |row| row.get(0),
+    )?;
+    match cached {
+        Some(count) => Ok(count),
+        None => refresh(conn),
+    }
+}
+
 pub fn refresh(conn: &Connection) -> Result<usize> {
+    crate::identity::register_sql(conn)?;
     if conn.is_autocommit() {
         let tx = storage::rusqlite::Transaction::new_unchecked(
             conn,
@@ -20,7 +33,7 @@ pub fn refresh(conn: &Connection) -> Result<usize> {
             UNION ALL SELECT REPLACE(REPLACE(REPLACE(fornecedor_cnpj,'.',''),'/',''),'-','') FROM contratos_publicos
             UNION ALL SELECT REPLACE(REPLACE(REPLACE(doador_cpf_cnpj,'.',''),'/',''),'-','') FROM receitas_campanha
             UNION ALL SELECT REPLACE(REPLACE(REPLACE(fornecedor_cpf_cnpj,'.',''),'/',''),'-','') FROM despesas_campanha
-        ) WHERE length(doc)=14 AND doc NOT GLOB '*[^0-9]*';
+        ) WHERE length(doc)=14 AND valid_document(doc);
     "#)?;
     // Apenas relações geradas por esta projeção são substituídas. IDs de nós são estáveis.
     tx.execute(
@@ -41,39 +54,40 @@ pub fn refresh(conn: &Connection) -> Result<usize> {
             UNION ALL SELECT REPLACE(REPLACE(REPLACE(fornecedor_cnpj,'.',''),'/',''),'-',''),fornecedor_cnpj FROM contratos_publicos
             UNION ALL SELECT REPLACE(REPLACE(REPLACE(doador_cpf_cnpj,'.',''),'/',''),'-',''),doador_nome FROM receitas_campanha
             UNION ALL SELECT REPLACE(REPLACE(REPLACE(fornecedor_cpf_cnpj,'.',''),'/',''),'-',''),fornecedor_nome FROM despesas_campanha
-        ) WHERE length(doc)=14 AND doc NOT GLOB '*[^0-9]*' GROUP BY substr(doc,1,8)
+        ) WHERE length(doc)=14 AND valid_document(doc) GROUP BY substr(doc,1,8)
         ON CONFLICT(uuid) DO NOTHING;
         INSERT INTO nos_rede(uuid,tipo,documento,nome,metadata_json)
         SELECT 'doc_'||doc,'PESSOA_FISICA',doc,MIN(name),json_object('projection','radar','confianca','CONFIRMADO') FROM (
             SELECT REPLACE(REPLACE(REPLACE(doador_cpf_cnpj,'.',''),'/',''),'-','') AS doc,doador_nome AS name FROM receitas_campanha
             UNION ALL SELECT REPLACE(REPLACE(REPLACE(fornecedor_cpf_cnpj,'.',''),'/',''),'-',''),fornecedor_nome FROM despesas_campanha
             UNION ALL SELECT REPLACE(REPLACE(REPLACE(socio_cpf_cnpj_mascarado,'.',''),'/',''),'-',''),socio_nome FROM temp.projection_roots roots CROSS JOIN empresas_qsa ON empresas_qsa.cnpj_basico=roots.root
-        ) WHERE length(doc)=11 AND doc NOT GLOB '*[^0-9]*' GROUP BY doc
+        ) WHERE length(doc)=11 AND valid_document(doc) GROUP BY doc
         ON CONFLICT(uuid) DO UPDATE SET nome=excluded.nome;
     "#)?;
     tx.execute_batch(r#"
         INSERT INTO nos_rede(uuid,tipo,documento,nome,metadata_json)
         SELECT 'cnpj_'||substr(doc,1,8),'EMPRESA',substr(doc,1,8),MIN(socio_nome),json_object('projection','radar')
         FROM (SELECT socio_nome,REPLACE(REPLACE(REPLACE(socio_cpf_cnpj_mascarado,'.',''),'/',''),'-','') AS doc FROM temp.projection_roots roots CROSS JOIN empresas_qsa q ON q.cnpj_basico=roots.root)
-        WHERE length(doc)=14 AND doc NOT GLOB '*[^0-9]*' GROUP BY substr(doc,1,8) ON CONFLICT(uuid) DO NOTHING;
+        WHERE length(doc)=14 AND valid_document(doc) GROUP BY substr(doc,1,8) ON CONFLICT(uuid) DO NOTHING;
     "#)?;
-    // Sócios mascarados são nós próprios por empresa e nome, nunca pessoas confirmadas.
+    tx.execute("UPDATE nos_rede SET metadata_json=json_set(metadata_json,'$.confianca','POSSIVEL') WHERE uuid LIKE 'doc_%' AND json_extract(metadata_json,'$.projection') IN ('radar','qsa_root') AND NOT valid_document(documento)", [])?;
+    // Sócios mascarados ou inválidos são nós próprios por empresa e nome.
     tx.execute_batch(r#"
         INSERT INTO nos_rede(uuid,tipo,documento,nome,metadata_json)
         SELECT 'socio_'||cnpj_basico||'_'||socio_cpf_cnpj_mascarado||'_'||socio_nome,'PESSOA_FISICA',socio_cpf_cnpj_mascarado,socio_nome,json_object('projection','radar','confianca','POSSIVEL')
-        FROM temp.projection_roots roots CROSS JOIN empresas_qsa ON empresas_qsa.cnpj_basico=roots.root WHERE length(REPLACE(REPLACE(REPLACE(socio_cpf_cnpj_mascarado,'.',''),'/',''),'-','')) NOT IN (11,14) OR socio_cpf_cnpj_mascarado GLOB '*[^0-9./-]*'
+        FROM temp.projection_roots roots CROSS JOIN empresas_qsa ON empresas_qsa.cnpj_basico=roots.root WHERE NOT valid_document(socio_cpf_cnpj_mascarado)
         ON CONFLICT(uuid) DO NOTHING;
-        WITH projection_edges(source,target,relation,cents,year,event,origin,evidence) AS (SELECT CASE WHEN length(doc)=11 AND doc NOT GLOB '*[^0-9]*' THEN 'doc_'||doc
-                    WHEN length(doc)=14 AND doc NOT GLOB '*[^0-9]*' THEN 'cnpj_'||substr(doc,1,8)
+        WITH projection_edges(source,target,relation,cents,year,event,origin,evidence) AS (SELECT CASE WHEN length(doc)=11 AND valid_document(doc) THEN 'doc_'||doc
+                    WHEN length(doc)=14 AND valid_document(doc) THEN 'cnpj_'||substr(doc,1,8)
                     ELSE 'socio_'||cnpj_basico||'_'||socio_cpf_cnpj_mascarado||'_'||socio_nome END,
-               'cnpj_'||cnpj_basico,'SOCIO_ADMINISTRADOR',0,0,NULL,'RECEITA_FEDERAL',json_object('projection','radar','confianca',CASE WHEN doc NOT GLOB '*[^0-9]*' AND length(doc) IN (11,14) THEN 'CONFIRMADO' ELSE 'POSSIVEL' END)
+               'cnpj_'||cnpj_basico,'SOCIO_ADMINISTRADOR',0,0,NULL,'RECEITA_FEDERAL',json_object('projection','radar','confianca',CASE WHEN valid_document(doc) THEN 'CONFIRMADO' ELSE 'POSSIVEL' END)
         FROM (SELECT *, REPLACE(REPLACE(REPLACE(socio_cpf_cnpj_mascarado,'.',''),'/',''),'-','') AS doc FROM temp.projection_roots roots CROSS JOIN empresas_qsa ON empresas_qsa.cnpj_basico=roots.root)) INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,valor,ano,data_evento,fonte_dado,metadata_json) SELECT s.id,t.id,e.relation,e.cents/100.0,COALESCE(e.year,0),e.event,e.origin,e.evidence FROM projection_edges e JOIN nos_rede s ON s.uuid=e.source JOIN nos_rede t ON t.uuid=e.target;
         WITH projection_edges(source,target,relation,cents,year,event,origin,evidence) AS (SELECT CASE length(doc) WHEN 14 THEN 'cnpj_'||substr(doc,1,8) ELSE 'doc_'||doc END,'politico_'||politico_id,'DOACAO',valor_centavos,ano_eleicao,data_receita,'TSE',json_object('projection','radar','receita_id',id)
         FROM (SELECT r.*,c.politico_id,c.ano_eleicao,REPLACE(REPLACE(REPLACE(doador_cpf_cnpj,'.',''),'/',''),'-','') AS doc FROM receitas_campanha r JOIN candidaturas c ON c.id=r.candidatura_id)
-        WHERE length(doc) IN (11,14) AND doc NOT GLOB '*[^0-9]*') INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,valor,ano,data_evento,fonte_dado,metadata_json) SELECT s.id,t.id,e.relation,e.cents/100.0,COALESCE(e.year,0),e.event,e.origin,e.evidence FROM projection_edges e JOIN nos_rede s ON s.uuid=e.source JOIN nos_rede t ON t.uuid=e.target;
+        WHERE valid_document(doc)) INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,valor,ano,data_evento,fonte_dado,metadata_json) SELECT s.id,t.id,e.relation,e.cents/100.0,COALESCE(e.year,0),e.event,e.origin,e.evidence FROM projection_edges e JOIN nos_rede s ON s.uuid=e.source JOIN nos_rede t ON t.uuid=e.target;
         WITH projection_edges(source,target,relation,cents,year,event,origin,evidence) AS (SELECT 'politico_'||politico_id,CASE length(doc) WHEN 14 THEN 'cnpj_'||substr(doc,1,8) ELSE 'doc_'||doc END,'DESPESA_CAMPANHA',valor_centavos,ano_eleicao,data_despesa,'TSE',json_object('projection','radar','despesa_id',id)
         FROM (SELECT d.*,c.politico_id,c.ano_eleicao,REPLACE(REPLACE(REPLACE(fornecedor_cpf_cnpj,'.',''),'/',''),'-','') AS doc FROM despesas_campanha d JOIN candidaturas c ON c.id=d.candidatura_id)
-        WHERE length(doc) IN (11,14) AND doc NOT GLOB '*[^0-9]*') INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,valor,ano,data_evento,fonte_dado,metadata_json) SELECT s.id,t.id,e.relation,e.cents/100.0,COALESCE(e.year,0),e.event,e.origin,e.evidence FROM projection_edges e JOIN nos_rede s ON s.uuid=e.source JOIN nos_rede t ON t.uuid=e.target;
+        WHERE valid_document(doc)) INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,valor,ano,data_evento,fonte_dado,metadata_json) SELECT s.id,t.id,e.relation,e.cents/100.0,COALESCE(e.year,0),e.event,e.origin,e.evidence FROM projection_edges e JOIN nos_rede s ON s.uuid=e.source JOIN nos_rede t ON t.uuid=e.target;
     "#)?;
     // Despesas CEAP só ligam a um político se o nome tem uma única identidade no cadastro.
     tx.execute_batch(r#"
@@ -81,14 +95,18 @@ pub fn refresh(conn: &Connection) -> Result<usize> {
         FROM despesas_parlamentares d LEFT JOIN (
             SELECT name,MIN(id) AS id FROM (SELECT id,nome_completo AS name FROM politicos UNION SELECT id,nome_urna FROM politicos) GROUP BY name HAVING COUNT(DISTINCT id)=1
         ) p ON p.name=d.parlamentar_nome
-        WHERE COALESCE(d.parlamentar_id,p.id) IS NOT NULL AND length(REPLACE(REPLACE(REPLACE(d.fornecedor_cnpj_cpf,'.',''),'/',''),'-',''))=14) INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,valor,ano,data_evento,fonte_dado,metadata_json) SELECT s.id,t.id,e.relation,e.cents/100.0,COALESCE(e.year,0),e.event,e.origin,e.evidence FROM projection_edges e JOIN nos_rede s ON s.uuid=e.source JOIN nos_rede t ON t.uuid=e.target;
+        WHERE COALESCE(d.parlamentar_id,p.id) IS NOT NULL AND length(REPLACE(REPLACE(REPLACE(d.fornecedor_cnpj_cpf,'.',''),'/',''),'-',''))=14 AND valid_document(d.fornecedor_cnpj_cpf)) INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,valor,ano,data_evento,fonte_dado,metadata_json) SELECT s.id,t.id,e.relation,e.cents/100.0,COALESCE(e.year,0),e.event,e.origin,e.evidence FROM projection_edges e JOIN nos_rede s ON s.uuid=e.source JOIN nos_rede t ON t.uuid=e.target;
         INSERT INTO nos_rede(uuid,tipo,nome,metadata_json)
         SELECT 'orgao_'||orgao_contratante,'ORGAO',orgao_contratante,json_object('projection','radar') FROM contratos_publicos GROUP BY orgao_contratante ON CONFLICT(uuid) DO NOTHING;
         WITH projection_edges(source,target,relation,cents,year,event,origin,evidence) AS (SELECT 'orgao_'||orgao_contratante,'cnpj_'||substr(REPLACE(REPLACE(REPLACE(fornecedor_cnpj,'.',''),'/',''),'-',''),1,8),'CONTRATO',valor_contratado_centavos,CAST(substr(data_assinatura,1,4) AS INTEGER),data_assinatura,'PNCP',json_object('projection','radar','contrato_id',id)
-        FROM contratos_publicos WHERE length(REPLACE(REPLACE(REPLACE(fornecedor_cnpj,'.',''),'/',''),'-',''))=14) INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,valor,ano,data_evento,fonte_dado,metadata_json) SELECT s.id,t.id,e.relation,e.cents/100.0,COALESCE(e.year,0),e.event,e.origin,e.evidence FROM projection_edges e JOIN nos_rede s ON s.uuid=e.source JOIN nos_rede t ON t.uuid=e.target;
+        FROM contratos_publicos WHERE length(REPLACE(REPLACE(REPLACE(fornecedor_cnpj,'.',''),'/',''),'-',''))=14 AND valid_document(fornecedor_cnpj)) INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,valor,ano,data_evento,fonte_dado,metadata_json) SELECT s.id,t.id,e.relation,e.cents/100.0,COALESCE(e.year,0),e.event,e.origin,e.evidence FROM projection_edges e JOIN nos_rede s ON s.uuid=e.source JOIN nos_rede t ON t.uuid=e.target;
     "#)?;
     let count = tx.query_row("SELECT COUNT(*) FROM conexoes_rede WHERE json_extract(metadata_json,'$.projection')='radar'",[],|r|r.get(0))?;
     tx.execute_batch("DROP TABLE temp.projection_roots")?;
+    tx.execute(
+        "UPDATE projection_state SET dirty=0,version=2,relations=?1 WHERE id=1",
+        [count],
+    )?;
     Ok(count)
 }
 

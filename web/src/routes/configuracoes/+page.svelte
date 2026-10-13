@@ -279,6 +279,7 @@
 
 	// Upload Manual
 	let tipoDocumentoUpload = 'AUTO';
+	let codificacaoUpload = 'UTF-8';
 	let arquivoSelecionado: File | null = null;
 	let isDragging = false;
 	let enviandoUpload = false;
@@ -696,6 +697,7 @@
 			const formData = new FormData();
 			formData.append('arquivo', arquivoSelecionado);
 			formData.append('tipo', tipoDocumentoUpload);
+			formData.append('codificacao', codificacaoUpload);
 
 			const res = await fetch('/api/v1/config/ingestao/upload', {
 				method: 'POST',
@@ -2333,6 +2335,15 @@
 					</select>
 				</div>
 			</div>
+
+            <div class="flex items-center gap-2">
+                <label for="codificacao-upload" class="text-xs text-slate-400">Codificação do CSV:</label>
+                <select id="codificacao-upload" bind:value={codificacaoUpload} class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-1.5">
+                    <option value="UTF-8">UTF-8</option>
+                    <option value="ISO-8859-1">Latin-1 (ISO-8859-1) — arquivos antigos</option>
+                </select>
+                <span class="text-xs text-slate-400">No ZIP, aplica-se a todos os CSVs.</span>
+            </div>
 
 			<!-- Guia de Cabeçalhos Suportados Toggle -->
 			<div class="border-t border-slate-700/50 pt-3">

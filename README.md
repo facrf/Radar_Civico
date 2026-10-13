@@ -183,7 +183,9 @@ O upload valida os campos, valores monetários e erros de leitura/gravação. Um
 
 Para receitas e despesas eleitorais, importe primeiro os candidatos. Os arquivos financeiros precisam fornecer `SQ_CANDIDATO` e `ANO_ELEICAO`; a candidatura deve existir e ser única. Documentos, datas e valores ausentes não são inventados. Valores monetários usam o padrão brasileiro ou decimal com ponto e até duas casas decimais.
 
-Dossiês distinguem identidade confirmada por documento completo de vínculos possíveis por nome ou CPF mascarado. Doações possíveis não entram no total confirmado nem geram alertas de triangulação. A máscara sozinha não comprova que pessoas em bases diferentes são a mesma pessoa.
+CPFs e CNPJs numéricos precisam ter dígitos verificadores válidos para confirmar uma identidade em dossiês, grafos ou triangulação. Sequências repetidas e documentos completos inválidos não permitem cruzamentos por homônimo. A validação matemática não comprova a titularidade ou a situação cadastral. Registros originais continuam preservados para consulta.
+
+Dossiês distinguem identidade confirmada por documento completo válido de vínculos possíveis por nome ou CPF mascarado. Doações possíveis não entram no total confirmado nem geram alertas de triangulação. A máscara sozinha não comprova que pessoas em bases diferentes são a mesma pessoa.
 
 A auditoria principal executa triangulação e ubiquidade com evidências explícitas:
 
@@ -191,7 +193,7 @@ A auditoria principal executa triangulação e ubiquidade com evidências explí
 * **Ubiquidade:** exige `PARLAMENTAR_ID`, `EMITIDO_EM` em formato RFC 3339 com fuso, `MUNICIPIO_EMISSAO`, `UF_EMISSAO`, `LATITUDE_EMISSAO`, `LONGITUDE_EMISSAO` e `PRESENCIAL=1` no CSV CEAP. Datas sem horário, localização presumida e despesas sem comprovação de presença não acionam essa regra.
 * **Capital social:** despesas são agregadas antes do cruzamento com sócios. Capital desconhecido ou zero legado não é tratado como evidência de capital ínfimo. O upload QSA aceita `CAPITAL_SOCIAL` e `DATA_INICIO_ATIVIDADE` quando a fonte os fornece.
 
-Os grafos são atualizados após importações e em segundo plano no arranque. A projeção usa as empresas relacionadas aos dados financeiros; outros QSA são carregados por CNPJ sob demanda, sem copiar a base nacional inteira. Nós de sócios mascarados permanecem separados por empresa e nome. Relações trazem fonte e indicação de confiança. Grafos conservam os limites de 10 mil nós e 50 mil arestas por consulta.
+Os grafos são atualizados após importações. Na inicialização, a projeção persistida é reutilizada quando sua versão é compatível e nenhuma fonte mudou. Triggers do SQLite invalidam o cache quando políticos, candidaturas, receitas, despesas, contratos ou QSA são alterados, inclusive por ferramentas externas. Mudanças apenas nas fotos não provocam reconstrução. Uma projeção antiga ou invalidada é reconstruída em segundo plano, e o cache só é confirmado junto com o commit bem-sucedido. A projeção usa as empresas relacionadas aos dados financeiros; outros QSA são carregados por CNPJ sob demanda, sem copiar a base nacional inteira. Nós de sócios mascarados permanecem separados por empresa e nome. Relações trazem fonte e indicação de confiança. Grafos conservam os limites de 10 mil nós e 50 mil arestas por consulta.
 
 Exportações CSV/JSON são geradas linha a linha em arquivo temporário e transmitidas ao navegador, evitando montar toda a tabela na memória. Na execução nativa, o servidor escuta em `127.0.0.1` por padrão; no Docker, `HOST=0.0.0.0` permite o acesso pela porta que o Compose publica somente em localhost.
 
@@ -240,3 +242,7 @@ Distribuído sob licença aberta para fortalecimento da transparência pública 
 ## Melhorias e operação
 
 Consulte [Melhorias e operação](docs/MELHORIAS_E_OPERACAO.md) para paginação dos dossiês, limites do grafo, valores em centavos, validação de importações, recuperação de tarefas e CI/cache Docker.
+
+### Codificação de uploads locais
+
+Em **Configurações → Upload**, escolha **UTF-8** (padrão) ou **Latin-1 (ISO-8859-1)** para arquivos antigos. A opção aplica-se ao CSV avulso ou a todos os CSVs do ZIP. Pela API multipart, envie `codificacao=UTF-8` ou `codificacao=ISO-8859-1`; outras opções retornam erro. A conversão Latin-1 usa blocos limitados e preserva acentos sem carregar o arquivo inteiro em memória. UTF-8 inválido continua rejeitado quando UTF-8 for selecionado. ZIPs com codificações diferentes devem ser separados por codificação.
