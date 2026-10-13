@@ -3,7 +3,10 @@ use storage::{rusqlite::Connection, Result};
 
 pub fn refresh(conn: &Connection) -> Result<usize> {
     if conn.is_autocommit() {
-        let tx = conn.unchecked_transaction()?;
+        let tx = storage::rusqlite::Transaction::new_unchecked(
+            conn,
+            storage::rusqlite::TransactionBehavior::Immediate,
+        )?;
         let result = refresh(&tx)?;
         tx.commit()?;
         return Ok(result);
@@ -21,7 +24,7 @@ pub fn refresh(conn: &Connection) -> Result<usize> {
     "#)?;
     // Apenas relações geradas por esta projeção são substituídas. IDs de nós são estáveis.
     tx.execute(
-        "DELETE FROM conexoes_rede WHERE json_extract(metadata_json,'$.projection')='radar'",
+        "DELETE FROM conexoes_rede WHERE json_extract(metadata_json,'$.projection') IN ('radar','qsa_root')",
         [],
     )?;
 
@@ -94,12 +97,16 @@ pub fn ensure_company(conn: &Connection, root: &str) -> Result<()> {
     if root.len() != 8 || !root.bytes().all(|b| b.is_ascii_digit()) {
         return Ok(());
     }
+    let tx = storage::rusqlite::Transaction::new_unchecked(
+        conn,
+        storage::rusqlite::TransactionBehavior::Immediate,
+    )?;
     let uuid = format!("cnpj_{root}");
     let loaded:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM conexoes_rede e JOIN nos_rede n ON n.id=e.destino_id WHERE n.uuid=?1 AND e.tipo_relacao='SOCIO_ADMINISTRADOR')",[&uuid],|r|r.get(0))?;
     if loaded {
+        tx.commit()?;
         return Ok(());
     }
-    let tx = conn.unchecked_transaction()?;
     let mut stmt=tx.prepare("SELECT socio_nome,socio_cpf_cnpj_mascarado,razao_social FROM empresas_qsa WHERE cnpj_basico=?1 LIMIT 10001")?;
     let mut rows = stmt.query([root])?;
     let mut count = 0;

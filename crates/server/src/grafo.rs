@@ -245,7 +245,7 @@ pub async fn grafo_subgrafo_handler(
             let id = if id.starts_with("socio_") {
                 let name = id.trim_start_matches("socio_");
                 let mut stmt = conn.prepare(
-                    "SELECT uuid FROM nos_rede WHERE nome=?1 AND tipo='PESSOA_FISICA' LIMIT 2",
+                    "SELECT uuid FROM nos_rede WHERE nome=?1 AND tipo='PESSOA_FISICA' AND EXISTS(SELECT 1 FROM conexoes_rede e WHERE e.origem_id=nos_rede.id OR e.destino_id=nos_rede.id) LIMIT 2",
                 )?;
                 let ids = stmt
                     .query_map([name], |r| r.get::<_, String>(0))?

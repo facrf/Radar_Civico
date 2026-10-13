@@ -103,6 +103,7 @@ async fn main() -> Result<()> {
                 Ok(relations) => info!("Rede de relacionamentos atualizada: {relations} relações"),
                 Err(error) => tracing::error!("Falha ao atualizar rede: {error}"),
             }
+            ingestion::progress::persist_progress_loop(graph_pool).await;
         });
     }
     if eh_auditoria {
@@ -141,8 +142,6 @@ async fn main() -> Result<()> {
         println!("Varredura concluída com sucesso.");
         return Ok(());
     }
-
-    tokio::spawn(ingestion::progress::persist_progress_loop(pool.clone()));
 
     let app = criar_router(pool);
 

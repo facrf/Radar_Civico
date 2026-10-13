@@ -182,3 +182,38 @@ fn exportacao_preserva_csv_com_quebras_de_linha_e_json() {
     let value: serde_json::Value = serde_json::from_reader(file.reopen().unwrap()).unwrap();
     assert_eq!(value[0]["nome_completo"], "Maria; \"Silva\"\nSantos");
 }
+
+#[tokio::test]
+async fn projecao_e_persistencia_concorrentes_nao_perdem_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let pool = DbPool::open_with_size(directory.path().join("concurrent.db"), 3).unwrap();
+    {
+        let mut conn = pool.get().unwrap();
+        storage::run_migrations(&mut conn).unwrap();
+        politician(&conn);
+        let tx = storage::transaction_immediate(&mut conn).unwrap();
+        for i in 0..2000 {
+            tx.execute("INSERT INTO receitas_campanha(candidatura_id,doador_cpf_cnpj,doador_nome,valor) VALUES (42,'98733344499','DOADOR',?1)",[i]).unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let index_pool = pool.clone();
+    let index_barrier = barrier.clone();
+    let graph = tokio::task::spawn_blocking(move || {
+        let conn = index_pool.get().unwrap();
+        index_barrier.wait();
+        for _ in 0..3 {
+            assert_eq!(crate::projection::refresh(&conn).unwrap(), 2000);
+        }
+    });
+    let writer = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().unwrap();
+        barrier.wait();
+        for i in 0..15 {
+            conn.execute("INSERT INTO configuracoes_sistema(chave,valor_texto) VALUES ('progress',?1) ON CONFLICT(chave) DO UPDATE SET valor_texto=excluded.valor_texto",[i.to_string()]).unwrap();
+        }
+    });
+    graph.await.unwrap();
+    writer.await.unwrap();
+}
