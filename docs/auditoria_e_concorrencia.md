@@ -46,18 +46,19 @@ A rotina de consolidação de registros repetidos (`mesclar_duplicados_transacio
 
 ---
 
-## 3. Heurística Determinística de Auxílio Emergencial (`crates/auditor/src/auxilio_indevido.rs`)
+### 3. Heurística Determinística de Auxílio Emergencial (`crates/auditor/src/auxilio_indevido.rs`)
 
 O cruzamento entre beneficiários do Auxílio Emergencial e a base eleitoral/mandatos passou por aprimoramentos para eliminação de falsos positivos:
 * **Alinhamento de Máscara de CPF:** Tratamento robusto para registros de 6 dígitos (formato `***.123.456-**`) em relação aos dados completos do TSE.
-* **Supressão de Falsos Positivos Homônimos:** Exigência de correspondência em tokens de sobrenome significativos, evitando alertas equivocados entre cidadãos homônimos que compartilham os mesmos 6 dígitos centrais mascarados.
-* **Filtragem de Cargos Honoríficos:** Limpeza de prefixos como `VEREADOR`, `DEPUTADO`, `PROFESSOR` e `PASTOR` antes da comparação nominal.
+* **Supressão Estrita de Homônimos de Dígitos:** Para registros com CPF mascarado (apenas os 6 dígitos centrais), o auditor descarta correspondências caso os cidadãos compartilhem unicamente um sobrenome de alta frequência no Brasil (como *Silva*, *Santos*, *Oliveira*, *Souza*, etc.) e possuam o primeiro nome divergente (ex.: *Carlos da Silva* vs *Antônio da Silva*).
+* **Filtragem de Cargos Honoríficos:** Limpeza de prefixos como `VEREADOR`, `DEPUTADO`, `PREFEITO`, `PROFESSOR` e `PASTOR` antes da tokenização e comparação nominal.
 
 ---
 
-## 4. Normalização Temporal na Camada Web (`web/`)
+## 4. Normalização Temporal e Interface Web Não-Bloqueante (`web/`)
 
-* Os componentes `MapaDespesas.svelte` e a visualização detalhada do político (`[id]/+page.svelte`) tiveram a rotina de formatação de datas ajustada para truncar o delimitador `T` de timestamps ISO-8601 antes de formatar no padrão brasileiro `DD/MM/AAAA`.
+* **Normalização de Timestamps:** Os componentes `MapaDespesas.svelte` e a visualização detalhada do político (`[id]/+page.svelte`) truncam o delimitador `T` de timestamps ISO-8601 antes de formatar no padrão brasileiro `DD/MM/AAAA`.
+* **Substituição de `window.alert` por Toasts Reativos:** Todos os diálogos bloqueantes de navegador foram substituídos por um sistema visual de toasts animados com auto-dispensa (`ToastNotificacao`) na página de configurações (`/configuracoes`) e feedback inline na unificação de políticos (`/politicos`), evitando a interrupção do loop de polling e do ciclo de eventos do navegador.
 
 ---
 
@@ -81,4 +82,18 @@ O cruzamento entre beneficiários do Auxílio Emergencial e a base eleitoral/man
 ### 5.5 Backup Online a Quente (Hot SQLite Backup) e Webhooks
 * **Snapshot Online:** A API `rusqlite::backup::Backup` cria cópias físicas completas do banco de produção em segundo plano, sem travar threads de escrita ou leitura, armazenadas em `data/backups/`.
 * **Notificações:** Suporte a webhooks externos (`POST /api/v1/config/webhook/test`) para alertas e integrações automatizadas.
+
+---
+
+## 6. Escalabilidade de Grafos e Betweenness Centrality (`crates/graph`)
+
+* **Centralidade Brandes Amostrada:** O algoritmo exato de Brandes possui complexidade $O(|V| \cdot |E|)$, tornando o cálculo impraticável para a base com mais de 2,65 milhões de arestas. A função `calcular_betweenness_centrality_amostrado` introduziu amostragem uniforme para grafos com mais de 500 nós (máximo de 250 pivôs com reescalonamento proporcional), mantendo a precisão analítica e prevenindo congelamento de threads.
+* **Eliminação de Pânicos em Grafos:** Removidos todos os `.unwrap()` não-seguros na travessia BFS e propagação de dependências em `hub.rs`.
+
+---
+
+## 7. Manutenção Contínua do WAL e Resiliência Transacional (`crates/storage`)
+
+* **Checkpoint Passivo Periódico (`checkpoint_passivo`):** Adicionada a função `storage::checkpoint_passivo` invocando `PRAGMA wal_checkpoint(PASSIVE);` ao término do processamento de pacotes do TSE. Isso permite ao SQLite reciclar as páginas do log sem aguardar o encerramento do serviço nem bloquear leituras em andamento.
+* **Recuperação de Travas Envenenadas:** O endpoint `/api/import/status` emprega `.unwrap_or_else(|e| e.into_inner())` para ler a estrutura de progresso mesmo se uma thread anterior tiver entrado em pânico durante a escrita, garantindo disponibilidade ininterrupta da API.
 

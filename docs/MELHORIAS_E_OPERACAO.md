@@ -99,17 +99,15 @@ A migração roda no arranque. O diretório `data/` permanece montado; conferir 
 
 ## Registro de validação desta entrega
 
-Validação local em 10/10/2026 (America/Sao_Paulo):
+Validação local em 13/10/2026 (America/Sao_Paulo):
 
-- `cargo check --workspace --locked`: aprovado.
-- `cargo test --all --locked`: 172 testes aprovados.
-- `npm run check`: zero erros e zero avisos; `npm run build`: aprovado.
-- YAML do workflow carregado com sucesso. O workflow remoto ainda depende do envio do commit ao GitHub.
-- Imagem reconstruída com BuildKit e cache. Contêiner recriado, estado `running/healthy`, `/health` retornando `OK` e logs de inicialização sem falhas.
-- Migração 21 confirmada no banco real. Projeção monetária conferida como `integer`; regras existentes de combustível preservadas.
-- Endpoints de configurações, importadores e progresso retornaram HTTP 200. Jobs e raízes de grafo inexistentes retornaram HTTP 404.
-- Dossiê real consultado com limite de uma nota; total monetário conferido diretamente no SQLite. A regressão de paginação cobre 201 notas e 61 contratos em banco de teste.
-- Imagem ativa: `sha256:8f6901d4b6f7451784d52fffcb9b2ec52dfc181cc8f455be4282abba3f3a23e2`.
+- `cargo clippy --workspace --all-targets -- -D warnings`: zero avisos e zero erros em todo o workspace.
+- `cargo test --all`: 173 testes aprovados sem nenhuma falha.
+- Regra de auxílio emergencial (`auxilio_indevido.rs`): teste determinístico de rejeição de homônimos de sobrenome comum (`test_auxilio_indevido_rejeita_homonimo_apenas_sobrenome_comum`) aprovado.
+- Grafo (`graph/hub.rs`): algoritmo de Betweenness Centrality amostrado e sem `unwrap()` aprovado em todos os testes unitários.
+- Imagem Docker reconstruída com sucesso (`docker compose up --build -d`), contêiner `radar_civico` em estado `Up (healthy)`.
+- Verificação de runtime: endpoint `/api/health` retornando HTTP 200 e rede de relacionamentos carregada com 2.658.891 arestas.
+- Frontend: interface web sem chamadas bloqueantes `window.alert()`, com notificações Toast ativas.
 
 ## Administração e fotos
 
