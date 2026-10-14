@@ -620,7 +620,13 @@ pub fn processar_csv_tse_reader_com_progresso<R: Read, F: FnMut(usize)>(
             let municipio = col_municipio
                 .and_then(|i| record.get(i))
                 .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
+                .filter(|s| {
+                    !s.is_empty()
+                        && !s.starts_with('#')
+                        && !s.eq_ignore_ascii_case("BRASIL")
+                        && !s.eq_ignore_ascii_case("TODOS")
+                        && !s.eq_ignore_ascii_case(&uf)
+                });
             let sit = col_sit
                 .and_then(|i| record.get(i))
                 .map(|s| s.trim().to_string())

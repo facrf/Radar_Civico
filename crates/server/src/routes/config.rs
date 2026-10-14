@@ -2909,7 +2909,10 @@ fn processar_csv_records<R: std::io::Read>(
                 let partido = get(&["SG_PARTIDO", "SIGLA_PARTIDO", "PARTIDO"], "SG_PARTIDO")?;
                 let uf = get(&["SG_UF", "UF"], "SG_UF")?;
                 let municipio =
-                    find_col(&headers, &["NM_UE", "NM_MUNICIPIO", "MUNICIPIO", "NOME_MUNICIPIO", "NOME_UE"]).and_then(|i| record.get(i));
+                    find_col(&headers, &["NM_UE", "NM_MUNICIPIO", "MUNICIPIO", "NOME_MUNICIPIO", "NOME_UE"])
+                        .and_then(|i| record.get(i))
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty() && !s.starts_with('#') && !s.eq_ignore_ascii_case("BRASIL") && !s.eq_ignore_ascii_case(uf));
                 let situacao = find_col(&headers, &["DS_SIT_TOT_TURNO", "SITUACAO_TOTALIZACAO"])
                     .and_then(|i| record.get(i));
                 tx.execute("INSERT INTO politicos(sq_candidato,cpf_mascarado,nome_completo,nome_urna) VALUES (?1,?2,?3,?4) ON CONFLICT(sq_candidato) DO UPDATE SET cpf_mascarado=excluded.cpf_mascarado,nome_completo=excluded.nome_completo,nome_urna=excluded.nome_urna", rusqlite::params![sq, cpf, nome, urna]).map_err(std::io::Error::other)?;

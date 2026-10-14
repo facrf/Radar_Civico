@@ -1049,7 +1049,7 @@ pub async fn listar_politicos_handler(
 
     let mut municipios_disponiveis = Vec::new();
     if !filtro_uf.is_empty() {
-        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT municipio FROM candidaturas WHERE UPPER(uf) = UPPER(?1) AND municipio IS NOT NULL AND municipio != '' ORDER BY municipio ASC LIMIT 300") {
+        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT municipio FROM candidaturas WHERE UPPER(uf) = UPPER(?1) AND municipio IS NOT NULL AND municipio != '' ORDER BY municipio ASC LIMIT 1000") {
             if let Ok(rows) = stmt.query_map([filtro_uf], |r| r.get::<_, String>(0)) {
                 for m in rows.flatten() {
                     municipios_disponiveis.push(m);
@@ -1068,14 +1068,14 @@ pub async fn listar_politicos_handler(
         municipios_disponiveis.sort();
     }
     if municipios_disponiveis.is_empty() {
-        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT municipio FROM candidaturas WHERE municipio IS NOT NULL AND municipio != '' ORDER BY municipio ASC LIMIT 200") {
+        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT municipio FROM candidaturas WHERE municipio IS NOT NULL AND municipio != '' ORDER BY municipio ASC LIMIT 300") {
             if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
                 for m in rows.flatten() {
                     municipios_disponiveis.push(m);
                 }
             }
         }
-        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT nome FROM municipios_ibge ORDER BY is_capital DESC, nome ASC LIMIT 250") {
+        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT nome FROM municipios_ibge ORDER BY is_capital DESC, nome ASC LIMIT 500") {
             if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
                 for m in rows.flatten() {
                     if !municipios_disponiveis.contains(&m) {
@@ -1183,7 +1183,9 @@ pub async fn listar_politicos_handler(
     if !filtro_municipio.is_empty() {
         let mun_normalizado = remover_acentos(filtro_municipio);
         let expr = normalizar_texto_sql("COALESCE(c.municipio, '')");
-        where_clauses.push(format!("({expr} LIKE ?)"));
+        let expr_orgao = normalizar_texto_sql("COALESCE(ca.orgao, '')");
+        where_clauses.push(format!("({expr} LIKE ? OR {expr_orgao} LIKE ?)"));
+        sql_params.push(Box::new(format!("%{mun_normalizado}%")));
         sql_params.push(Box::new(format!("%{mun_normalizado}%")));
     }
 
