@@ -383,34 +383,21 @@
 				</button>
 			</div>
 
-			<!-- Linha 2: Filtros Dropdowns (Partido, UF, Município, Cargo, Ano, Checkbox CEAP) -->
+			<!-- Linha 2: Filtros Dropdowns (Estado, Município, Partido, Cargo, Ano, Checkbox CEAP) -->
 			<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
-				<!-- Filtro por Partido -->
-				<div>
-					<label for="filtro-partido" class="block text-slate-400 font-medium mb-1.5">Partido Político:</label>
-					<select
-						id="filtro-partido"
-						bind:value={partidoSelecionado}
-						on:change={() => carregarPoliticos(true)}
-						class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
-					>
-						<option value="">Todos os Partidos</option>
-						{#each dados.partidos_disponiveis.length ? dados.partidos_disponiveis : ['PL', 'PT', 'UNIÃO', 'PP', 'MDB', 'PSD', 'REPUBLICANOS', 'PSB', 'PDT', 'PSOL', 'PODE', 'PSDB', 'PCdoB', 'PV', 'NOVO', 'AVANTE', 'SOLIDARIEDADE', 'CIDADANIA', 'PRD', 'REDE'] as partido}
-							<option value={partido}>{partido}</option>
-						{/each}
-					</select>
-				</div>
-
 				<!-- Filtro por Estado / UF -->
 				<div>
-					<label for="filtro-uf" class="block text-slate-400 font-medium mb-1.5">Estado / UF de Atuação:</label>
+					<label for="filtro-uf" class="block text-slate-400 font-medium mb-1.5 flex items-center gap-1">
+						<span class="text-emerald-400">📍</span>
+						<span>Estado (UF):</span>
+					</label>
 					<select
 						id="filtro-uf"
 						bind:value={ufSelecionada}
 						on:change={() => {
 							carregarPoliticos(true);
 						}}
-						class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+						class="w-full bg-slate-950 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
 					>
 						<option value="">Todos os Estados (UF)</option>
 						{#each dados.ufs_disponiveis.length ? dados.ufs_disponiveis : todasUfs as uf}
@@ -419,16 +406,23 @@
 					</select>
 				</div>
 
-				<!-- Filtro por Município -->
+				<!-- Filtro por Município (ao lado da UF para delimitar raio geográfico) -->
 				<div>
-					<label for="filtro-municipio" class="block text-slate-400 font-medium mb-1.5">Município:</label>
+					<label for="filtro-municipio" class="block text-slate-400 font-medium mb-1.5 flex items-center justify-between">
+						<span class="flex items-center gap-1"><span class="text-cyan-400">🏙️</span> Município:</span>
+						{#if ufSelecionada}
+							<span class="text-[10px] text-emerald-400 font-mono font-medium truncate" title="Delimitando busca ao estado {ufSelecionada}">
+								Filtro: {ufSelecionada}
+							</span>
+						{/if}
+					</label>
 					<div class="relative">
 						<input
 							id="filtro-municipio"
 							type="text"
 							list="lista-municipios-disponiveis"
 							bind:value={municipioSelecionado}
-							placeholder={ufSelecionada ? `Ex: Campinas (${ufSelecionada})` : 'Digite o município...'}
+							placeholder={ufSelecionada ? `Cidades de ${ufSelecionada}...` : 'Qualquer município...'}
 							on:change={() => carregarPoliticos(true)}
 							on:keydown={(e) => {
 								if (e.key === 'Enter') {
@@ -436,8 +430,22 @@
 									carregarPoliticos(true);
 								}
 							}}
-							class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+							class="w-full bg-slate-950 border border-slate-700 hover:border-slate-600 rounded-lg pl-3 pr-7 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
 						/>
+						{#if municipioSelecionado}
+							<button
+								type="button"
+								on:click={() => {
+									municipioSelecionado = '';
+									carregarPoliticos(true);
+								}}
+								class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs p-1 rounded hover:bg-slate-800 transition-colors"
+								title="Limpar município"
+								aria-label="Limpar filtro de município"
+							>
+								✕
+							</button>
+						{/if}
 						{#if dados.municipios_disponiveis && dados.municipios_disponiveis.length > 0}
 							<datalist id="lista-municipios-disponiveis">
 								{#each dados.municipios_disponiveis as mun}
@@ -446,6 +454,22 @@
 							</datalist>
 						{/if}
 					</div>
+				</div>
+
+				<!-- Filtro por Partido -->
+				<div>
+					<label for="filtro-partido" class="block text-slate-400 font-medium mb-1.5">Partido Político:</label>
+					<select
+						id="filtro-partido"
+						bind:value={partidoSelecionado}
+						on:change={() => carregarPoliticos(true)}
+						class="w-full bg-slate-950 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+					>
+						<option value="">Todos os Partidos</option>
+						{#each dados.partidos_disponiveis.length ? dados.partidos_disponiveis : ['PL', 'PT', 'UNIÃO', 'PP', 'MDB', 'PSD', 'REPUBLICANOS', 'PSB', 'PDT', 'PSOL', 'PODE', 'PSDB', 'PCdoB', 'PV', 'NOVO', 'AVANTE', 'SOLIDARIEDADE', 'CIDADANIA', 'PRD', 'REDE'] as partido}
+							<option value={partido}>{partido}</option>
+						{/each}
+					</select>
 				</div>
 
 				<!-- Filtro por Cargo -->

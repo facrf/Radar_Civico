@@ -1056,6 +1056,16 @@ pub async fn listar_politicos_handler(
                 }
             }
         }
+        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT nome FROM municipios_ibge WHERE UPPER(uf) = UPPER(?1) ORDER BY nome ASC") {
+            if let Ok(rows) = stmt.query_map([filtro_uf], |r| r.get::<_, String>(0)) {
+                for m in rows.flatten() {
+                    if !municipios_disponiveis.contains(&m) {
+                        municipios_disponiveis.push(m);
+                    }
+                }
+            }
+        }
+        municipios_disponiveis.sort();
     }
     if municipios_disponiveis.is_empty() {
         if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT municipio FROM candidaturas WHERE municipio IS NOT NULL AND municipio != '' ORDER BY municipio ASC LIMIT 100") {
@@ -1065,6 +1075,16 @@ pub async fn listar_politicos_handler(
                 }
             }
         }
+        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT nome FROM municipios_ibge ORDER BY nome ASC LIMIT 50") {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                for m in rows.flatten() {
+                    if !municipios_disponiveis.contains(&m) {
+                        municipios_disponiveis.push(m);
+                    }
+                }
+            }
+        }
+        municipios_disponiveis.sort();
     }
 
     let mut anos_disponiveis = Vec::new();
