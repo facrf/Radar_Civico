@@ -232,6 +232,7 @@
 	let incluirTseTudo = true;
 	let incluirCamaraTudo = true;
 	let incluirReceitaTudo = true;
+	let incluirPncpTudo = true;
 	let incluirAutoridadesTudo = true;
 	let incluirAuditoriaTudo = true;
 	let sincronizandoAutoridades = false;
@@ -604,6 +605,7 @@
 					incluir_tse: incluirTseTudo,
 					incluir_camara: incluirCamaraTudo,
 					incluir_receita: incluirReceitaTudo,
+					incluir_pncp: incluirPncpTudo,
 					incluir_autoridades: incluirAutoridadesTudo,
 					incluir_auditoria: incluirAuditoriaTudo
 				})
@@ -2034,7 +2036,32 @@
 				</div>
 			</div>
 
-			<!-- Fonte 5: Autoridades de Cúpula (STF, TCU, PGR, Diplomacia, Secretarias) -->
+			<!-- Fonte 5: OAB / Cadastro Nacional dos Advogados (CNA) -->
+			<div class="p-6 bg-slate-800/50 border border-slate-700/60 rounded-xl space-y-4">
+				<div class="flex items-center justify-between">
+					<div class="flex items-center gap-3">
+						<div class="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-xs">
+							OAB
+						</div>
+						<div>
+							<h3 class="font-medium text-white">Cadastro Nacional dos Advogados (CNA/OAB)</h3>
+							<p class="text-xs text-slate-400">Situação cadastral e incompatibilidades da advocacia (Lei 8.906/94)</p>
+						</div>
+					</div>
+				</div>
+
+				<div class="flex flex-wrap items-center gap-3 pt-2">
+					<button
+						on:click={() => dispararIngestao('OAB')}
+						disabled={disparandoFonte === 'OAB'}
+						class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50"
+					>
+						{disparandoFonte === 'OAB' ? 'Consultando...' : 'Consultar Base OAB'}
+					</button>
+				</div>
+			</div>
+
+			<!-- Fonte 6: Autoridades de Cúpula (STF, TCU, PGR, Diplomacia, Secretarias) -->
 			<div class="p-6 bg-slate-800/50 border border-slate-700/60 rounded-xl space-y-4 md:col-span-2">
 				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
 					<div class="flex items-center gap-3">
@@ -2789,6 +2816,11 @@
 						</label>
 
 						<label class="flex items-center gap-2 p-2.5 bg-slate-800/40 border border-slate-700/60 rounded-lg cursor-pointer hover:bg-slate-800/70">
+							<input type="checkbox" bind:checked={incluirPncpTudo} class="rounded bg-slate-950 border-slate-600 text-emerald-500 focus:ring-emerald-500" />
+							<span>Contratos PNCP ({anoPncp})</span>
+						</label>
+
+						<label class="flex items-center gap-2 p-2.5 bg-slate-800/40 border border-slate-700/60 rounded-lg cursor-pointer hover:bg-slate-800/70">
 							<input type="checkbox" bind:checked={incluirAutoridadesTudo} class="rounded bg-slate-950 border-slate-600 text-emerald-500 focus:ring-emerald-500" />
 							<span>Autoridades de Cúpula (STF/PGR/MRE)</span>
 						</label>
@@ -2813,7 +2845,7 @@
 					<button
 						type="button"
 						on:click={dispararSincronizarTudo}
-						disabled={sincronizandoTudo || (!incluirCamaraTudo && !incluirTseTudo && !incluirReceitaTudo && !incluirAutoridadesTudo && !incluirAuditoriaTudo)}
+						disabled={sincronizandoTudo || (!incluirCamaraTudo && !incluirTseTudo && !incluirReceitaTudo && !incluirPncpTudo && !incluirAutoridadesTudo && !incluirAuditoriaTudo)}
 						class="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-md transition-colors disabled:opacity-50 flex items-center gap-2 cursor-pointer"
 					>
 						{#if sincronizandoTudo}

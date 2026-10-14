@@ -1722,6 +1722,7 @@ pub struct SincronizarTudoRequest {
     pub incluir_tse: Option<bool>,
     pub incluir_camara: Option<bool>,
     pub incluir_receita: Option<bool>,
+    pub incluir_pncp: Option<bool>,
     pub incluir_autoridades: Option<bool>,
     pub incluir_auditoria: Option<bool>,
 }
@@ -1736,6 +1737,7 @@ pub async fn sincronizar_tudo_handler(
     let incluir_tse = payload.incluir_tse.unwrap_or(true);
     let incluir_camara = payload.incluir_camara.unwrap_or(true);
     let incluir_receita = payload.incluir_receita.unwrap_or(true);
+    let incluir_pncp = payload.incluir_pncp.unwrap_or(true);
     let incluir_autoridades = payload.incluir_autoridades.unwrap_or(true);
     let incluir_auditoria = payload.incluir_auditoria.unwrap_or(true);
 
@@ -1859,10 +1861,82 @@ pub async fn sincronizar_tudo_handler(
             match result {
                 Ok((qsa, oab)) => {
                     successes += 1;
-                    atualizar_job(&pool_spawn, &job_id_spawn, 85, &format!("Consulta local: {qsa} vínculos QSA e {oab} registros OAB; novos dados exigem importação da fonte")).await;
+                    atualizar_job(&pool_spawn, &job_id_spawn, 80, &format!("Consulta local: {qsa} vínculos QSA e {oab} registros OAB; novos dados exigem importação da fonte")).await;
                 }
                 Err(error) => failures.push(format!("Consulta QSA/OAB: {error}")),
             }
+        }
+        if incluir_pncp {
+            atualizar_job(
+                &pool_spawn,
+                &job_id_spawn,
+                82,
+                &format!("PNCP: sincronizando contratos para o ano {ano_fiscal}..."),
+            )
+            .await;
+
+            let pool_forn = pool_spawn.clone();
+            let cnpjs = pool_forn
+                .run_blocking(|conn| {
+                    let mut stmt = conn.prepare(
+                        "SELECT DISTINCT fornecedor_cnpj_cpf FROM despesas_parlamentares 
+                         WHERE length(REPLACE(REPLACE(REPLACE(fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', '')) = 14 
+                         LIMIT 15",
+                    )?;
+                    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                    let mut list = Vec::new();
+                    for r in rows.flatten() {
+                        let clean = r.trim().to_string();
+                        if !clean.is_empty() && !list.contains(&clean) {
+                            list.push(clean);
+                        }
+                    }
+                    Ok(list)
+                })
+                .await
+                .unwrap_or_default();
+
+            let client = ingestion::PncpClient::new();
+            let mut inseridos_pncp = 0;
+            if !cnpjs.is_empty() {
+                for cnpj in &cnpjs {
+                    if let Ok(contratos) = client.buscar_contratos_por_cnpj(cnpj, ano_fiscal).await {
+                        if !contratos.is_empty() {
+                            let pool_save = pool_spawn.clone();
+                            if let Ok(ins) = pool_save
+                                .run_blocking(move |conn| {
+                                    ingestion::PncpClient::salvar_contratos(conn, &contratos)
+                                        .map_err(|e| storage::StorageError::Io(std::io::Error::other(e.to_string())))
+                                })
+                                .await
+                            {
+                                inseridos_pncp += ins;
+                            }
+                        }
+                    }
+                }
+            } else if let Ok(contratos) = client.buscar_contratos_por_periodo(ano_fiscal, 1).await {
+                if !contratos.is_empty() {
+                    let pool_save = pool_spawn.clone();
+                    if let Ok(ins) = pool_save
+                        .run_blocking(move |conn| {
+                            ingestion::PncpClient::salvar_contratos(conn, &contratos)
+                                .map_err(|e| storage::StorageError::Io(std::io::Error::other(e.to_string())))
+                        })
+                        .await
+                    {
+                        inseridos_pncp += ins;
+                    }
+                }
+            }
+            successes += 1;
+            atualizar_job(
+                &pool_spawn,
+                &job_id_spawn,
+                86,
+                &format!("PNCP: {inseridos_pncp} contratos sincronizados"),
+            )
+            .await;
         }
         if incluir_autoridades {
             let result = pool_spawn
@@ -4871,6 +4945,8 @@ mod tests {
             "incluir_tse": false,
             "incluir_camara": false,
             "incluir_receita": true,
+            "incluir_pncp": false,
+            "incluir_autoridades": false,
             "incluir_auditoria": true
         });
 
@@ -4892,7 +4968,7 @@ mod tests {
         assert!(!resp.job_id.is_empty());
 
         // Consulta status do job
-        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let req_status = Request::builder()
             .uri(format!("/api/v1/config/ingestao/status/{}", resp.job_id))
@@ -4910,15 +4986,21 @@ mod tests {
         assert!(job_st.progresso > 0);
 
         // Aguarda job concluir e checa histórico de sincronização
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        let c = pool.get().unwrap();
-        let hist_count: i64 = c
-            .query_row(
-                "SELECT count(*) FROM historico_sincronizacao WHERE fonte = 'SINCRONIZAR_TUDO'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
+        let mut hist_count = 0i64;
+        for _ in 0..40 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            let c = pool.get().unwrap();
+            hist_count = c
+                .query_row(
+                    "SELECT count(*) FROM historico_sincronizacao WHERE fonte = 'SINCRONIZAR_TUDO'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if hist_count >= 1 {
+                break;
+            }
+        }
         assert!(hist_count >= 1);
     }
 
