@@ -60,7 +60,10 @@ pub async fn processar_stream_consulta_cand<R: AsyncRead + Unpin + Send>(
     let col_urna = headers.iter().position(|h| h.trim() == "NM_URNA_CANDIDATO");
     let col_cpf = headers.iter().position(|h| h.trim() == "NR_CPF_CANDIDATO");
     let col_partido = headers.iter().position(|h| h.trim() == "SG_PARTIDO");
-    let col_municipio = headers.iter().position(|h| h.trim() == "NM_MUNICIPIO");
+    let col_municipio = headers.iter().position(|h| {
+        let t = h.trim();
+        t == "NM_UE" || t == "NM_MUNICIPIO" || t == "MUNICIPIO" || t == "NOME_MUNICIPIO" || t == "NOME_UE"
+    });
     let col_sit = headers.iter().position(|h| h.trim() == "DS_SIT_TOT_TURNO");
     let col_ocup = headers.iter().position(|h| h.trim() == "DS_OCUPACAO");
     let col_inst = headers.iter().position(|h| h.trim() == "DS_GRAU_INSTRUCAO");

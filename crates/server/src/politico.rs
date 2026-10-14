@@ -967,26 +967,41 @@ pub async fn politico_evolucao_patrimonial_handler(
     Ok(Json(dossie.evolucao_patrimonial))
 }
 
+const ACCENT_PAIRS: &[(char, char)] = &[
+    ('Á', 'a'), ('À', 'a'), ('Ã', 'a'), ('Â', 'a'), ('Ä', 'a'),
+    ('É', 'e'), ('È', 'e'), ('Ê', 'e'), ('Ë', 'e'),
+    ('Í', 'i'), ('Ì', 'i'), ('Î', 'i'), ('Ï', 'i'),
+    ('Ó', 'o'), ('Ò', 'o'), ('Õ', 'o'), ('Ô', 'o'), ('Ö', 'o'),
+    ('Ú', 'u'), ('Ù', 'u'), ('Û', 'u'), ('Ü', 'u'),
+    ('Ç', 'c'),
+    ('á', 'a'), ('à', 'a'), ('ã', 'a'), ('â', 'a'), ('ä', 'a'),
+    ('é', 'e'), ('è', 'e'), ('ê', 'e'), ('ë', 'e'),
+    ('í', 'i'), ('ì', 'i'), ('î', 'i'), ('ï', 'i'),
+    ('ó', 'o'), ('ò', 'o'), ('õ', 'o'), ('ô', 'o'), ('ö', 'o'),
+    ('ú', 'u'), ('ù', 'u'), ('û', 'u'), ('ü', 'u'),
+    ('ç', 'c'),
+];
+
 fn remover_acentos(texto: &str) -> String {
     texto
-        .to_lowercase()
         .chars()
-        .map(|c| match c {
-            'á' | 'à' | 'ã' | 'â' | 'ä' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'ó' | 'ò' | 'õ' | 'ô' | 'ö' => 'o',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'ç' => 'c',
-            other => other,
+        .map(|c| {
+            for &(from, to) in ACCENT_PAIRS {
+                if c == from {
+                    return to;
+                }
+            }
+            c.to_ascii_lowercase()
         })
         .collect()
 }
 
 fn normalizar_texto_sql(campo: &str) -> String {
-    format!(
-        "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER({campo}), 'á', 'a'), 'à', 'a'), 'ã', 'a'), 'â', 'a'), 'é', 'e'), 'ê', 'e'), 'í', 'i'), 'ó', 'o'), 'ô', 'o'), 'õ', 'o'), 'ú', 'u'), 'ç', 'c')"
-    )
+    let mut sql = format!("LOWER({campo})");
+    for &(from, to) in ACCENT_PAIRS {
+        sql = format!("REPLACE({sql}, '{from}', '{to}')");
+    }
+    sql
 }
 
 /// GET /api/politicos e /api/v1/politicos
@@ -1317,7 +1332,7 @@ pub async fn listar_politicos_handler(
         COALESCE(c.sigla_partido, ca.orgao, 'S/P'),
         COALESCE(c.uf, ca.uf, 'BR'),
                 COALESCE(ca.cargo, c.cargo, 'PARLAMENTAR'),
-                c.municipio,
+                MAX(c.municipio) as municipio,
                 COALESCE(c.total_bens_declarados, 0.0),
                 p.foto_blob, p.foto_mime, p.foto_url,
                 GROUP_CONCAT(DISTINCT COALESCE(ca.cargo || ' (' || ca.orgao || ')', c.cargo || CASE WHEN c.ano_eleicao IS NOT NULL AND c.ano_eleicao > 0 THEN ' (' || c.ano_eleicao || ')' ELSE '' END)) as mandatos_str,
@@ -1494,7 +1509,7 @@ pub async fn politico_detalhe_handler(
         .query_row(
             "SELECT sigla_partido, uf, cargo, municipio, total_bens_declarados
              FROM candidaturas WHERE politico_id = ?1
-             ORDER BY ano_eleicao DESC LIMIT 1",
+             ORDER BY (CASE WHEN municipio IS NOT NULL AND municipio != '' THEN 1 ELSE 0 END) DESC, ano_eleicao DESC LIMIT 1",
             [id],
             |r| {
                 Ok((
@@ -2650,6 +2665,43 @@ mod tests {
         assert_eq!(resp_go.total, 1);
         assert_eq!(resp_go.politicos[0].nome_urna, "GOIANIA 2024");
         assert_eq!(resp_go.politicos[0].municipio.as_deref(), Some("Goiânia"));
+
+        // 5. Político de Marataízes - ES gravado em maiúsculas com acento (MARATAÍZES)
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna, sq_candidato) VALUES ('ANTONIO BITENCOURT', 'TONINHO BITENCOURT', '80001900098')",
+            [],
+        ).unwrap();
+        let p4_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, municipio)
+             VALUES (?1, 2024, 'PREFEITO', 'PODE', 'ES', 'Marataízes')",
+            [p4_id],
+        ).unwrap();
+
+        // 5.1 Busca com acento exato ("Marataízes") delimitado em UF=ES
+        let req_marata = Request::builder()
+            .uri("/api/politicos?uf=ES&municipio=Marata%C3%ADzes")
+            .body(Body::empty())
+            .unwrap();
+        let res_marata = app.clone().oneshot(req_marata).await.unwrap();
+        assert_eq!(res_marata.status(), StatusCode::OK);
+        let bytes_marata = axum::body::to_bytes(res_marata.into_body(), usize::MAX).await.unwrap();
+        let resp_marata: ListarPoliticosResponse = serde_json::from_slice(&bytes_marata).unwrap();
+        assert_eq!(resp_marata.total, 1);
+        assert_eq!(resp_marata.politicos[0].nome_urna, "TONINHO BITENCOURT");
+        assert_eq!(resp_marata.politicos[0].municipio.as_deref(), Some("Marataízes"));
+
+        // 5.2 Busca sem acento ("marataizes") delimitado em UF=ES
+        let req_marata_sem_acento = Request::builder()
+            .uri("/api/politicos?uf=ES&municipio=marataizes")
+            .body(Body::empty())
+            .unwrap();
+        let res_marata_sa = app.clone().oneshot(req_marata_sem_acento).await.unwrap();
+        assert_eq!(res_marata_sa.status(), StatusCode::OK);
+        let bytes_marata_sa = axum::body::to_bytes(res_marata_sa.into_body(), usize::MAX).await.unwrap();
+        let resp_marata_sa: ListarPoliticosResponse = serde_json::from_slice(&bytes_marata_sa).unwrap();
+        assert_eq!(resp_marata_sa.total, 1);
+        assert_eq!(resp_marata_sa.politicos[0].nome_urna, "TONINHO BITENCOURT");
     }
 
     #[tokio::test]
