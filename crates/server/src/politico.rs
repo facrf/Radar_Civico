@@ -967,6 +967,28 @@ pub async fn politico_evolucao_patrimonial_handler(
     Ok(Json(dossie.evolucao_patrimonial))
 }
 
+fn remover_acentos(texto: &str) -> String {
+    texto
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'ã' | 'â' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'õ' | 'ô' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            other => other,
+        })
+        .collect()
+}
+
+fn normalizar_texto_sql(campo: &str) -> String {
+    format!(
+        "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER({campo}), 'á', 'a'), 'à', 'a'), 'ã', 'a'), 'â', 'a'), 'é', 'e'), 'ê', 'e'), 'í', 'i'), 'ó', 'o'), 'ô', 'o'), 'õ', 'o'), 'ú', 'u'), 'ç', 'c')"
+    )
+}
+
 /// GET /api/politicos e /api/v1/politicos
 pub async fn listar_politicos_handler(
     State(pool): State<DbPool>,
@@ -1137,10 +1159,12 @@ pub async fn listar_politicos_handler(
         sql_params.push(Box::new(filtro_uf.to_uppercase()));
     }
 
-    // 3.1. Filtro por Município (busca flexível case-insensitive)
+    // 3.1. Filtro por Município (busca flexível e insensível a acentuação/maiúsculas)
     if !filtro_municipio.is_empty() {
-        where_clauses.push("(UPPER(COALESCE(c.municipio, '')) LIKE ?)".to_string());
-        sql_params.push(Box::new(format!("%{}%", filtro_municipio.to_uppercase())));
+        let mun_normalizado = remover_acentos(filtro_municipio);
+        let expr = normalizar_texto_sql("COALESCE(c.municipio, '')");
+        where_clauses.push(format!("({expr} LIKE ?)"));
+        sql_params.push(Box::new(format!("%{mun_normalizado}%")));
     }
 
     // 4. Filtro por Cargo com suporte a cargos eletivos e autoridades de cúpula
@@ -2538,6 +2562,18 @@ mod tests {
             [p2_id],
         ).unwrap();
 
+        // Político 3: Goiânia - GO (com acento)
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('CANDIDATO GOIANIA', 'GOIANIA 2024')",
+            [],
+        ).unwrap();
+        let p3_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, municipio)
+             VALUES (?1, 2024, 'PREFEITO', 'MDB', 'GO', 'Goiânia')",
+            [p3_id],
+        ).unwrap();
+
         let app = Router::new()
             .route("/api/politicos", get(listar_politicos_handler))
             .with_state(pool);
@@ -2579,6 +2615,19 @@ mod tests {
         let resp_sant: ListarPoliticosResponse = serde_json::from_slice(&bytes_sant).unwrap();
         assert_eq!(resp_sant.total, 1);
         assert_eq!(resp_sant.politicos[0].nome_urna, "SANTOS 2024");
+
+        // 4. Busca sem acento digitada pelo usuário ("goiania") encontrando registro gravado com acento ("Goiânia")
+        let req_go = Request::builder()
+            .uri("/api/politicos?municipio=goiania")
+            .body(Body::empty())
+            .unwrap();
+        let res_go = app.clone().oneshot(req_go).await.unwrap();
+        assert_eq!(res_go.status(), StatusCode::OK);
+        let bytes_go = axum::body::to_bytes(res_go.into_body(), usize::MAX).await.unwrap();
+        let resp_go: ListarPoliticosResponse = serde_json::from_slice(&bytes_go).unwrap();
+        assert_eq!(resp_go.total, 1);
+        assert_eq!(resp_go.politicos[0].nome_urna, "GOIANIA 2024");
+        assert_eq!(resp_go.politicos[0].municipio.as_deref(), Some("Goiânia"));
     }
 
     #[tokio::test]
