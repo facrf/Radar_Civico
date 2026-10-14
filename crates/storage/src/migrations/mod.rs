@@ -631,6 +631,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version:21, name:"centavos_e_tarefas_duraveis", sql:include_str!("021_money_jobs.sql") },
     Migration { version:22, name:"evidencias_analiticas_explicitas", sql:include_str!("022_analysis_evidence.sql") },
     Migration { version:23, name:"cache_projecao", sql:include_str!("023_projection_cache.sql") },
+    Migration { version:24, name:"popular_municipios_ibge_completos", sql:include_str!("024_popular_municipios.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1068,6 +1069,10 @@ mod tests {
         let count: i64 =
             conn.query_row("SELECT count(*) FROM municipios_ibge", [], |r| r.get(0))?;
         assert!(count >= 27, "Deveria ter ao menos as 27 capitais inseridas");
+
+        let count_es: i64 =
+            conn.query_row("SELECT count(*) FROM municipios_ibge WHERE uf = 'ES'", [], |r| r.get(0))?;
+        assert_eq!(count_es, 78, "Deveria ter todos os 78 municípios do ES");
 
         let (lat, lon): (f64, f64) = conn.query_row(
             "SELECT latitude, longitude FROM municipios_ibge WHERE uf = 'DF' AND nome = 'Brasília'",

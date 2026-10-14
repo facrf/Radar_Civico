@@ -395,6 +395,7 @@
 						id="filtro-uf"
 						bind:value={ufSelecionada}
 						on:change={() => {
+							municipioSelecionado = '';
 							carregarPoliticos(true);
 						}}
 						class="w-full bg-slate-950 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"

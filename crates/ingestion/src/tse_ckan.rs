@@ -567,7 +567,7 @@ pub fn processar_csv_tse_reader_com_progresso<R: Read, F: FnMut(usize)>(
         let col_urna = find_col_idx(&headers, &["NM_URNA_CANDIDATO", "NOME_URNA"]);
         let col_cpf = find_col_idx(&headers, &["NR_CPF_CANDIDATO", "CPF"]);
         let col_partido = find_col_idx(&headers, &["SG_PARTIDO", "PARTIDO"]);
-        let col_municipio = find_col_idx(&headers, &["NM_MUNICIPIO", "MUNICIPIO"]);
+        let col_municipio = find_col_idx(&headers, &["NM_UE", "NM_MUNICIPIO", "MUNICIPIO", "NOME_MUNICIPIO", "NOME_UE"]);
         let col_sit = find_col_idx(&headers, &["DS_SIT_TOT_TURNO", "SITUACAO_TOTALIZACAO"]);
         let col_ocup = find_col_idx(&headers, &["DS_OCUPACAO", "OCUPACAO"]);
         let col_inst = find_col_idx(&headers, &["DS_GRAU_INSTRUCAO", "GRAU_INSTRUCAO"]);
