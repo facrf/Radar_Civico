@@ -30,6 +30,7 @@
 	let termoBusca = '';
 	let partidoSelecionado = '';
 	let ufSelecionada = '';
+	let municipioSelecionado = '';
 	let cargoSelecionado = '';
 	let anoSelecionado = '';
 	let apenasComGastos = false;
@@ -208,6 +209,7 @@
 		ufs_disponiveis: [],
 		cargos_disponiveis: [],
 		anos_disponiveis: [],
+		municipios_disponiveis: [],
 		politicos: []
 	};
 
@@ -231,6 +233,7 @@
 		if (termoBusca.trim()) params.set('q', termoBusca.trim());
 		if (partidoSelecionado) params.set('partido', partidoSelecionado);
 		if (ufSelecionada) params.set('uf', ufSelecionada);
+		if (municipioSelecionado.trim()) params.set('municipio', municipioSelecionado.trim());
 		if (cargoSelecionado) params.set('cargo', cargoSelecionado);
 		if (anoSelecionado) params.set('ano', anoSelecionado);
 		if (apenasComGastos) params.set('apenas_com_gastos', 'true');
@@ -259,6 +262,7 @@
 		termoBusca = '';
 		partidoSelecionado = '';
 		ufSelecionada = '';
+		municipioSelecionado = '';
 		cargoSelecionado = '';
 		anoSelecionado = '';
 		apenasComGastos = false;
@@ -379,8 +383,8 @@
 				</button>
 			</div>
 
-			<!-- Linha 2: Filtros Dropdowns (Partido, UF, Cargo, Ano, Checkbox CEAP) -->
-			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
+			<!-- Linha 2: Filtros Dropdowns (Partido, UF, Município, Cargo, Ano, Checkbox CEAP) -->
+			<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
 				<!-- Filtro por Partido -->
 				<div>
 					<label for="filtro-partido" class="block text-slate-400 font-medium mb-1.5">Partido Político:</label>
@@ -403,7 +407,9 @@
 					<select
 						id="filtro-uf"
 						bind:value={ufSelecionada}
-						on:change={() => carregarPoliticos(true)}
+						on:change={() => {
+							carregarPoliticos(true);
+						}}
 						class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
 					>
 						<option value="">Todos os Estados (UF)</option>
@@ -411,6 +417,35 @@
 							<option value={uf}>{uf}</option>
 						{/each}
 					</select>
+				</div>
+
+				<!-- Filtro por Município -->
+				<div>
+					<label for="filtro-municipio" class="block text-slate-400 font-medium mb-1.5">Município:</label>
+					<div class="relative">
+						<input
+							id="filtro-municipio"
+							type="text"
+							list="lista-municipios-disponiveis"
+							bind:value={municipioSelecionado}
+							placeholder={ufSelecionada ? `Ex: Campinas (${ufSelecionada})` : 'Digite o município...'}
+							on:change={() => carregarPoliticos(true)}
+							on:keydown={(e) => {
+								if (e.key === 'Enter') {
+									e.preventDefault();
+									carregarPoliticos(true);
+								}
+							}}
+							class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+						/>
+						{#if dados.municipios_disponiveis && dados.municipios_disponiveis.length > 0}
+							<datalist id="lista-municipios-disponiveis">
+								{#each dados.municipios_disponiveis as mun}
+									<option value={mun}>{mun}</option>
+								{/each}
+							</datalist>
+						{/if}
+					</div>
 				</div>
 
 				<!-- Filtro por Cargo -->
@@ -460,7 +495,7 @@
 			</div>
 
 			<!-- Tags de Filtros Ativos e Limpar -->
-			{#if termoBusca || partidoSelecionado || ufSelecionada || cargoSelecionado || anoSelecionado || apenasComGastos}
+			{#if termoBusca || partidoSelecionado || ufSelecionada || municipioSelecionado || cargoSelecionado || anoSelecionado || apenasComGastos}
 				<div class="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
 					<div class="flex flex-wrap items-center gap-1.5">
 						<span class="text-slate-500 font-medium mr-1">Filtros ativos:</span>
@@ -480,6 +515,12 @@
 							<span class="px-2 py-0.5 rounded-md bg-purple-500/10 border border-purple-500/30 text-purple-300 flex items-center gap-1">
 								UF: {ufSelecionada}
 								<button type="button" on:click={() => { ufSelecionada = ''; carregarPoliticos(true); }} class="hover:text-white">✕</button>
+							</span>
+						{/if}
+						{#if municipioSelecionado}
+							<span class="px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 flex items-center gap-1">
+								Município: {municipioSelecionado}
+								<button type="button" on:click={() => { municipioSelecionado = ''; carregarPoliticos(true); }} class="hover:text-white">✕</button>
 							</span>
 						{/if}
 						{#if cargoSelecionado}

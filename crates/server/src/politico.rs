@@ -260,6 +260,7 @@ pub struct ListarPoliticosQueryParams {
     pub q: Option<String>,
     pub partido: Option<String>,
     pub uf: Option<String>,
+    pub municipio: Option<String>,
     pub cargo: Option<String>,
     pub ano: Option<i32>,
     pub ano_eleicao: Option<i32>,
@@ -326,6 +327,8 @@ pub struct ListarPoliticosResponse {
     pub cargos_disponiveis: Vec<String>,
     #[serde(default)]
     pub anos_disponiveis: Vec<i32>,
+    #[serde(default)]
+    pub municipios_disponiveis: Vec<String>,
     pub politicos: Vec<ItemPoliticoListagem>,
 }
 
@@ -980,6 +983,7 @@ pub async fn listar_politicos_handler(
     let q_term = params.q.as_deref().unwrap_or("").trim();
     let filtro_partido = params.partido.as_deref().unwrap_or("").trim();
     let filtro_uf = params.uf.as_deref().unwrap_or("").trim();
+    let filtro_municipio = params.municipio.as_deref().unwrap_or("").trim();
     let filtro_cargo = params.cargo.as_deref().unwrap_or("").trim();
     let apenas_gastos = params.apenas_com_gastos.unwrap_or(false);
 
@@ -1020,6 +1024,26 @@ pub async fn listar_politicos_handler(
         }
     }
     ufs_disponiveis.sort();
+
+    let mut municipios_disponiveis = Vec::new();
+    if !filtro_uf.is_empty() {
+        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT municipio FROM candidaturas WHERE UPPER(uf) = UPPER(?1) AND municipio IS NOT NULL AND municipio != '' ORDER BY municipio ASC LIMIT 300") {
+            if let Ok(rows) = stmt.query_map([filtro_uf], |r| r.get::<_, String>(0)) {
+                for m in rows.flatten() {
+                    municipios_disponiveis.push(m);
+                }
+            }
+        }
+    }
+    if municipios_disponiveis.is_empty() {
+        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT municipio FROM candidaturas WHERE municipio IS NOT NULL AND municipio != '' ORDER BY municipio ASC LIMIT 100") {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                for m in rows.flatten() {
+                    municipios_disponiveis.push(m);
+                }
+            }
+        }
+    }
 
     let mut anos_disponiveis = Vec::new();
     if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT ano_eleicao FROM candidaturas WHERE ano_eleicao IS NOT NULL AND ano_eleicao > 1900 ORDER BY ano_eleicao DESC") {
@@ -1111,6 +1135,12 @@ pub async fn listar_politicos_handler(
             .push("(UPPER(COALESCE(c.uf, '')) = ? OR UPPER(COALESCE(ca.uf, '')) = ?)".to_string());
         sql_params.push(Box::new(filtro_uf.to_uppercase()));
         sql_params.push(Box::new(filtro_uf.to_uppercase()));
+    }
+
+    // 3.1. Filtro por Município (busca flexível case-insensitive)
+    if !filtro_municipio.is_empty() {
+        where_clauses.push("(UPPER(COALESCE(c.municipio, '')) LIKE ?)".to_string());
+        sql_params.push(Box::new(format!("%{}%", filtro_municipio.to_uppercase())));
     }
 
     // 4. Filtro por Cargo com suporte a cargos eletivos e autoridades de cúpula
@@ -1357,6 +1387,7 @@ pub async fn listar_politicos_handler(
         ufs_disponiveis,
         cargos_disponiveis,
         anos_disponiveis,
+        municipios_disponiveis,
         politicos,
     }))
 }
@@ -2475,6 +2506,79 @@ mod tests {
         let resp_2020: ListarPoliticosResponse = serde_json::from_slice(&bytes_2020).unwrap();
         assert_eq!(resp_2020.total, 1);
         assert_eq!(resp_2020.politicos[0].nome_urna, "MULTIANO");
+    }
+
+    #[tokio::test]
+    async fn test_listar_politicos_filtro_municipio() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Político 1: Campinas - SP
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('CANDIDATO CAMPINAS', 'CAMPINAS 2024')",
+            [],
+        ).unwrap();
+        let p1_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, municipio)
+             VALUES (?1, 2024, 'PREFEITO', 'PSD', 'SP', 'Campinas')",
+            [p1_id],
+        ).unwrap();
+
+        // Político 2: Santos - SP
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('CANDIDATO SANTOS', 'SANTOS 2024')",
+            [],
+        ).unwrap();
+        let p2_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf, municipio)
+             VALUES (?1, 2024, 'PREFEITO', 'PL', 'SP', 'Santos')",
+            [p2_id],
+        ).unwrap();
+
+        let app = Router::new()
+            .route("/api/politicos", get(listar_politicos_handler))
+            .with_state(pool);
+
+        // 1. Busca sem filtro de município mas com UF=SP: deve retornar 2 políticos e municipios_disponiveis com Campinas e Santos
+        let req_uf = Request::builder()
+            .uri("/api/politicos?uf=SP")
+            .body(Body::empty())
+            .unwrap();
+        let res_uf = app.clone().oneshot(req_uf).await.unwrap();
+        assert_eq!(res_uf.status(), StatusCode::OK);
+        let bytes_uf = axum::body::to_bytes(res_uf.into_body(), usize::MAX).await.unwrap();
+        let resp_uf: ListarPoliticosResponse = serde_json::from_slice(&bytes_uf).unwrap();
+        assert_eq!(resp_uf.total, 2);
+        assert!(resp_uf.municipios_disponiveis.contains(&"Campinas".to_string()));
+        assert!(resp_uf.municipios_disponiveis.contains(&"Santos".to_string()));
+
+        // 2. Busca exata por município Campinas
+        let req_camp = Request::builder()
+            .uri("/api/politicos?municipio=Campinas")
+            .body(Body::empty())
+            .unwrap();
+        let res_camp = app.clone().oneshot(req_camp).await.unwrap();
+        assert_eq!(res_camp.status(), StatusCode::OK);
+        let bytes_camp = axum::body::to_bytes(res_camp.into_body(), usize::MAX).await.unwrap();
+        let resp_camp: ListarPoliticosResponse = serde_json::from_slice(&bytes_camp).unwrap();
+        assert_eq!(resp_camp.total, 1);
+        assert_eq!(resp_camp.politicos[0].nome_urna, "CAMPINAS 2024");
+        assert_eq!(resp_camp.politicos[0].municipio.as_deref(), Some("Campinas"));
+
+        // 3. Busca parcial e case-insensitive (ex: "sant")
+        let req_sant = Request::builder()
+            .uri("/api/politicos?uf=SP&municipio=sant")
+            .body(Body::empty())
+            .unwrap();
+        let res_sant = app.clone().oneshot(req_sant).await.unwrap();
+        assert_eq!(res_sant.status(), StatusCode::OK);
+        let bytes_sant = axum::body::to_bytes(res_sant.into_body(), usize::MAX).await.unwrap();
+        let resp_sant: ListarPoliticosResponse = serde_json::from_slice(&bytes_sant).unwrap();
+        assert_eq!(resp_sant.total, 1);
+        assert_eq!(resp_sant.politicos[0].nome_urna, "SANTOS 2024");
     }
 
     #[tokio::test]

@@ -451,6 +451,7 @@ export interface ListarPoliticosResponse {
 	ufs_disponiveis: string[];
 	cargos_disponiveis: string[];
 	anos_disponiveis?: number[];
+	municipios_disponiveis?: string[];
 	politicos: ItemPoliticoListagem[];
 }
 
