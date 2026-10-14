@@ -214,6 +214,7 @@ impl SourceImporter for CamaraCeapImporter {
 pub struct PncpImporter {
     pub ano: u32,
     pub cnpj_filtro: Option<String>,
+    pub mock_json: Option<String>,
 }
 
 impl PncpImporter {
@@ -221,6 +222,7 @@ impl PncpImporter {
         Self {
             ano,
             cnpj_filtro: None,
+            mock_json: None,
         }
     }
 
@@ -228,6 +230,15 @@ impl PncpImporter {
         Self {
             ano,
             cnpj_filtro: Some(cnpj.into()),
+            mock_json: None,
+        }
+    }
+
+    pub fn with_mock_json(ano: u32, json: impl Into<String>) -> Self {
+        Self {
+            ano,
+            cnpj_filtro: None,
+            mock_json: Some(json.into()),
         }
     }
 }
@@ -246,8 +257,101 @@ impl SourceImporter for PncpImporter {
         "Ingestão e sincronização de contratos e atas de registro de preços do PNCP"
     }
 
-    async fn run(&self, _ctx: Arc<ImportContext>, _sink: Arc<BatchSink>) -> Result<()> {
-        Err(IngestionError::Custom("PNCP automático indisponível: configure uma fonte oficial antes de importar contratos. Nenhum dado foi inserido.".into()))
+    async fn run(&self, ctx: Arc<ImportContext>, sink: Arc<BatchSink>) -> Result<()> {
+        let ano = if self.ano == 0 { 2024 } else { self.ano as i32 };
+        ctx.set_stage(
+            ImportStage::Conectando,
+            format!("Conectando ao PNCP para o exercício {ano}..."),
+        );
+
+        let pool = sink.pool().clone();
+
+        // Se houver mock de dados (para testes ou injeção direta)
+        if let Some(ref json_str) = self.mock_json {
+            ctx.set_stage(ImportStage::Processando, "Processando contratos PNCP...");
+            let contratos = crate::pncp::PncpClient::parse_contratos_json(json_str)?;
+            let pool_worker = pool.clone();
+            let inseridos = spawn_blocking(move || -> Result<usize> {
+                let mut conn = pool_worker.get().map_err(IngestionError::Storage)?;
+                crate::pncp::PncpClient::salvar_contratos(&mut conn, &contratos)
+            })
+            .await
+            .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
+
+            ctx.update_progress("pncp_contratos.json", 1, 1, inseridos as u64);
+            ctx.finish(format!("PNCP: {} contratos salvos com sucesso", inseridos));
+            return Ok(());
+        }
+
+        // Obtém a lista de CNPJs prioritários para sincronização (da CEAP e empresas_qsa)
+        let cnpjs_alvo = if let Some(ref filtro) = self.cnpj_filtro {
+            vec![filtro.clone()]
+        } else {
+            let conn = pool.get().map_err(IngestionError::Storage)?;
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT fornecedor_cnpj_cpf FROM despesas_parlamentares 
+                 WHERE length(REPLACE(REPLACE(REPLACE(fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', '')) = 14 
+                 LIMIT 25"
+            ).map_err(IngestionError::Sqlite)?;
+
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(IngestionError::Sqlite)?;
+            let mut list = Vec::new();
+            for r in rows.flatten() {
+                let clean = r.trim().to_string();
+                if !clean.is_empty() && !list.contains(&clean) {
+                    list.push(clean);
+                }
+            }
+            list
+        };
+
+        if cnpjs_alvo.is_empty() {
+            return Err(IngestionError::Custom(
+                "Nenhum fornecedor catalogado para consulta no PNCP. Importe primeiro dados da CEAP/Câmara ou empresas QSA, ou informe um CNPJ.".into()
+            ));
+        }
+
+        ctx.set_stage(
+            ImportStage::Processando,
+            format!("Consultando contratos PNCP para {} fornecedores...", cnpjs_alvo.len()),
+        );
+
+        let client = crate::pncp::PncpClient::new();
+        let total_cnpjs = cnpjs_alvo.len();
+        let mut total_inseridos = 0;
+
+        for (idx, cnpj) in cnpjs_alvo.iter().enumerate() {
+            if ctx.is_cancelled() {
+                ctx.set_stage(ImportStage::Cancelado, "Sincronização PNCP cancelada");
+                return Ok(());
+            }
+
+            ctx.update_progress(format!("CNPJ: {cnpj}"), idx + 1, total_cnpjs, total_inseridos as u64);
+
+            match client.buscar_contratos_por_cnpj(cnpj, ano).await {
+                Ok(contratos) if !contratos.is_empty() => {
+                    let pool_worker = pool.clone();
+                    let inseridos = spawn_blocking(move || -> Result<usize> {
+                        let mut conn = pool_worker.get().map_err(IngestionError::Storage)?;
+                        crate::pncp::PncpClient::salvar_contratos(&mut conn, &contratos)
+                    })
+                    .await
+                    .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
+                    total_inseridos += inseridos;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("Consulta CNPJ {} no PNCP: {}", cnpj, e);
+                }
+            }
+        }
+
+        ctx.update_progress("pncp_contratos", total_cnpjs, total_cnpjs, total_inseridos as u64);
+        ctx.finish(format!(
+            "PNCP: {} novos contratos salvos a partir de {} fornecedores consultados",
+            total_inseridos, total_cnpjs
+        ));
+        Ok(())
     }
 }
 
@@ -328,9 +432,19 @@ impl SourceImporter for CnaOabImporter {
             "Conectando ao sistema CNA da OAB...",
         );
 
-        let csv_data = self.mock_csv.clone().ok_or_else(|| IngestionError::Custom(
-            "OAB exige arquivo oficial: utilize o upload OAB ou a investigação por nome. Nenhum dado foi inserido.".into()
-        ))?;
+        let csv_data = if let Some(ref mock) = self.mock_csv {
+            mock.clone()
+        } else if std::path::Path::new("data/oab.csv").exists() {
+            std::fs::read_to_string("data/oab.csv")
+                .map_err(|e| IngestionError::Custom(format!("Falha ao ler data/oab.csv: {e}")))?
+        } else if std::path::Path::new("data/cna.csv").exists() {
+            std::fs::read_to_string("data/cna.csv")
+                .map_err(|e| IngestionError::Custom(format!("Falha ao ler data/cna.csv: {e}")))?
+        } else {
+            return Err(IngestionError::Custom(
+                "OAB exige arquivo oficial: utilize o upload OAB ou coloque 'data/oab.csv'. O portal CNA requer validação de reCAPTCHA e bloqueia consultas automatizadas sem navegador.".into()
+            ));
+        };
 
         if ctx.is_cancelled() {
             ctx.set_stage(ImportStage::Cancelado, "Cancelado");
@@ -437,6 +551,40 @@ pub mod tests {
             .query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total, 0);
+    }
+
+    #[tokio::test]
+    async fn test_pncp_importer_com_mock_json() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+        let sink = Arc::new(BatchSink::new(pool.clone()));
+        let mock_json = r#"{
+            "data": [
+                {
+                    "numeroContratoEmpenho": "2024NE0001",
+                    "orgaoEntidade": { "razaoSocial": "MINISTERIO DA EDUCACAO" },
+                    "niFornecedor": "11222333000199",
+                    "nomeRazaoSocialFornecedor": "FORNECEDOR TESTE LTDA",
+                    "valorGlobal": 75000.0,
+                    "objetoContrato": "Servicos de TI",
+                    "dataAssinatura": "2024-03-01"
+                }
+            ]
+        }"#;
+        let importer = PncpImporter::with_mock_json(2024, mock_json);
+        let ctx = Arc::new(ImportContext::new("pncp"));
+
+        importer.run(Arc::clone(&ctx), sink).await.unwrap();
+
+        let conn = pool.get().unwrap();
+        let total: i64 = conn
+            .query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(ctx.get_progress().stage, ImportStage::Concluido);
     }
 
     #[tokio::test]

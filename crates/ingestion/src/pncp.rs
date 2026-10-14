@@ -7,7 +7,7 @@ use crate::normalizer::limpar_cnpj;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PncpOrgao {
-    #[serde(rename = "razaoSocial")]
+    #[serde(rename = "razaoSocial", default)]
     pub razao_social: String,
     #[serde(default)]
     pub cnpj: Option<String>,
@@ -19,16 +19,16 @@ pub struct PncpContratoItem {
     pub numero_contrato: Option<String>,
     #[serde(rename = "orgaoEntidade")]
     pub orgao_entidade: PncpOrgao,
-    #[serde(rename = "niFornecedor")]
+    #[serde(rename = "niFornecedor", default)]
     pub ni_fornecedor: String,
-    #[serde(rename = "nomeRazaoSocialFornecedor")]
+    #[serde(rename = "nomeRazaoSocialFornecedor", default)]
     pub nome_razao_social_fornecedor: String,
-    #[serde(rename = "valorGlobal")]
+    #[serde(rename = "valorGlobal", default)]
     pub valor_global: f64,
     #[serde(rename = "objetoContrato", default)]
     pub objeto_contrato: Option<String>,
-    #[serde(rename = "dataAssinatura")]
-    pub data_assinatura: String,
+    #[serde(rename = "dataAssinatura", default)]
+    pub data_assinatura: Option<String>,
     #[serde(rename = "dataVigenciaFim", default)]
     pub data_vigencia_fim: Option<String>,
     #[serde(rename = "modalidadeNome", alias = "modalidade", default)]
@@ -53,6 +53,7 @@ impl PncpClient {
         Self {
             client: Client::builder()
                 .user_agent("RadarCivico/1.0")
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_default(),
             base_url: "https://pncp.gov.br/api/consulta/v1".to_string(),
@@ -63,6 +64,7 @@ impl PncpClient {
         Self {
             client: Client::builder()
                 .user_agent("RadarCivico/1.0")
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_default(),
             base_url,
@@ -86,7 +88,12 @@ impl PncpClient {
         ano: i32,
     ) -> Result<Vec<PncpContratoItem>> {
         let doc_clean = limpar_cnpj(cnpj);
-        let url = format!("{}/contratos?cnpj={}&ano={}", self.base_url, doc_clean, ano);
+        let data_inicial = format!("{}0101", ano);
+        let data_final = format!("{}1231", ano);
+        let url = format!(
+            "{}/contratos?dataInicial={}&dataFinal={}&niFornecedor={}&pagina=1",
+            self.base_url, data_inicial, data_final, doc_clean
+        );
 
         let resp = self
             .client
@@ -94,6 +101,45 @@ impl PncpClient {
             .send()
             .await
             .map_err(IngestionError::Reqwest)?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_body = resp.text().await.unwrap_or_default();
+            return Err(IngestionError::Custom(format!(
+                "API PNCP retornou status {status}: {err_body}"
+            )));
+        }
+
+        let texto = resp.text().await.map_err(IngestionError::Reqwest)?;
+        Self::parse_contratos_json(&texto)
+    }
+
+    pub async fn buscar_contratos_por_periodo(
+        &self,
+        ano: i32,
+        pagina: u32,
+    ) -> Result<Vec<PncpContratoItem>> {
+        let data_inicial = format!("{}0101", ano);
+        let data_final = format!("{}0131", ano);
+        let url = format!(
+            "{}/contratos?dataInicial={}&dataFinal={}&pagina={}",
+            self.base_url, data_inicial, data_final, pagina
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(IngestionError::Reqwest)?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_body = resp.text().await.unwrap_or_default();
+            return Err(IngestionError::Custom(format!(
+                "API PNCP retornou status {status}: {err_body}"
+            )));
+        }
 
         let texto = resp.text().await.map_err(IngestionError::Reqwest)?;
         Self::parse_contratos_json(&texto)
@@ -108,18 +154,27 @@ impl PncpClient {
         }
 
         let tx = storage::transaction_immediate(conn)?;
+        let mut inseridos = 0;
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO contratos_publicos (
                     orgao_contratante, fornecedor_cnpj, valor_contratado,
-                    objeto, data_assinatura, data_termino,modalidade
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6,?7)",
+                    objeto, data_assinatura, data_termino, modalidade
+                 ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM contratos_publicos
+                     WHERE orgao_contratante = ?1
+                       AND fornecedor_cnpj = ?2
+                       AND (data_assinatura = ?5 OR (data_assinatura IS NULL AND ?5 IS NULL))
+                       AND ABS(valor_contratado - ?3) < 0.001
+                     LIMIT 1
+                 )",
             )?;
 
             for c in contratos {
                 let fornecedor_cnpj = limpar_cnpj(&c.ni_fornecedor);
 
-                stmt.execute(storage::rusqlite::params![
+                let affected = stmt.execute(storage::rusqlite::params![
                     c.orgao_entidade.razao_social,
                     fornecedor_cnpj,
                     c.valor_global,
@@ -128,11 +183,12 @@ impl PncpClient {
                     c.data_vigencia_fim,
                     c.modalidade,
                 ])?;
+                inseridos += affected;
             }
         }
         tx.commit()?;
 
-        Ok(contratos.len())
+        Ok(inseridos)
     }
 }
 
@@ -196,5 +252,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnpj, "12345678000190");
+
+        // Teste de idempotência: segunda execução não duplica
+        let inseridos_segunda = PncpClient::salvar_contratos(&mut conn, &contratos).unwrap();
+        assert_eq!(inseridos_segunda, 0);
+        let count_apos: i64 = conn
+            .query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_apos, 1);
     }
 }

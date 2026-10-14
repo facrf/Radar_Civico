@@ -739,11 +739,117 @@ async fn executar_rotina_fonte(
     ano: i32,
     job_id: &str,
 ) -> Result<String, String> {
+    if fonte == "PNCP" {
+        atualizar_job(
+            pool,
+            job_id,
+            20,
+            &format!("Consultando fornecedores na base local para busca de contratos no PNCP ({ano})..."),
+        )
+        .await;
+
+        let pool_forn = pool.clone();
+        let cnpjs = pool_forn
+            .run_blocking(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT fornecedor_cnpj_cpf FROM despesas_parlamentares 
+                     WHERE length(REPLACE(REPLACE(REPLACE(fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', '')) = 14 
+                     LIMIT 25",
+                )?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                let mut list = Vec::new();
+                for r in rows.flatten() {
+                    let clean = r.trim().to_string();
+                    if !clean.is_empty() && !list.contains(&clean) {
+                        list.push(clean);
+                    }
+                }
+                Ok(list)
+            })
+            .await
+            .unwrap_or_default();
+
+        let client = ingestion::PncpClient::new();
+        let mut inseridos_total = 0;
+
+        if !cnpjs.is_empty() {
+            let total = cnpjs.len();
+            for (i, cnpj) in cnpjs.iter().enumerate() {
+                let prog = (25 + ((i as u32 * 65) / total as u32).min(65)) as u8;
+                atualizar_job(
+                    pool,
+                    job_id,
+                    prog,
+                    &format!("PNCP: consultando fornecedor {}/{} ({cnpj})...", i + 1, total),
+                )
+                .await;
+
+                if let Ok(contratos) = client.buscar_contratos_por_cnpj(cnpj, ano).await {
+                    if !contratos.is_empty() {
+                        let pool_save = pool.clone();
+                        if let Ok(ins) = pool_save
+                            .run_blocking(move |conn| {
+                                ingestion::PncpClient::salvar_contratos(conn, &contratos)
+                                    .map_err(|e| storage::StorageError::Io(std::io::Error::other(e.to_string())))
+                            })
+                            .await
+                        {
+                            inseridos_total += ins;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Se não houver fornecedores na base, faz uma consulta do período inicial do ano no PNCP
+            atualizar_job(
+                pool,
+                job_id,
+                40,
+                &format!("PNCP: consultando contratos públicos gerais para o ano {ano}..."),
+            )
+            .await;
+            if let Ok(contratos) = client.buscar_contratos_por_periodo(ano, 1).await {
+                if !contratos.is_empty() {
+                    let pool_save = pool.clone();
+                    if let Ok(ins) = pool_save
+                        .run_blocking(move |conn| {
+                            ingestion::PncpClient::salvar_contratos(conn, &contratos)
+                                .map_err(|e| storage::StorageError::Io(std::io::Error::other(e.to_string())))
+                        })
+                        .await
+                    {
+                        inseridos_total += ins;
+                    }
+                }
+            }
+        }
+
+        let total_banco: i64 = pool
+            .run_blocking(|conn| Ok(conn.query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))?))
+            .await
+            .unwrap_or(0);
+
+        return Ok(format!(
+            "Sincronização PNCP ({ano}) concluída: {inseridos_total} novos contratos sincronizados da API oficial. Total atual na base: {total_banco} contratos."
+        ));
+    }
+
+    if fonte == "OAB" || fonte == "CNA" {
+        let pool_oab = pool.clone();
+        let count: i64 = pool_oab
+            .run_blocking(|conn| Ok(conn.query_row("SELECT count(*) FROM registros_profissionais WHERE orgao_emissor = 'OAB'", [], |r| r.get(0))?))
+            .await
+            .unwrap_or(0);
+
+        return Ok(format!(
+            "Consulta CNA/OAB concluída: {count} registros profissionais na base local. O portal CNA requer validação de reCAPTCHA; novas cargas devem ser importadas via Carga Manual Offline."
+        ));
+    }
+
     let (table, label) = match fonte {
         "TSE" => ("candidaturas", "candidaturas"),
         "CEAP" => ("despesas_parlamentares", "despesas"),
         "RECEITA_QSA" => ("empresas_qsa", "vínculos QSA"),
-        "PNCP" => ("contratos_publicos", "contratos"),
         _ => return Err(format!("Fonte desconhecida: {fonte}")),
     };
     atualizar_job(
@@ -772,10 +878,10 @@ pub async fn executar_ingestao_handler(
     Json(payload): Json<ExecutarIngestaoRequest>,
 ) -> Result<(StatusCode, Json<ExecutarIngestaoResponse>), (StatusCode, Json<serde_json::Value>)> {
     let fonte_upper = payload.fonte.trim().to_uppercase();
-    if !["TSE", "CEAP", "RECEITA_QSA", "PNCP"].contains(&fonte_upper.as_str()) {
+    if !["TSE", "CEAP", "RECEITA_QSA", "PNCP", "OAB", "CNA"].contains(&fonte_upper.as_str()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({"erro": "Fonte inválida. Use TSE, CEAP, RECEITA_QSA ou PNCP"})),
+            Json(json!({"erro": "Fonte inválida. Use TSE, CEAP, RECEITA_QSA, PNCP ou OAB"})),
         ));
     }
 
@@ -1942,12 +2048,20 @@ fn required_field<'a>(
 }
 
 fn upload_date(value: &str) -> std::io::Result<Option<String>> {
-    if value.trim().is_empty() {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
         return Ok(None);
     }
-    let day = value.trim().split('T').next().unwrap_or(value);
+    let day = trimmed
+        .split('T')
+        .next()
+        .unwrap_or(trimmed)
+        .split(' ')
+        .next()
+        .unwrap_or(trimmed);
     chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
         .or_else(|_| chrono::NaiveDate::parse_from_str(day, "%d/%m/%Y"))
+        .or_else(|_| chrono::NaiveDate::parse_from_str(day, "%Y%m%d"))
         .map(|d| Some(d.format("%Y-%m-%d").to_string()))
         .map_err(std::io::Error::other)
 }
@@ -2084,12 +2198,16 @@ fn detectar_tipo_por_cabecalho(headers: &csv::StringRecord) -> String {
         || header_str.contains("SITUACAO_REGISTRO")
         || header_str.contains("OAB")
         || header_str.contains("PESSOA_NOME")
+        || header_str.contains("ADVOGADO")
+        || header_str.contains("INSCRICAO")
     {
         "CONSELHOS_OAB".to_string()
     } else if header_str.contains("NUMEROCONTRATO")
         || header_str.contains("VALORGLOBAL")
         || header_str.contains("ORGAO_CONTRATANTE")
         || header_str.contains("VALOR_CONTRATADO")
+        || header_str.contains("NIFORNECEDOR")
+        || header_str.contains("PNCP")
     {
         "PNCP_CONTRATOS".to_string()
     } else if header_str.contains("VALORLIQUIDO")
@@ -2320,10 +2438,17 @@ fn processar_csv_records<R: std::io::Read>(
         "CONSELHOS_OAB" | "REGISTROS_PROFISSIONAIS" | "OAB" => {
             let col_nome = find_col(
                 &headers,
-                &["PESSOA_NOME", "NOME_ADVOGADO", "NOME", "ADVOGADO"],
+                &[
+                    "PESSOA_NOME",
+                    "NOME_ADVOGADO",
+                    "NOME",
+                    "ADVOGADO",
+                    "NM_ADVOGADO",
+                    "NOME_COMPLETO",
+                ],
             );
-            let col_cpf = find_col(&headers, &["CPF_MASCARADO", "CPF", "NR_CPF"]);
-            let col_orgao = find_col(&headers, &["ORGAO_EMISSOR", "ORGAO"]);
+            let col_cpf = find_col(&headers, &["CPF_MASCARADO", "CPF", "NR_CPF", "CPF_ADVOGADO"]);
+            let col_orgao = find_col(&headers, &["ORGAO_EMISSOR", "ORGAO", "CONSELHO"]);
             let col_reg = find_col(
                 &headers,
                 &[
@@ -2331,9 +2456,12 @@ fn processar_csv_records<R: std::io::Read>(
                     "NUMERO_INSCRICAO",
                     "INSCRICAO",
                     "REGISTRO",
+                    "NUMERO_OAB",
+                    "NR_INSCRICAO",
+                    "OAB",
                 ],
             );
-            let col_uf = find_col(&headers, &["SECCIONAL_UF", "UF", "ESTADO"]);
+            let col_uf = find_col(&headers, &["SECCIONAL_UF", "UF", "ESTADO", "SECCIONAL", "SG_UF"]);
             let col_sit = find_col(
                 &headers,
                 &[
@@ -2341,9 +2469,10 @@ fn processar_csv_records<R: std::io::Read>(
                     "SITUACAO_REGULAR",
                     "SITUACAO",
                     "STATUS",
+                    "DS_SITUACAO",
                 ],
             );
-            let col_tipo = find_col(&headers, &["TIPO_INSCRICAO", "TIPO"]);
+            let col_tipo = find_col(&headers, &["TIPO_INSCRICAO", "TIPO", "TIPO_REGISTRO"]);
 
             let tx = conn;
             {
@@ -2357,7 +2486,11 @@ fn processar_csv_records<R: std::io::Read>(
                     let record = record.map_err(std::io::Error::other)?;
                     let nome = required_field(&record, col_nome, "nome")?;
                     let cpf = col_cpf.and_then(|i| record.get(i)).unwrap_or("").trim();
-                    let orgao = required_field(&record, col_orgao, "orgao")?;
+                    let orgao = col_orgao
+                        .and_then(|i| record.get(i))
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("OAB");
                     let reg = required_field(&record, col_reg, "registro")?;
                     let uf = col_uf.and_then(|i| record.get(i)).unwrap_or("BR").trim();
                     let sit = col_sit
@@ -2380,22 +2513,67 @@ fn processar_csv_records<R: std::io::Read>(
         "PNCP_CONTRATOS" | "PNCP" => {
             let col_orgao = find_col(
                 &headers,
-                &["ORGAO_CONTRATANTE", "ORGAO_NOME", "ORGAO", "CONTRATANTE"],
+                &[
+                    "ORGAO_CONTRATANTE",
+                    "ORGAO_NOME",
+                    "ORGAO",
+                    "CONTRATANTE",
+                    "RAZAO_SOCIAL",
+                    "ORGAO_ENTIDADE",
+                    "NOME_ORGAO",
+                ],
             );
             let col_cnpj = find_col(
                 &headers,
-                &["FORNECEDOR_CNPJ", "CNPJ_CONTRATADO", "CNPJ", "CONTRATADO"],
+                &[
+                    "FORNECEDOR_CNPJ",
+                    "CNPJ_CONTRATADO",
+                    "CNPJ",
+                    "CONTRATADO",
+                    "NIFORNECEDOR",
+                    "NI_FORNECEDOR",
+                    "CNPJ_FORNECEDOR",
+                ],
             );
             let col_valor = find_col(
                 &headers,
-                &["VALOR_CONTRATADO", "VALORGLOBAL", "VALOR", "VALOR_INICIAL"],
+                &[
+                    "VALOR_CONTRATADO",
+                    "VALORGLOBAL",
+                    "VALOR_GLOBAL",
+                    "VALOR",
+                    "VALOR_INICIAL",
+                    "VALORINICIAL",
+                ],
             );
-            let col_objeto = find_col(&headers, &["OBJETO", "OBJETOCONTRATO", "DESCRICAO"]);
+            let col_objeto = find_col(
+                &headers,
+                &[
+                    "OBJETO",
+                    "OBJETOCONTRATO",
+                    "OBJETO_CONTRATO",
+                    "DESCRICAO",
+                ],
+            );
             let col_dt_ass = find_col(
                 &headers,
-                &["DATA_ASSINATURA", "DATAASSINATURA", "DT_ASSINATURA"],
+                &[
+                    "DATA_ASSINATURA",
+                    "DATAASSINATURA",
+                    "DT_ASSINATURA",
+                    "DATA_PUBLICACAO_PNCP",
+                    "DATAPUBLICACAOPNCP",
+                ],
             );
-            let col_dt_fim = find_col(&headers, &["DATA_TERMINO", "DATAVIGENCIAFIM", "DT_TERMINO"]);
+            let col_dt_fim = find_col(
+                &headers,
+                &[
+                    "DATA_TERMINO",
+                    "DATAVIGENCIAFIM",
+                    "DT_TERMINO",
+                    "DATA_VIGENCIA_FIM",
+                ],
+            );
 
             let tx = conn;
             {
@@ -2407,8 +2585,13 @@ fn processar_csv_records<R: std::io::Read>(
 
                 for record in reader.records() {
                     let record = record.map_err(std::io::Error::other)?;
-                    let orgao = required_field(&record, col_orgao, "orgao")?;
-                    let cnpj = required_field(&record, col_cnpj, "CNPJ")?;
+                    let orgao = col_orgao
+                        .and_then(|i| record.get(i))
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("ÓRGÃO PÚBLICO");
+                    let cnpj_raw = required_field(&record, col_cnpj, "CNPJ")?;
+                    let cnpj = ingestion::limpar_cnpj(cnpj_raw);
                     let valor = col_valor
                         .and_then(|i| record.get(i))
                         .map(parse_f64_valor)
@@ -4196,6 +4379,117 @@ mod tests {
             })
             .unwrap();
         assert_eq!(total_oab, 1);
+    }
+
+    #[tokio::test]
+    async fn test_upload_csv_oab_sem_coluna_orgao_multipart() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+        let boundary = "---------------------------oab974767299852498929531610588";
+        // CSV de advogados típico sem coluna ORGAO/ORGAO_EMISSOR
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"tipo\"\r\n\r\n\
+             CONSELHOS_OAB\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"arquivo\"; filename=\"advogados_sem_orgao.csv\"\r\n\
+             Content-Type: text/csv\r\n\r\n\
+             NOME;CPF;INSCRICAO;UF;SITUACAO\r\n\
+             MARIA ADVOGADA DA SILVA;***.111.222-**;54321;RJ;REGULAR\r\n\
+             --{boundary}--\r\n"
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/ingestao/upload")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(upload_res.status, "CONCLUIDO");
+        assert_eq!(upload_res.tipo_detectado, "CONSELHOS_OAB");
+        assert_eq!(upload_res.registros_inseridos, 1);
+
+        let conn = pool.get().unwrap();
+        let (orgao, reg, uf): (String, String, String) = conn
+            .query_row(
+                "SELECT orgao_emissor, numero_registro, seccional_uf FROM registros_profissionais WHERE pessoa_nome = 'MARIA ADVOGADA DA SILVA'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(orgao, "OAB");
+        assert_eq!(reg, "54321");
+        assert_eq!(uf, "RJ");
+    }
+
+    #[tokio::test]
+    async fn test_upload_csv_pncp_multipart() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+        let boundary = "---------------------------pncp974767299852498929531610599";
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"arquivo\"; filename=\"contratos_pncp.csv\"\r\n\
+             Content-Type: text/csv\r\n\r\n\
+             ORGAO_CONTRATANTE;FORNECEDOR_CNPJ;VALORGLOBAL;OBJETO;DATA_ASSINATURA;DATA_TERMINO\r\n\
+             SECRETARIA DE SAUDE;12.345.678/0001-90;250000.50;AQUISICAO DE MEDICAMENTOS;2024-05-10;2025-05-10\r\n\
+             --{boundary}--\r\n"
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/ingestao/upload")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(upload_res.status, "CONCLUIDO");
+        assert_eq!(upload_res.tipo_detectado, "PNCP_CONTRATOS");
+        assert_eq!(upload_res.registros_inseridos, 1);
+
+        let conn = pool.get().unwrap();
+        let total_pncp: i64 = conn
+            .query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_pncp, 1);
+
+        let cnpj: String = conn
+            .query_row("SELECT fornecedor_cnpj FROM contratos_publicos WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cnpj, "12345678000190");
     }
 
     #[tokio::test]

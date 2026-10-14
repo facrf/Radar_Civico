@@ -100,6 +100,12 @@ impl OabScraperClient {
             .map_err(IngestionError::Reqwest)?;
 
         let texto = resp.text().await.map_err(IngestionError::Reqwest)?;
+        let trimmed = texto.trim_start();
+        if trimmed.starts_with('<') || trimmed.starts_with("<!DOCTYPE") {
+            return Err(IngestionError::Custom(
+                "O portal CNA da OAB requer validação de reCAPTCHA e não disponibiliza consulta direta por API. Utilize os registros profissionais carregados na base local ou via upload.".into(),
+            ));
+        }
         Self::parse_cna_response(&texto)
     }
 
