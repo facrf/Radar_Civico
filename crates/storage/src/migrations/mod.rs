@@ -634,6 +634,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version:24, name:"popular_municipios_ibge_completos", sql:include_str!("024_popular_municipios.sql") },
     Migration { version:25, name:"todos_os_municipios_brasil", sql:include_str!("025_todos_os_municipios_brasil.sql") },
     Migration { version:26, name:"candidaturas_municipios_es", sql:include_str!("026_candidaturas_municipios_es.sql") },
+    Migration { version:27, name:"tabela_arquivos_ingeridos_e_hashes", sql:include_str!("027_arquivos_ingeridos.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -646,24 +647,46 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
         [],
     )?;
 
-    for migration in MIGRATIONS {
-        let applied: bool = conn
-            .query_row(
-                "SELECT 1 FROM _migrations WHERE version = ?1",
-                [migration.version],
-                |_| Ok(()),
-            )
-            .map(|_| true)
-            .unwrap_or(false);
+    // Garante que a coluna sql_hash exista para auditoria de schema
+    let _ = conn.execute("ALTER TABLE _migrations ADD COLUMN sql_hash TEXT;", []);
 
-        if !applied {
-            let tx = crate::connection::transaction_immediate(conn)?;
-            tx.execute_batch(migration.sql)?;
-            tx.execute(
-                "INSERT INTO _migrations (version, name) VALUES (?1, ?2)",
-                (migration.version, migration.name),
-            )?;
-            tx.commit()?;
+    for migration in MIGRATIONS {
+        let hash_sql = crate::integrity::calcular_sha256_bytes(migration.sql.as_bytes());
+
+        let applied_info: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT name, sql_hash FROM _migrations WHERE version = ?1",
+                [migration.version],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+
+        match applied_info {
+            None => {
+                let tx = crate::connection::transaction_immediate(conn)?;
+                tx.execute_batch(migration.sql)?;
+                tx.execute(
+                    "INSERT INTO _migrations (version, name, sql_hash) VALUES (?1, ?2, ?3)",
+                    (migration.version, migration.name, &hash_sql),
+                )?;
+                tx.commit()?;
+            }
+            Some((_name, Some(existing_hash))) => {
+                if existing_hash != hash_sql {
+                    tracing::warn!(
+                        version = migration.version,
+                        name = migration.name,
+                        "Aviso de integridade: o hash SQL da migração diferiu do hash registrado anteriormente no banco!"
+                    );
+                }
+            }
+            Some((_name, None)) => {
+                // Atualiza o hash retroativamente para migrações executadas em versões anteriores
+                let _ = conn.execute(
+                    "UPDATE _migrations SET sql_hash = ?1 WHERE version = ?2",
+                    (&hash_sql, migration.version),
+                );
+            }
         }
     }
 

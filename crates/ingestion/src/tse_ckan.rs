@@ -861,7 +861,11 @@ pub fn baixar_pacotes_tse(client: Client, urls: Vec<String>) -> PacotesTse {
     PacotesTse { receiver, producer }
 }
 
-pub async fn baixar_pacote_tse(client: &Client, url: &str) -> Result<tempfile::NamedTempFile> {
+pub async fn baixar_pacote_tse_com_hash(
+    client: &Client,
+    url: &str,
+) -> Result<(tempfile::NamedTempFile, String, u64)> {
+    use sha2::{Digest, Sha256};
     let response = client
         .get(url)
         .timeout(Duration::from_secs(120))
@@ -880,6 +884,7 @@ pub async fn baixar_pacote_tse(client: &Client, url: &str) -> Result<tempfile::N
     let mut file = tokio::fs::File::from_std(temporary.reopen()?);
     let mut stream = response.bytes_stream();
     let mut total = 0u64;
+    let mut hasher = Sha256::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         total += chunk.len() as u64;
@@ -888,9 +893,16 @@ pub async fn baixar_pacote_tse(client: &Client, url: &str) -> Result<tempfile::N
                 "Download TSE excede limite de tamanho".into(),
             ));
         }
+        hasher.update(&chunk);
         file.write_all(&chunk).await?;
     }
     file.flush().await?;
+    let hash = hex::encode(hasher.finalize());
+    Ok((temporary, hash, total))
+}
+
+pub async fn baixar_pacote_tse(client: &Client, url: &str) -> Result<tempfile::NamedTempFile> {
+    let (temporary, _, _) = baixar_pacote_tse_com_hash(client, url).await?;
     Ok(temporary)
 }
 

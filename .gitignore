@@ -10,3 +10,4 @@ web/node_modules
 web/.svelte-kit
 web/build
 version.json
+crates/server/data

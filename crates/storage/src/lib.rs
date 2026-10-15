@@ -22,3 +22,10 @@ pub use rusqlite;
 pub mod jobs;
 pub mod money;
 pub use money::Money;
+
+pub mod integrity;
+pub use integrity::{
+    buscar_arquivo_por_hash, calcular_sha256_bytes, calcular_sha256_file, calcular_sha256_reader,
+    listar_arquivos_ingeridos, registrar_arquivo_ingerido, verificar_retificacao,
+    RegistroArquivoIngerido,
+};

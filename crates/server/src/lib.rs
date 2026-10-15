@@ -44,7 +44,8 @@ pub use config::{
     salvar_audit_rules_handler, salvar_icone_handler, salvar_parametros_auditoria,
     sincronizar_autoridades_handler, sincronizar_camara_handler, sincronizar_diarios_handler,
     sincronizar_tse_handler, sincronizar_tudo_handler, status_handler, testar_webhook_handler,
-    upload_arquivo_handler, verificar_tse_ano_handler, versao_handler, BackupItemInfo,
+    upload_arquivo_handler, verificar_tse_ano_handler, versao_handler,
+    listar_arquivos_ingeridos_handler, verificar_arquivo_hash_handler, BackupItemInfo,
     ConfigStatusResponse, ExecutarIngestaoRequest, ExecutarIngestaoResponse,
     IdentidadeVisualResponse, ImportProgress, JobInfo, ParametrosAuditoria,
     SalvarAuditRulesResponse, SalvarIconeResponse, SincronizarCamaraRequest, SincronizarTseRequest,
@@ -305,6 +306,10 @@ pub fn criar_router(pool: DbPool) -> Router {
             "/api/v1/config/backups/:nome_arquivo",
             get(download_backup_arquivo_handler),
         )
+        .route("/api/config/arquivos", get(listar_arquivos_ingeridos_handler))
+        .route("/api/v1/config/arquivos", get(listar_arquivos_ingeridos_handler))
+        .route("/api/config/verificar-hash", get(verificar_arquivo_hash_handler))
+        .route("/api/v1/config/verificar-hash", get(verificar_arquivo_hash_handler))
         .route("/api/config/webhook/test", post(testar_webhook_handler))
         .route("/api/v1/config/webhook/test", post(testar_webhook_handler))
         .route("/api/settings/webhook/test", post(testar_webhook_handler))

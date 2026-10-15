@@ -538,8 +538,12 @@ CARLOS DRUMMOND;11122233344;2024-06-01;LOCAÇÃO DE VEÍCULOS;LOCALIZA RENT A CA
 pub const MAX_CEAP_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_CEAP_CSV_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
-/// Baixa em blocos para disco; nunca mantém o dump anual completo na RAM.
-pub async fn baixar_ceap(client: &reqwest::Client, url: &str) -> Result<tempfile::NamedTempFile> {
+/// Baixa em blocos para disco e calcula o hash SHA-256 do arquivo baixado em streaming.
+pub async fn baixar_ceap_com_hash(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<(tempfile::NamedTempFile, String, u64)> {
+    use sha2::{Digest, Sha256};
     use tokio::io::AsyncWriteExt;
     let response = client
         .get(url)
@@ -559,6 +563,7 @@ pub async fn baixar_ceap(client: &reqwest::Client, url: &str) -> Result<tempfile
     let mut output = tokio::fs::File::from_std(temporary.reopen()?);
     let mut chunks = response.bytes_stream();
     let mut total = 0u64;
+    let mut hasher = Sha256::new();
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk?;
         total += chunk.len() as u64;
@@ -567,9 +572,16 @@ pub async fn baixar_ceap(client: &reqwest::Client, url: &str) -> Result<tempfile
                 "Download CEAP excede limite de 1 GiB".into(),
             ));
         }
+        hasher.update(&chunk);
         output.write_all(&chunk).await?;
     }
     output.flush().await?;
+    let hash = hex::encode(hasher.finalize());
+    Ok((temporary, hash, total))
+}
+
+pub async fn baixar_ceap(client: &reqwest::Client, url: &str) -> Result<tempfile::NamedTempFile> {
+    let (temporary, _, _) = baixar_ceap_com_hash(client, url).await?;
     Ok(temporary)
 }
 

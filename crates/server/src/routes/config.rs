@@ -26,6 +26,7 @@ pub const TABELAS_PERMITIDAS: &[&str] = &[
     "historico_sincronizacao",
     "configuracoes_sistema",
     "emendas_parlamentares",
+    "arquivos_ingeridos",
 ];
 
 pub const DEFAULT_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
@@ -84,6 +85,8 @@ pub struct TotalRegistros {
     pub cargos_autoridades: i64,
     #[serde(default)]
     pub emendas_parlamentares: i64,
+    #[serde(default)]
+    pub arquivos_ingeridos: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,6 +412,10 @@ pub struct UploadResponse {
     pub mensagem: String,
     #[serde(default)]
     pub avisos: Vec<String>,
+    #[serde(default)]
+    pub hash_sha256: Option<String>,
+    #[serde(default)]
+    pub retificacao: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -557,6 +564,10 @@ pub async fn status_handler(
             conn.query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
                 r.get(0)
             })?;
+        let arquivos_ingeridos: i64 =
+            conn.query_row("SELECT count(*) FROM arquivos_ingeridos", [], |r| {
+                r.get(0)
+            }).unwrap_or(0);
 
         let ultimo_evento_sincronizacao: Option<String> = conn
             .query_row(
@@ -596,6 +607,7 @@ pub async fn status_handler(
                 alertas_beneficio_indevido,
                 cargos_autoridades,
                 emendas_parlamentares,
+                arquivos_ingeridos,
             },
             ultimo_evento_sincronizacao,
             versao_sistema: option_env!("APP_VERSION")
@@ -3192,6 +3204,8 @@ pub async fn upload_arquivo_handler(
             )
         })?;
 
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
     let mut nome_arquivo = String::from("desconhecido");
     let mut tamanho_total: usize = 0;
     let mut file_seen = false;
@@ -3243,6 +3257,7 @@ pub async fn upload_arquivo_handler(
                 )
             })? {
                 tamanho_total += chunk.len();
+                hasher.update(&chunk);
                 temp_file.write_all(&chunk).map_err(|e| {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -3258,6 +3273,7 @@ pub async fn upload_arquivo_handler(
                 )
             })? {
                 tamanho_total += chunk.len();
+                hasher.update(&chunk);
                 temp_file.write_all(&chunk).map_err(|e| {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -3281,6 +3297,33 @@ pub async fn upload_arquivo_handler(
             Json(json!({"erro": format!("Falha ao descarregar buffer: {e}")})),
         )
     })?;
+
+    let hash_sha256 = hex::encode(hasher.finalize());
+
+    // Verificação de Idempotência: se o mesmo arquivo já foi processado com sucesso, retorna imediatamente
+    if let Ok(conn_check) = pool.get() {
+        if let Ok(Some(existente)) = storage::buscar_arquivo_por_hash(&conn_check, "UPLOAD_MANUAL", &hash_sha256) {
+            if existente.status == "CONCLUIDO" {
+                return Ok(Json(UploadResponse {
+                    status: "CONCLUIDO".to_string(),
+                    arquivo: nome_arquivo,
+                    tipo_detectado: existente.detalhes.unwrap_or_else(|| "DESCONHECIDO".into()),
+                    registros_inseridos: 0,
+                    mensagem: format!(
+                        "Arquivo idêntico (SHA-256: {}) já foi processado anteriormente em {}. Ingestão redundante ignorada.",
+                        hash_sha256, existente.criado_em
+                    ),
+                    avisos: vec!["Arquivo já existente no banco de dados (idempotência preservada)".to_string()],
+                    hash_sha256: Some(hash_sha256),
+                    retificacao: false,
+                }));
+            }
+        }
+    }
+
+    let retificacao_anterior = pool.get().ok().and_then(|c| {
+        storage::verificar_retificacao(&c, "UPLOAD_MANUAL", &nome_arquivo, &hash_sha256).ok().flatten()
+    });
 
     let temp_path = temp_file.path().to_path_buf();
     let is_zip = nome_arquivo.to_lowercase().ends_with(".zip");
@@ -3407,6 +3450,15 @@ pub async fn upload_arquivo_handler(
     };
 
     let mut avisos = Vec::new();
+    let mut retificacao = false;
+    if let Some(hash_antigo) = retificacao_anterior {
+        retificacao = true;
+        avisos.push(format!(
+            "Retificação detectada: o arquivo '{}' foi modificado em relação ao upload anterior (hash antigo: {}).",
+            nome_arquivo, hash_antigo
+        ));
+    }
+
     // O lote de dados já foi confirmado. Uma falha na análise precisa ser informada,
     // sem apresentar a importação persistida como se tivesse sido revertida.
     let kind = tipo_detectado.clone();
@@ -3434,6 +3486,16 @@ pub async fn upload_arquivo_handler(
                 registros_inseridos as i64
             ],
         );
+        let _ = storage::registrar_arquivo_ingerido(
+            &conn,
+            "UPLOAD_MANUAL",
+            &nome_arquivo,
+            &hash_sha256,
+            tamanho_total as i64,
+            "CONCLUIDO",
+            registros_inseridos as i64,
+            Some(&format!("Tipo: {tipo_detectado}")),
+        );
     }
 
     Ok(Json(UploadResponse {
@@ -3442,6 +3504,8 @@ pub async fn upload_arquivo_handler(
         tipo_detectado,
         registros_inseridos,
         avisos,
+        hash_sha256: Some(hash_sha256),
+        retificacao,
         mensagem: format!(
             "Arquivo processado com sucesso via streams assíncronos. Total de {registros_inseridos} registros catalogados."
         ),
@@ -3729,6 +3793,8 @@ pub struct BackupItemInfo {
     pub tamanho_formatado: String,
     pub criado_em: String,
     pub download_url: String,
+    #[serde(default)]
+    pub hash_sha256: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3754,7 +3820,7 @@ pub async fn criar_backup_handler(
     let nome_arquivo = format!("radar_backup_{timestamp}.sqlite");
     let destino = backup_dir.join(&nome_arquivo);
 
-    pool.backup_to_file(&destino).map_err(|e| {
+    let hash_sha256 = pool.backup_to_file_with_checksum(&destino).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"status": "erro", "mensagem": format!("Falha no snapshot SQLite: {e}")})),
@@ -3776,6 +3842,7 @@ pub async fn criar_backup_handler(
         "nome_arquivo": nome_arquivo,
         "tamanho_bytes": tamanho_bytes,
         "tamanho_formatado": tamanho_formatado,
+        "hash_sha256": hash_sha256,
         "criado_em": Utc::now().to_rfc3339(),
         "mensagem": "Backup quente do SQLite concluído com sucesso."
     })))
@@ -3812,12 +3879,23 @@ pub async fn listar_backups_handler(
                     })
                     .unwrap_or_else(|| Utc::now().to_rfc3339());
 
+                let sidecar_path = backup_dir.join(format!("{nome_arquivo}.sha256"));
+                let hash_sha256 = if let Ok(conteudo) = tokio::fs::read_to_string(&sidecar_path).await {
+                    conteudo.split_whitespace().next().map(|s| s.to_string())
+                } else if let Ok((h, _)) = storage::calcular_sha256_file(&path) {
+                    let _ = tokio::fs::write(&sidecar_path, format!("{h}  {nome_arquivo}\n")).await;
+                    Some(h)
+                } else {
+                    None
+                };
+
                 lista.push(BackupItemInfo {
                     download_url: format!("/api/v1/config/backups/{nome_arquivo}"),
                     nome_arquivo,
                     tamanho_bytes,
                     tamanho_formatado,
                     criado_em,
+                    hash_sha256,
                 });
             }
         }
@@ -3858,16 +3936,71 @@ pub async fn download_backup_arquivo_handler(
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
+    let is_sidecar = nome_limpo.ends_with(".sha256");
+    let content_type = if is_sidecar {
+        "text/plain; charset=utf-8"
+    } else {
+        "application/vnd.sqlite3"
+    };
+
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("application/vnd.sqlite3"),
+        HeaderValue::from_static(content_type),
     );
     if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{nome_limpo}\"")) {
         headers.insert(header::CONTENT_DISPOSITION, v);
     }
 
+    if !is_sidecar {
+        let sidecar_path = std::path::Path::new("data/backups").join(format!("{nome_limpo}.sha256"));
+        if let Ok(conteudo) = tokio::fs::read_to_string(&sidecar_path).await {
+            if let Some(h) = conteudo.split_whitespace().next() {
+                if let Ok(val) = HeaderValue::from_str(h) {
+                    headers.insert("x-checksum-sha256", val);
+                }
+            }
+        }
+    }
+
     Ok((headers, body))
+}
+
+pub async fn listar_arquivos_ingeridos_handler(
+    State(pool): State<DbPool>,
+) -> Result<Json<Vec<storage::RegistroArquivoIngerido>>, (StatusCode, Json<serde_json::Value>)> {
+    let conn = pool.get().map_err(sqlite_http_error)?;
+    let lista = storage::listar_arquivos_ingeridos(&conn, Some(100)).map_err(sqlite_http_error)?;
+    Ok(Json(lista))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VerificarHashParams {
+    pub hash: String,
+    pub fonte: Option<String>,
+    pub nome: Option<String>,
+}
+
+pub async fn verificar_arquivo_hash_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<VerificarHashParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let conn = pool.get().map_err(sqlite_http_error)?;
+    let fonte = params.fonte.as_deref().unwrap_or("UPLOAD_MANUAL");
+    let existente = storage::buscar_arquivo_por_hash(&conn, fonte, &params.hash).map_err(sqlite_http_error)?;
+    let retificacao = if let Some(nome) = params.nome.as_deref() {
+        storage::verificar_retificacao(&conn, fonte, nome, &params.hash).map_err(sqlite_http_error)?
+    } else {
+        None
+    };
+
+    Ok(Json(json!({
+        "hash": params.hash,
+        "fonte": fonte,
+        "ja_ingerido": existente.is_some(),
+        "arquivo": existente,
+        "retificacao_de_hash": retificacao
+    })))
 }
 
 pub async fn testar_webhook_handler(
@@ -4194,7 +4327,7 @@ mod tests {
             conn.execute("INSERT INTO candidaturas(politico_id,ano_eleicao,cargo,sigla_partido,uf) VALUES (1,2024,'PREFEITO','ABC','SP')",[]).unwrap();
         }
 
-        let app = crate::criar_router(pool);
+        let app = crate::criar_router(pool.clone());
 
         let boundary = "---------------------------974767299852498929531610575";
         let body = format!(
@@ -4213,7 +4346,7 @@ mod tests {
                 "content-type",
                 format!("multipart/form-data; boundary={boundary}"),
             )
-            .body(Body::from(body))
+            .body(Body::from(body.clone()))
             .unwrap();
 
         let res = app.oneshot(req).await.unwrap();
@@ -4223,10 +4356,32 @@ mod tests {
             .await
             .unwrap();
         let upload_res: UploadResponse = serde_json::from_slice(&bytes).unwrap();
-
         assert_eq!(upload_res.status, "CONCLUIDO");
         assert_eq!(upload_res.tipo_detectado, "TSE_RECEITAS");
         assert_eq!(upload_res.registros_inseridos, 1);
+        assert!(upload_res.hash_sha256.is_some());
+        assert_eq!(upload_res.hash_sha256.as_ref().unwrap().len(), 64);
+        assert!(!upload_res.retificacao);
+
+        // Reenvio do arquivo identico deve ativar idempotencia por hash
+        let app2 = crate::criar_router(pool.clone());
+        let req2 = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/ingestao/upload")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let res2 = app2.oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+        let bytes2 = axum::body::to_bytes(res2.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let upload_res2: UploadResponse = serde_json::from_slice(&bytes2).unwrap();
+        assert_eq!(upload_res2.registros_inseridos, 0);
+        assert!(upload_res2.mensagem.contains("já foi processado anteriormente"));
     }
 
     #[tokio::test]
@@ -4895,6 +5050,8 @@ mod tests {
         let resp_b: serde_json::Value = serde_json::from_slice(&bytes_b).unwrap();
         assert_eq!(resp_b["status"], "sucesso");
         assert!(resp_b["nome_arquivo"].as_str().is_some());
+        assert!(resp_b["hash_sha256"].as_str().is_some());
+        assert_eq!(resp_b["hash_sha256"].as_str().unwrap().len(), 64);
 
         let req_list = Request::builder()
             .uri("/api/v1/config/backups")
@@ -4907,6 +5064,21 @@ mod tests {
             .unwrap();
         let lista: Vec<BackupItemInfo> = serde_json::from_slice(&bytes_l).unwrap();
         assert!(!lista.is_empty());
+        assert!(lista[0].hash_sha256.is_some());
+
+        // Testar download do backup e header x-checksum-sha256
+        let nome_bkp = resp_b["nome_arquivo"].as_str().unwrap();
+        let req_down = Request::builder()
+            .uri(format!("/api/v1/config/backups/{nome_bkp}"))
+            .body(Body::empty())
+            .unwrap();
+        let res_down = app.clone().oneshot(req_down).await.unwrap();
+        assert_eq!(res_down.status(), StatusCode::OK);
+        assert!(res_down.headers().contains_key("x-checksum-sha256"));
+        assert_eq!(
+            res_down.headers().get("x-checksum-sha256").unwrap().to_str().unwrap(),
+            resp_b["hash_sha256"].as_str().unwrap()
+        );
 
         let req_wh_invalid = Request::builder()
             .method("POST")
@@ -4932,6 +5104,64 @@ mod tests {
             .unwrap();
         let resp_wh: serde_json::Value = serde_json::from_slice(&bytes_wh).unwrap();
         assert!(resp_wh["mensagem"].as_str().unwrap().contains("interno"));
+    }
+
+    #[tokio::test]
+    async fn test_arquivos_ingeridos_e_verificar_hash_endpoints() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            storage::run_migrations(&mut conn).unwrap();
+            storage::registrar_arquivo_ingerido(
+                &conn,
+                "UPLOAD_MANUAL",
+                "teste_gastos.csv",
+                "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                2048,
+                "CONCLUIDO",
+                25,
+                Some("Tipo: CEAP"),
+            ).unwrap();
+        }
+
+        let app = crate::criar_router(pool.clone());
+
+        // 1. GET /api/v1/config/arquivos deve listar o arquivo registrado
+        let req_list = Request::builder()
+            .uri("/api/v1/config/arquivos")
+            .body(Body::empty())
+            .unwrap();
+        let res_list = app.clone().oneshot(req_list).await.unwrap();
+        assert_eq!(res_list.status(), StatusCode::OK);
+        let bytes_list = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
+        let lista: Vec<storage::RegistroArquivoIngerido> = serde_json::from_slice(&bytes_list).unwrap();
+        assert_eq!(lista.len(), 1);
+        assert_eq!(lista[0].nome_arquivo, "teste_gastos.csv");
+        assert_eq!(lista[0].registros_afetados, 25);
+
+        // 2. GET /api/v1/config/verificar-hash deve identificar o arquivo existente
+        let req_verif = Request::builder()
+            .uri("/api/v1/config/verificar-hash?hash=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890&fonte=UPLOAD_MANUAL")
+            .body(Body::empty())
+            .unwrap();
+        let res_verif = app.clone().oneshot(req_verif).await.unwrap();
+        assert_eq!(res_verif.status(), StatusCode::OK);
+        let bytes_verif = axum::body::to_bytes(res_verif.into_body(), usize::MAX).await.unwrap();
+        let json_verif: serde_json::Value = serde_json::from_slice(&bytes_verif).unwrap();
+        assert_eq!(json_verif["ja_ingerido"], true);
+        assert_eq!(json_verif["arquivo"]["nome_arquivo"], "teste_gastos.csv");
+
+        // 3. GET /api/v1/config/verificar-hash com novo hash para mesmo nome deve alertar retificação
+        let req_retif = Request::builder()
+            .uri("/api/v1/config/verificar-hash?hash=9999999999999999999999999999999999999999999999999999999999999999&fonte=UPLOAD_MANUAL&nome=teste_gastos.csv")
+            .body(Body::empty())
+            .unwrap();
+        let res_retif = app.oneshot(req_retif).await.unwrap();
+        assert_eq!(res_retif.status(), StatusCode::OK);
+        let bytes_retif = axum::body::to_bytes(res_retif.into_body(), usize::MAX).await.unwrap();
+        let json_retif: serde_json::Value = serde_json::from_slice(&bytes_retif).unwrap();
+        assert_eq!(json_retif["ja_ingerido"], false);
+        assert_eq!(json_retif["retificacao_de_hash"], "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
     }
 
     #[tokio::test]

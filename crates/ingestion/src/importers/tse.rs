@@ -6,7 +6,8 @@ use crate::error::{IngestionError, Result};
 use crate::importers::sink::BatchSink;
 use crate::importers::traits::{ImportContext, ImportStage, SourceImporter};
 use crate::tse_ckan::{
-    baixar_pacote_tse, descobrir_urls_tse, processar_zip_tse_bytes, processar_zip_tse_reader,
+    baixar_pacote_tse_com_hash, descobrir_urls_tse, processar_zip_tse_bytes,
+    processar_zip_tse_reader,
 };
 
 pub struct TseImporter {
@@ -114,11 +115,24 @@ impl SourceImporter for TseImporter {
 
             let bytes = mock_bytes.clone();
             let pool = sink.pool().clone();
+            let hash = storage::calcular_sha256_bytes(&bytes);
+            let tamanho = bytes.len() as i64;
 
             let total_inseridos = spawn_blocking(move || -> Result<usize> {
                 let mut conn = pool.get().map_err(IngestionError::Storage)?;
                 storage::aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
-                processar_zip_tse_bytes(&mut conn, &bytes)
+                let inseridos = processar_zip_tse_bytes(&mut conn, &bytes)?;
+                let _ = storage::registrar_arquivo_ingerido(
+                    &conn,
+                    "TSE",
+                    "mock_tse.zip",
+                    &hash,
+                    tamanho,
+                    "CONCLUIDO",
+                    inseridos as i64,
+                    Some("Mock TSE"),
+                );
+                Ok(inseridos)
             })
             .await
             .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
@@ -176,11 +190,40 @@ impl SourceImporter for TseImporter {
                 ),
             );
 
-            let temporary = baixar_pacote_tse(&client, &url).await?;
+            let (temporary, hash, tamanho_bytes) = baixar_pacote_tse_com_hash(&client, &url).await?;
 
             if ctx.is_cancelled() {
                 ctx.set_stage(ImportStage::Cancelado, "Importação cancelada pelo usuário");
                 return Ok(());
+            }
+
+            let pool_verif = sink.pool().clone();
+            let nome_arquivo_clone = nome_arquivo.clone();
+            let hash_clone = hash.clone();
+            let ja_processado = spawn_blocking(move || -> Result<bool> {
+                let conn = pool_verif.get().map_err(IngestionError::Storage)?;
+                if let Ok(Some(hash_antigo)) = storage::verificar_retificacao(&conn, "TSE", &nome_arquivo_clone, &hash_clone) {
+                    tracing::warn!(
+                        arquivo = %nome_arquivo_clone,
+                        novo_hash = %hash_clone,
+                        hash_antigo = %hash_antigo,
+                        "Retificação do TSE detectada: pacote modificado em relação ao dump anterior"
+                    );
+                }
+                let existente = storage::buscar_arquivo_por_hash(&conn, "TSE", &hash_clone).map_err(IngestionError::Storage)?;
+                Ok(existente.is_some_and(|r| r.status == "CONCLUIDO"))
+            })
+            .await
+            .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
+
+            if ja_processado {
+                tracing::info!(
+                    arquivo = %nome_arquivo,
+                    hash = %hash,
+                    "Pacote TSE idêntico já processado anteriormente. Pulando carga redundante."
+                );
+                ctx.update_progress(&nome_arquivo, index + 1, total_urls, total_records);
+                continue;
             }
 
             ctx.set_stage(
@@ -194,13 +237,26 @@ impl SourceImporter for TseImporter {
             );
 
             let pool = sink.pool().clone();
+            let nome_reg = nome_arquivo.clone();
+            let hash_reg = hash.clone();
 
             let inseridos = spawn_blocking(move || -> Result<usize> {
                 let mut conn = pool.get().map_err(IngestionError::Storage)?;
                 storage::aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
-                processar_zip_tse_reader(&mut conn, temporary.reopen()?, |name, n| {
+                let ins = processar_zip_tse_reader(&mut conn, temporary.reopen()?, |name, n| {
                     tracing::trace!(arquivo = name, registros = n, "Lote TSE persistido")
-                })
+                })?;
+                let _ = storage::registrar_arquivo_ingerido(
+                    &conn,
+                    "TSE",
+                    &nome_reg,
+                    &hash_reg,
+                    tamanho_bytes as i64,
+                    "CONCLUIDO",
+                    ins as i64,
+                    None,
+                );
+                Ok(ins)
             })
             .await
             .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;

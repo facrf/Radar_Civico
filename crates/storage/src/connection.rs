@@ -249,6 +249,18 @@ impl DbPool {
         Ok(())
     }
 
+    /// Executa o backup a quente e calcula o hash SHA-256 do arquivo gerado, criando também um sidecar .sha256.
+    pub fn backup_to_file_with_checksum<P: AsRef<Path>>(&self, dst_path: P) -> Result<String> {
+        let path = dst_path.as_ref();
+        self.backup_to_file(path)?;
+        let (hash, _) = crate::integrity::calcular_sha256_file(path)?;
+        let sidecar_path = format!("{}.sha256", path.display());
+        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let content = format!("{hash}  {file_name}\n");
+        std::fs::write(sidecar_path, content)?;
+        Ok(hash)
+    }
+
     pub fn get(&self) -> Result<PooledConnection> {
         self.get_timeout(Duration::from_secs(60))
     }
