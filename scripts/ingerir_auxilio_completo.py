@@ -28,7 +28,9 @@ from typing import Optional, Set
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-DEFAULT_CSV = "/home/facrf/Downloads/basedados/auxilio_emergencial.csv"
+DEFAULT_CSV = os.environ.get(
+    "AUXILIO_CSV_PATH", os.path.join(PROJECT_ROOT, "data", "auxilio_emergencial.csv")
+)
 DEFAULT_DB = os.path.join(PROJECT_ROOT, "data", "radar_civico.db")
 BATCH_SIZE = 50_000
 

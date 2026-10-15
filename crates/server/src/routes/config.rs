@@ -3541,6 +3541,13 @@ pub async fn obter_icone_handler(
                 } else {
                     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
                 }
+                headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+                if mime == "image/svg+xml" {
+                    headers.insert(
+                        header::CONTENT_SECURITY_POLICY,
+                        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'"),
+                    );
+                }
                 headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
                 return Ok((headers, Body::from(blob)));
             }
@@ -3560,6 +3567,13 @@ pub async fn obter_icone_handler(
                     } else {
                         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
                     }
+                    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+                    if mime == "image/svg+xml" {
+                        headers.insert(
+                            header::CONTENT_SECURITY_POLICY,
+                            HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'"),
+                        );
+                    }
                     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
                     return Ok((headers, Body::from(blob)));
                 }
@@ -3571,6 +3585,11 @@ pub async fn obter_icone_handler(
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("image/svg+xml"),
+    );
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'"),
     );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     Ok((headers, Body::from(DEFAULT_ICON_SVG)))
@@ -3586,6 +3605,62 @@ pub async fn obter_favicon_handler(
         }),
     )
     .await
+}
+
+fn validar_arquivo_imagem(bytes: &[u8], mime_type: &str) -> Result<(), &'static str> {
+    match mime_type {
+        "image/png" => {
+            if bytes.len() >= 8 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                Ok(())
+            } else {
+                Err("Assinatura de arquivo PNG inválida")
+            }
+        }
+        "image/jpeg" => {
+            if bytes.len() >= 3 && bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+                Ok(())
+            } else {
+                Err("Assinatura de arquivo JPEG inválida")
+            }
+        }
+        "image/webp" => {
+            if bytes.len() > 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+                Ok(())
+            } else {
+                Err("Assinatura de arquivo WebP inválida")
+            }
+        }
+        "image/x-icon" | "image/vnd.microsoft.icon" => {
+            if bytes.len() >= 4
+                && (bytes.starts_with(&[0x00, 0x00, 0x01, 0x00])
+                    || bytes.starts_with(&[0x00, 0x00, 0x02, 0x00]))
+            {
+                Ok(())
+            } else {
+                Err("Assinatura de arquivo ICO inválida")
+            }
+        }
+        "image/svg+xml" => {
+            let svg_str =
+                std::str::from_utf8(bytes).map_err(|_| "Arquivo SVG não contém UTF-8 válido")?;
+            let lower = svg_str.to_lowercase();
+            if lower.contains("<script")
+                || lower.contains("javascript:")
+                || lower.contains("<foreignobject")
+                || lower.contains("onload=")
+                || lower.contains("onerror=")
+                || lower.contains("onclick=")
+                || lower.contains("onmouseover=")
+            {
+                return Err("Arquivo SVG contém scripts ou elementos executáveis não permitidos");
+            }
+            if !lower.contains("<svg") {
+                return Err("Arquivo não é um SVG válido (tag <svg> ausente)");
+            }
+            Ok(())
+        }
+        _ => Err("Tipo MIME de imagem não permitido"),
+    }
 }
 
 pub async fn salvar_icone_handler(
@@ -3637,6 +3712,37 @@ pub async fn salvar_icone_handler(
         ));
     }
 
+    let alvo_lower = alvo.to_lowercase();
+    if !["icone", "favicon", "ambos"].contains(&alvo_lower.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"erro": "Alvo inválido: use icone, favicon ou ambos"})),
+        ));
+    }
+    alvo = alvo_lower;
+
+    let mime_clean = match mime_type.to_lowercase().as_str() {
+        "image/svg+xml" | "image/svg" => "image/svg+xml",
+        "image/png" => "image/png",
+        "image/jpeg" | "image/jpg" => "image/jpeg",
+        "image/webp" => "image/webp",
+        "image/x-icon" | "image/vnd.microsoft.icon" => "image/x-icon",
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"erro": "Tipo de imagem não suportado. Formatos aceitos: PNG, JPEG, WebP, ICO, SVG."})),
+            ));
+        }
+    };
+
+    if let Err(msg) = validar_arquivo_imagem(&bytes, mime_clean) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"erro": msg})),
+        ));
+    }
+    let mime_final = mime_clean.to_string();
+
     let conn = pool.get().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3648,7 +3754,7 @@ pub async fn salvar_icone_handler(
         conn.execute(
             "INSERT OR REPLACE INTO configuracoes_sistema (chave, valor_texto, valor_blob, mime_type, atualizado_em)
              VALUES ('app_icon', 'icone_custom', ?1, ?2, CURRENT_TIMESTAMP)",
-            rusqlite::params![&bytes, &mime_type],
+            rusqlite::params![&bytes, &mime_final],
         ).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3661,7 +3767,7 @@ pub async fn salvar_icone_handler(
         conn.execute(
             "INSERT OR REPLACE INTO configuracoes_sistema (chave, valor_texto, valor_blob, mime_type, atualizado_em)
              VALUES ('favicon', 'favicon_custom', ?1, ?2, CURRENT_TIMESTAMP)",
-            rusqlite::params![&bytes, &mime_type],
+            rusqlite::params![&bytes, &mime_final],
         ).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3674,7 +3780,7 @@ pub async fn salvar_icone_handler(
         status: "CONCLUIDO".to_string(),
         mensagem: "Identidade visual atualizada com sucesso!".to_string(),
         alvo,
-        mime_type,
+        mime_type: mime_final,
         tamanho_bytes: bytes.len(),
     }))
 }

@@ -14,7 +14,7 @@ set -euo pipefail
 
 MUNICIPIO="${1:-}"
 UF="${2:-}"
-CSV_ORIGEM="${3:-/home/facrf/Downloads/basedados/auxilio_emergencial.csv}"
+CSV_ORIGEM="${3:-${AUXILIO_CSV_PATH:-./data/auxilio_emergencial.csv}}"
 
 if [ -z "$MUNICIPIO" ]; then
     echo "❌ Erro: Informe o nome do município."

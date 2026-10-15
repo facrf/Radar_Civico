@@ -55,12 +55,17 @@ RUN apt-get -o Acquire::ForceIPv4=true update && apt-get -o Acquire::ForceIPv4=t
     sqlite3 \
     libsqlite3-0 \
     libssl3 \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 10001 radar && useradd -u 10001 -g radar -s /bin/sh -d /app radar
 
 WORKDIR /app
 
 COPY --from=builder /app/server-binary /app/server
 COPY --from=web-builder /app/web/build /app/web/build
+COPY scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /app/data && chown -R radar:radar /app
 
 ENV DATA_DIR=/app/data
 ENV PORT=8080
@@ -75,4 +80,5 @@ VOLUME ["/app/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/server"]

@@ -83,6 +83,10 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 pub fn criar_router(pool: DbPool) -> Router {
+    criar_router_com_auth(pool, security::AdminAuth::from_env())
+}
+
+pub fn criar_router_com_auth(pool: DbPool, auth: security::AdminAuth) -> Router {
     let mut router = Router::new()
         .route("/health", get(|| async { "OK" }))
         .route(
@@ -379,6 +383,13 @@ pub fn criar_router(pool: DbPool) -> Router {
     }
 
     router
+        .layer(axum::middleware::from_fn_with_state(
+            auth,
+            security::auth_guard,
+        ))
+        .layer(axum::middleware::from_fn(
+            security::security_headers_middleware,
+        ))
         .layer(CorsLayer::new())
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(CompressionLayer::new())
@@ -427,6 +438,70 @@ mod local_access_tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn headers_de_seguranca_presentes_em_respostas() {
+        let app = criar_router(DbPool::open_in_memory().unwrap());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+        assert_eq!(
+            headers.get("x-frame-options").unwrap(),
+            "SAMEORIGIN"
+        );
+        assert_eq!(
+            headers.get("referrer-policy").unwrap(),
+            "strict-origin-when-cross-origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn autenticacao_quando_configurada_bloqueia_mutacoes_e_permite_com_credencial() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let auth = security::AdminAuth::new_with_secret(Some("minha_chave_segura_123".to_string()));
+        let app = criar_router_com_auth(pool, auth);
+
+        // 1. Leitura pública permitida sem credencial
+        let req_pub = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let res_pub = app.clone().oneshot(req_pub).await.unwrap();
+        assert_eq!(res_pub.status(), StatusCode::OK);
+
+        // 2. Mutação bloqueada sem credencial
+        let req_bloq = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/ingestao/executar")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let res_bloq = app.clone().oneshot(req_bloq).await.unwrap();
+        assert_eq!(res_bloq.status(), StatusCode::UNAUTHORIZED);
+
+        // 3. Mutação permitida com X-API-Key correta (chega até validação do payload)
+        let req_ok = Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/ingestao/executar")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-api-key", "minha_chave_segura_123")
+            .body(Body::from("{}"))
+            .unwrap();
+        let res_ok = app.oneshot(req_ok).await.unwrap();
+        assert_eq!(res_ok.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
 
