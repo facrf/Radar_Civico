@@ -89,7 +89,11 @@ cargo run -p server -- auditar
 
 ### 4. Execução com Docker Compose (Porta 28080)
 
-O Radar Cívico foi pensado para rodar localmente com dados públicos e banco SQLite na pasta `data/`. Não há tela de login: consultas, configurações, importações e exportações são acessadas diretamente. Por isso, o Compose publica o serviço somente em `127.0.0.1`, na porta **`28080`** do computador, mapeada para a porta `8080` do container. Não exponha essa porta em uma rede compartilhada sem adicionar uma camada de controle de acesso.
+O Radar Cívico opera por padrão em **modo local**, dispensando login para consultas e operações na porta de loopback (`127.0.0.1:28080`).
+
+Para ambientes de rede compartilhada ou servidores remotos, é possível habilitar **Autenticação Administrativa Configurável** definindo as variáveis `RADAR_ADMIN_PASSWORD` e/ou `RADAR_API_KEY`. Quando ativadas, endpoints mutantes (uploads, sincronizações, disparos de auditoria, restaurações de backups) e exportações completas da base de dados exigem autenticação.
+
+O contêiner executa internamente sob o usuário não-root **`radar`** (UID 10001), garantindo isolamento e segurança em nível de sistema operacional.
 
 ```yaml
 # docker-compose.yml
@@ -109,6 +113,9 @@ services:
       - HOST=0.0.0.0
       - WEB_DIR=/app/web/build
       - RUST_LOG=info
+      # (Opcional) Ativar controle de acesso administrativo:
+      # - RADAR_ADMIN_PASSWORD=SuaSenhaForteAqui
+      # - RADAR_API_KEY=SuaChaveDeApiAqui
     restart: unless-stopped
 ```
 
@@ -173,7 +180,8 @@ volumes:
 5. Clique em **Deploy the stack**.
 6. Acesse a aplicação em **`http://<ip-do-servidor>:28080`**.
 
-O acesso pela rede do servidor exige alterar o mapeamento de porta. Como a aplicação não solicita login, faça isso somente em uma rede confiável ou atrás de uma camada de autenticação.
+> [!TIP]
+> Em implantações acessíveis na rede, defina `RADAR_ADMIN_PASSWORD` e/ou `RADAR_API_KEY` na seção `environment:` da stack para proteger as operações de escrita, importação e exportação de dados.
 
 ---
 
@@ -214,6 +222,8 @@ Exportações CSV/JSON são geradas linha a linha em arquivo temporário e trans
 * `GET /api/v1/grafo/{id}?grau=2` - Subgrafo relacional formatado para Cytoscape.js e Apache ECharts.
 * `GET /api/v1/auditoria/alertas?ano=2024&severidade=CRITICA` - Ranking de anomalias com indicação de fontes primárias, filtros e sincronização em tempo real.
 * `GET /api/v1/investigar/nomeacao/{doador_id}` - Disparo sob demanda na API do Querido Diário e CNA/OAB com checagem do Art. 28 da Lei 8.906/94.
+* `GET /api/v1/config/arquivos-ingeridos` - Rastreamento e histórico de arquivos ingeridos com seus respectivos hashes SHA-256 e detecção de retificações.
+* `POST /api/v1/config/verificar-hash` - Verificação de integridade criptográfica de arquivos e backups contra hash SHA-256 esperado.
 
 ---
 

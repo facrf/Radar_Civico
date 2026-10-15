@@ -4,6 +4,33 @@ Todas as alterações relevantes neste projeto são documentadas neste arquivo.
 
 ## [Unreleased]
 
+### Segurança e Mitigações de Vulnerabilidades
+
+- **Autenticação Administrativa Configurável:** Implementação da estrutura `AdminAuth` permitindo controle de acesso opcional em endpoints de mutação (uploads, sincronizações, disparos de auditoria, backups e configurações) e exportação de banco de dados (`/api/v1/config/exportar/*`).
+  - Habilitada definindo as variáveis de ambiente `RADAR_ADMIN_PASSWORD` (para login via interface e autenticação HTTP Basic) e/ou `RADAR_API_KEY` (para integrações automatizadas via cabeçalhos `X-API-Key` ou `Authorization: Bearer <token>`).
+  - Quando nenhuma credencial estiver configurada, o sistema opera no modo local sem bloqueio, garantindo compatibilidade total com instalações existentes.
+- **Sanitização de Uploads e Prevenção de Stored XSS:**
+  - Validação estrita de magic bytes para imagens (PNG, JPEG, WebP e ICO) e validação estrutural contra injeções em arquivos SVG (bloqueio de tags `<script>`, `<foreignobject>`, URIs `javascript:` e manipuladores de eventos inline como `onload=`, `onerror=`).
+  - Injeção obrigatória dos cabeçalhos `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'` e `X-Content-Type-Options: nosniff` nos endpoints de entrega de ícone e favicon.
+- **Mitigação de SSRF e Port Scanning em Webhooks:** Restrição das conexões do cliente HTTP seguro (`public_client`) às portas convencionais de tráfego web (`80`, `443`, `8080`, `8443`), com bloqueio preventivo de endereços IP privados (RFC 1918), locais de loopback e reservados.
+- **Cabeçalhos Globais de Segurança HTTP:** Middleware de segurança embutido na API Axum que anexa automaticamente em todas as respostas HTTP os cabeçalhos:
+  - `X-Content-Type-Options: nosniff` (prevenção de MIME-sniffing);
+  - `X-Frame-Options: SAMEORIGIN` (proteção contra clickjacking);
+  - `Referrer-Policy: strict-origin-when-cross-origin`.
+- **Execução do Contêiner como Usuário Não-Root:** Reestruturação do contêiner Docker para execução com privilégios reduzidos sob o usuário de sistema `radar` (UID 10001), utilizando `scripts/docker-entrypoint.sh` e `gosu` para ajuste automático e seguro de permissões no diretório `/app/data`.
+- **Flexibilização de Caminhos nos Scripts:** Parametrização de caminhos absolutos nos scripts de extração e ingestão do auxílio emergencial (`scripts/extrair_auxilio_municipio.sh` e `scripts/ingerir_auxilio_completo.py`) com suporte à variável de ambiente `AUXILIO_CSV_PATH`.
+
+### Rastreamento de Integridade e Hashes SHA-256
+
+- **Tabela de Integridade (`arquivos_ingeridos`):** Migração 27 criando tabela para registro de checksum SHA-256, nome do arquivo, fonte de dados, quantidade de linhas ingeridas, tamanho em bytes e carimbo de data/hora.
+- **Detecção de Retificações:** Identificação automática de arquivos idênticos já ingeridos e sinalização de lotes retificados, prevenindo duplicações e rastreando alterações nas fontes de dados primárias.
+- **Endpoints de Verificação de Integridade:** Endpoints `GET /api/v1/config/arquivos-ingeridos` e `POST /api/v1/config/verificar-hash` para auditoria do histórico de arquivos e conferência de integridade de backups.
+
+### Geolocalização Municipal e Busca Acentuada
+
+- **Migração 26 (Candidaturas e Municípios do ES):** Vinculação de candidaturas municipais do Espírito Santo ao código IBGE territorial, assegurando integridade nas análises regionais.
+- **Busca Tolerante a Acentuação:** Aprimoramento da busca de políticos e municípios no SQLite com normalização de acentos.
+
 ### Confiabilidade da sincronização
 
 - **CEAP em streaming:** Download e descompactação em arquivos temporários, parsing em lotes de 500, limites de tamanho e empréstimo da conexão apenas durante cada lote; mesmo fluxo para sincronização individual, unificada e importador CEAP.
