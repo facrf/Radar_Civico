@@ -56,14 +56,22 @@ jobs:
           push: false
           load: true
           tags: radar-civico:ci
+          build-args: |
+            APP_VERSION=ci
+            APP_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Conferir runtime em banco temporário
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
         run: |
           docker run -d --name radar-ci -p 28080:8080 radar-civico:ci
           trap 'docker logs radar-ci; docker rm -f radar-ci' EXIT
           for attempt in $(seq 1 30); do
-            if curl -fsS http://localhost:28080/ready; then exit 0; fi
+            if curl -fsS http://localhost:28080/ready; then
+              curl -fsS http://localhost:28080/api/v1/config/versao | python3 -c 'import json,os,sys; assert json.load(sys.stdin)["commit"] == os.environ["EXPECTED_COMMIT"], "Binário desatualizado na imagem"'
+              exit 0
+            fi
             sleep 2
           done
           exit 1

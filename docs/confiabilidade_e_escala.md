@@ -50,7 +50,7 @@ O backend de configurações delega PNCP, backups, integridade e identidade visu
 
 ## Validação e implantação
 
-Node 22.17+ é necessário. `.nvmrc` e CI usam 22.17.0; o Dockerfile usa a família Node 22. Os testes comuns de CEAP e PNCP usam arquivos pequenos ou HTTP local, sem baixar dumps externos. O CI executa também os testes de polling e dos erros HTTP do frontend.
+Node 22.17+ é necessário. `.nvmrc` e CI usam 22.17.0; o Dockerfile usa a família Node 22. Os testes comuns de CEAP e PNCP usam arquivos pequenos ou HTTP local, sem baixar dumps externos. O CI executa também os testes de polling e dos erros HTTP do frontend e confere se o commit informado pelo binário corresponde ao commit usado no build da imagem. O build Docker atualiza os mtimes das fontes locais para impedir que um `target` compartilhado reutilize um binário de conteúdo anterior ao `COPY`; caches de dependências são mantidos.
 
 ```bash
 cargo check --workspace --all-targets --locked

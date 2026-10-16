@@ -42,9 +42,12 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY tests/ ./tests/
 COPY version.json* ./
+# COPY preserva mtimes: fontes copiadas podem ser mais antigas que um binário do
+# target compartilhado. Atualizar os mtimes força o Cargo a validar o código local.
 RUN --mount=type=cache,id=radar-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=radar-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=radar-cargo-target,target=/app/target,sharing=locked \
+    find crates tests -type f -exec touch {} + && touch Cargo.toml Cargo.lock && \
     cargo build --locked --release -p server && cp target/release/server /app/server-binary
 
 # Stage 3: Runner de produção
