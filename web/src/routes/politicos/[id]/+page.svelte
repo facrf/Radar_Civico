@@ -1,4 +1,5 @@
 <script lang="ts">
+	import AvaliacaoIntegridade from "#lib/components/AvaliacaoIntegridade.svelte";
 	import { page } from '#lib/page';
 	import { onMount } from 'svelte';
 	import MapaDespesas from '#lib/components/MapaDespesas.svelte';
@@ -319,7 +320,7 @@
 				<div class="text-right text-[10px] text-slate-700 font-mono space-y-0.5">
 					<div><strong>DOSSIÊ ANALÍTICO OFICIAL</strong></div>
 					<div>Emissão: {new Date().toLocaleDateString('pt-BR')} às {new Date().toLocaleTimeString('pt-BR')}</div>
-					<div>Score Integridade: <strong>{politico.score_integridade ?? 100}/100</strong> • Risco <strong>{politico.nivel_risco ?? 'MÍNIMO'}</strong></div>
+					<div><AvaliacaoIntegridade avaliacao={politico.avaliacao_integridade} /></div>
 					<div>Registro: #{politico.id} • Chave Criptográfica SHA-256 Verificada</div>
 				</div>
 			</div>
@@ -451,7 +452,8 @@
 
 				<!-- Score de Integridade & Base Parlamentar -->
 				<div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-					{#if politico.score_integridade !== undefined}
+					{#if politico.score_integridade == null}<p class="mt-3 text-sm text-slate-400"><AvaliacaoIntegridade avaliacao={politico.avaliacao_integridade} /></p>{/if}
+					{#if politico.score_integridade != null}
 						<div
 							class="flex flex-col items-center justify-center rounded-2xl p-3.5 min-w-[140px] border shadow-lg text-center backdrop-blur-sm"
 							style="background-color: {politico.cor_risco_hex || '#10b981'}15; border-color: {politico.cor_risco_hex || '#10b981'}40;"
@@ -945,7 +947,10 @@
 									{/if}
 
 									<div class="text-[10px] text-slate-500 flex items-center justify-between pt-1">
-										<span>Fonte primária: {cargoAuth.origem_dado || 'DADOS_ABERTOS_OFICIAIS'}</span>
+										<span>{cargoAuth.evidencia_verificada ? 'Evidência conferida' : 'Cadastro sem evidência conferida; vigência não confirmada'}</span>
+                                    {#if cargoAuth.evidencia_verificada && cargoAuth.fonte_url?.startsWith('https://')}
+                                        <a href={cargoAuth.fonte_url} target="_blank" rel="noopener noreferrer" class="text-emerald-400">Consultar ato na fonte</a>
+                                    {/if}
 									</div>
 								</div>
 							{/each}

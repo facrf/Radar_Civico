@@ -129,7 +129,10 @@ impl CamaraApiClient {
             .map(|l| l.href.clone())
     }
 
-    pub async fn buscar_pagina_despesas(&self, url: &str) -> Result<CamaraListResponse<CamaraDespesaItem>> {
+    pub async fn buscar_pagina_despesas(
+        &self,
+        url: &str,
+    ) -> Result<CamaraListResponse<CamaraDespesaItem>> {
         let resp = self
             .client
             .get(url)
@@ -137,10 +140,8 @@ impl CamaraApiClient {
             .await
             .map_err(IngestionError::Reqwest)?;
 
-        let list_resp: CamaraListResponse<CamaraDespesaItem> = resp
-            .json()
-            .await
-            .map_err(IngestionError::Reqwest)?;
+        let list_resp: CamaraListResponse<CamaraDespesaItem> =
+            resp.json().await.map_err(IngestionError::Reqwest)?;
 
         Ok(list_resp)
     }
@@ -183,11 +184,11 @@ impl CamaraApiClient {
         Ok(todas_despesas)
     }
 
-    pub async fn listar_deputados(&self, max_paginas: Option<usize>) -> Result<Vec<CamaraDeputadoItem>> {
-        let mut url_atual = format!(
-            "{}/deputados?ordem=ASC&ordenarPor=nome",
-            self.base_url
-        );
+    pub async fn listar_deputados(
+        &self,
+        max_paginas: Option<usize>,
+    ) -> Result<Vec<CamaraDeputadoItem>> {
+        let mut url_atual = format!("{}/deputados?ordem=ASC&ordenarPor=nome", self.base_url);
 
         let mut todos_deputados = Vec::new();
         let mut paginas_processadas = 0;
@@ -200,10 +201,8 @@ impl CamaraApiClient {
                 .await
                 .map_err(IngestionError::Reqwest)?;
 
-            let list_resp: CamaraListResponse<CamaraDeputadoItem> = resp
-                .json()
-                .await
-                .map_err(IngestionError::Reqwest)?;
+            let list_resp: CamaraListResponse<CamaraDeputadoItem> =
+                resp.json().await.map_err(IngestionError::Reqwest)?;
 
             todos_deputados.extend(list_resp.dados);
             paginas_processadas += 1;
@@ -244,6 +243,14 @@ impl CamaraApiClient {
                 let fornecedor_doc = limpar_cnpj(&item.cnpj_cpf_fornecedor);
 
                 NovaDespesaParlamentar {
+                    id_origem: item.cod_documento.and_then(|id| {
+                        storage::identificador_ceap(
+                            &id.to_string(),
+                            item.num_ressarcimento.as_deref().unwrap_or("0"),
+                            &item.parcela.unwrap_or(0).to_string(),
+                            &item.cod_lote.unwrap_or(0).to_string(),
+                        )
+                    }),
                     casa_legislativa: "CAMARA".to_string(),
                     parlamentar_nome: deputado_nome.to_string(),
                     parlamentar_cpf_mascarado: cpf_mascarado.clone(),
@@ -278,7 +285,8 @@ impl CamaraApiClient {
             return Ok(0);
         }
 
-        let despesas = Self::converter_para_despesas_parlamentares(deputado_nome, deputado_cpf, itens);
+        let despesas =
+            Self::converter_para_despesas_parlamentares(deputado_nome, deputado_cpf, itens);
         batch_insert_despesas_parlamentares(conn, &despesas).map_err(IngestionError::Storage)
     }
 }
@@ -434,7 +442,9 @@ mod tests {
         assert_eq!(inseridos, 3);
 
         let count: i64 = conn
-            .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count, 3);
     }

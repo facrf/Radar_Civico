@@ -124,13 +124,15 @@ impl SourceImporter for TseImporter {
                 let inseridos = processar_zip_tse_bytes(&mut conn, &bytes)?;
                 let _ = storage::registrar_arquivo_ingerido(
                     &conn,
-                    "TSE",
-                    "mock_tse.zip",
-                    &hash,
-                    tamanho,
-                    "CONCLUIDO",
-                    inseridos as i64,
-                    Some("Mock TSE"),
+                    &storage::NovoArquivoIngerido {
+                        fonte: "TSE",
+                        nome_arquivo: "mock_tse.zip",
+                        hash_sha256: &hash,
+                        tamanho_bytes: tamanho,
+                        status: "CONCLUIDO",
+                        registros_afetados: inseridos as i64,
+                        detalhes: Some("Mock TSE"),
+                    },
                 );
                 Ok(inseridos)
             })
@@ -190,7 +192,8 @@ impl SourceImporter for TseImporter {
                 ),
             );
 
-            let (temporary, hash, tamanho_bytes) = baixar_pacote_tse_com_hash(&client, &url).await?;
+            let (temporary, hash, tamanho_bytes) =
+                baixar_pacote_tse_com_hash(&client, &url).await?;
 
             if ctx.is_cancelled() {
                 ctx.set_stage(ImportStage::Cancelado, "Importação cancelada pelo usuário");
@@ -248,13 +251,15 @@ impl SourceImporter for TseImporter {
                 })?;
                 let _ = storage::registrar_arquivo_ingerido(
                     &conn,
-                    "TSE",
-                    &nome_reg,
-                    &hash_reg,
-                    tamanho_bytes as i64,
-                    "CONCLUIDO",
-                    ins as i64,
-                    None,
+                    &storage::NovoArquivoIngerido {
+                        fonte: "TSE",
+                        nome_arquivo: &nome_reg,
+                        hash_sha256: &hash_reg,
+                        tamanho_bytes: tamanho_bytes as i64,
+                        status: "CONCLUIDO",
+                        registros_afetados: ins as i64,
+                        detalhes: None,
+                    },
                 );
                 Ok(ins)
             })

@@ -20,6 +20,7 @@ check:
 # Execução de testes automatizados
 test:
 	cargo test --all
+	npm --prefix web test
 
 # Build de imagem Docker com injeção automática de versão
 docker-build: version

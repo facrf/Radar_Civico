@@ -413,6 +413,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
     if conn.is_autocommit() {
         let tx = storage::transaction_immediate_ref(conn)?;
         let result = sincronizar_alertas_sistema_com_parametros(&tx, parametros)?;
+        tx.execute("UPDATE auditoria_estado SET pendente=0,revisao=revisao+1,concluida_em=CURRENT_TIMESTAMP WHERE id=1",[])?;
         tx.commit()?;
         return Ok(result);
     }

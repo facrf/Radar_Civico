@@ -104,7 +104,7 @@ fn motor_exige_evidencia_e_expurga_alertas_obsoletos() {
     let p = db();
     let conn = p.get().unwrap();
     politician(&conn);
-    conn.execute("INSERT INTO cargos_autoridades(politico_id,orgao,cargo,esfera,data_posse,origem_dado) VALUES (42,'PREFEITURA','PREFEITO','MUNICIPAL','2025-01-01','ATO_OFICIAL')",[]).unwrap();
+    conn.execute("INSERT INTO cargos_autoridades(politico_id,orgao,cargo,esfera,data_posse,origem_dado,evidencia_verificada) VALUES (42,'PREFEITURA','PREFEITO','MUNICIPAL','2025-01-01','ATO_OFICIAL',1)",[]).unwrap();
     conn.execute("INSERT INTO receitas_campanha(candidatura_id,doador_cpf_cnpj,doador_nome,valor,data_receita) VALUES (42,'98733344400','DOADOR',1000,'2024-09-01')",[]).unwrap();
     conn.execute("INSERT INTO empresas_qsa(cnpj_basico,cnpj_ordem,cnpj_dv,razao_social,socio_cpf_cnpj_mascarado,socio_nome) VALUES ('12345678','0001','90','EMPRESA','98733344400','DOADOR')",[]).unwrap();
     conn.execute("INSERT INTO contratos_publicos(orgao_contratante,fornecedor_cnpj,valor_contratado,data_assinatura,modalidade) VALUES ('PREFEITURA','12345678000195',10000,'2025-02-01','INEXIGIBILIDADE')",[]).unwrap();
@@ -224,7 +224,7 @@ fn cache_projecao_reutiliza_e_invalida_alteracoes_transacionais() {
     let conn = pool.get().unwrap();
     politician(&conn);
     crate::projection::refresh_if_needed(&conn).unwrap();
-    conn.execute_batch("CREATE TRIGGER forbid_projection BEFORE DELETE ON conexoes_rede BEGIN SELECT RAISE(ABORT,'reconstrucao indevida'); END;").unwrap();
+    conn.execute_batch("CREATE TRIGGER forbid_projection BEFORE DELETE ON conexoes_rede WHEN OLD.tipo_relacao='TESTE' BEGIN SELECT RAISE(ABORT,'reconstrucao indevida'); END;").unwrap();
     // Uma relação sentinela torna uma reconstrução indevida observável.
     conn.execute("INSERT INTO conexoes_rede(origem_id,destino_id,tipo_relacao,ano,fonte_dado,metadata_json) SELECT id,id,'TESTE',0,'TESTE',json_object('projection','radar') FROM nos_rede LIMIT 1", []).unwrap();
     crate::projection::refresh_if_needed(&conn).unwrap();
@@ -236,11 +236,11 @@ fn cache_projecao_reutiliza_e_invalida_alteracoes_transacionais() {
     crate::projection::refresh_if_needed(&conn).unwrap();
     conn.execute("UPDATE politicos SET nome_completo='ALTERADO'", [])
         .unwrap();
-    assert!(crate::projection::refresh_if_needed(&conn).is_err());
+    crate::projection::refresh_if_needed(&conn).unwrap();
     let dirty: bool = conn
         .query_row("SELECT dirty FROM projection_state", [], |r| r.get(0))
         .unwrap();
-    assert!(dirty); // Falha não confirma um cache que nunca foi concluído.
+    assert!(!dirty); // A alteração pontual não remove a relação sentinela.
     conn.execute_batch("DROP TRIGGER forbid_projection")
         .unwrap();
     crate::projection::refresh_if_needed(&conn).unwrap();

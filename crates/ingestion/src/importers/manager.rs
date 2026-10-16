@@ -203,8 +203,8 @@ impl ImporterManager {
         let ctx = Arc::new(ImportContext::new(id));
         let mut conn = self.sink.pool().get()?;
         let progress = ctx.get_progress();
-        let json = serde_json::to_string(&progress)
-            .map_err(|e| IngestionError::Parse(e.to_string()))?;
+        let json =
+            serde_json::to_string(&progress).map_err(|e| IngestionError::Parse(e.to_string()))?;
         storage::jobs::save_exclusive(&mut conn, "importer", id, &json)?;
 
         {
@@ -239,6 +239,7 @@ impl ImporterManager {
                     .await
                 {
                     Ok(_) => {
+                        let source_result = ctx_cloned.get_progress();
                         if ctx_cloned.is_cancelled() {
                             ctx_cloned.set_stage(
                                 ImportStage::Cancelado,
@@ -267,7 +268,11 @@ impl ImporterManager {
                                     }
                                 }
                             }
-                            ctx_cloned.finish("Importação finalizada com sucesso");
+                            if source_result.stage == ImportStage::Parcial {
+                                ctx_cloned.finish_partial(source_result.message);
+                            } else {
+                                ctx_cloned.finish(source_result.message);
+                            }
                         }
                     }
                     Err(err) => {

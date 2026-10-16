@@ -11,6 +11,8 @@ use crate::normalizer::{limpar_cnpj, mascarar_cpf};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CeapBulkRecord {
+    #[serde(default)]
+    pub id_origem: Option<String>,
     pub casa_legislativa: String,
     pub parlamentar_nome: String,
     pub parlamentar_cpf_mascarado: Option<String>,
@@ -210,6 +212,15 @@ where
         ],
     );
 
+    let exact_col = |names: &[&str]| {
+        headers
+            .iter()
+            .position(|h| names.iter().any(|name| normalize_header(h) == *name))
+    };
+    let col_origin = exact_col(&["IDEDOCUMENTO", "CODDOCUMENTO"]);
+    let col_ressarcimento = exact_col(&["NUMRESSARCIMENTO"]);
+    let col_parcela = exact_col(&["NUMPARCELA", "PARCELA"]);
+    let col_lote = exact_col(&["NUMLOTE", "CODLOTE"]);
     let col_url = find_col(
         &headers,
         &[
@@ -309,6 +320,12 @@ where
             .filter(|&v| v > 0.0);
 
         records.push(CeapBulkRecord {
+            id_origem: storage::identificador_ceap(
+                col_origin.and_then(|i| record.get(i)).unwrap_or(""),
+                col_ressarcimento.and_then(|i| record.get(i)).unwrap_or("0"),
+                col_parcela.and_then(|i| record.get(i)).unwrap_or("0"),
+                col_lote.and_then(|i| record.get(i)).unwrap_or("0"),
+            ),
             casa_legislativa: "CAMARA".to_string(),
             parlamentar_nome: nome,
             parlamentar_cpf_mascarado: cpf_mascarado,
@@ -410,6 +427,7 @@ pub fn ingerir_ceap_bulk_em_lotes(
         let batch: Vec<NovaDespesaParlamentar> = chunk
             .iter()
             .map(|r| NovaDespesaParlamentar {
+                id_origem: r.id_origem.clone(),
                 casa_legislativa: r.casa_legislativa.clone(),
                 parlamentar_nome: r.parlamentar_nome.clone(),
                 parlamentar_cpf_mascarado: r.parlamentar_cpf_mascarado.clone(),

@@ -24,8 +24,13 @@ pub mod money;
 pub use money::Money;
 
 pub mod integrity;
+pub mod quality;
 pub use integrity::{
     buscar_arquivo_por_hash, calcular_sha256_bytes, calcular_sha256_file, calcular_sha256_reader,
     listar_arquivos_ingeridos, registrar_arquivo_ingerido, verificar_retificacao,
-    RegistroArquivoIngerido,
+    NovoArquivoIngerido, RegistroArquivoIngerido,
 };
+pub use quality::{avaliacao_politico, AvaliacaoPolitico};
+
+pub mod ceap;
+pub use ceap::{identificador_ceap, upsert_despesa_parlamentar};

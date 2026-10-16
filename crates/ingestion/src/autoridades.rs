@@ -1,13 +1,13 @@
 use storage::{batch_insert_autoridades, NovaAutoridade, Result};
 
-/// Retorna a relação oficial de autoridades das cúpulas dos poderes (STF, PGR, Embaixadores e Secretários de Estado)
+/// Catálogo manual histórico, sem confirmação de documento ou vigência. Não constitui coleta oficial.
 pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
     vec![
         // 1. MINISTROS DO SUPREMO TRIBUNAL FEDERAL (STF)
         NovaAutoridade {
             nome_completo: "LUÍS ROBERTO BARROSO".to_string(),
             nome_usual: "MIN. LUÍS ROBERTO BARROSO".to_string(),
-            cpf_mascarado: Some("***.450.987-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro (Presidente)".to_string(),
@@ -18,12 +18,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 25 de junho de 2013".to_string()),
             biografia_resumo: Some("Jurista, professor titular de direito constitucional da UERJ e Ministro Presidente do STF.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/barroso.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "LUIZ EDSON FACHIN".to_string(),
             nome_usual: "MIN. EDSON FACHIN".to_string(),
-            cpf_mascarado: Some("***.112.334-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro (Vice-Presidente)".to_string(),
@@ -34,12 +37,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 15 de junho de 2015".to_string()),
             biografia_resumo: Some("Jurista, professor titular de direito civil da UFPR e Ministro Vice-Presidente do STF.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/fachin.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "GILMAR FERREIRA MENDES".to_string(),
             nome_usual: "MIN. GILMAR MENDES".to_string(),
-            cpf_mascarado: Some("***.876.543-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro (Decano)".to_string(),
@@ -50,12 +56,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 19 de junho de 2002".to_string()),
             biografia_resumo: Some("Ex-Advogado-Geral da União, jurista e decano do Supremo Tribunal Federal.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/gilmar.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "CÁRMEN LÚCIA ANTUNES ROCHA".to_string(),
             nome_usual: "MIN. CÁRMEN LÚCIA".to_string(),
-            cpf_mascarado: Some("***.234.567-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministra".to_string(),
@@ -66,12 +75,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 20 de junho de 2006".to_string()),
             biografia_resumo: Some("Jurista, ex-Presidente do STF e atual Presidente do Tribunal Superior Eleitoral (TSE).".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/carmen.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "JOSÉ ANTONIO DIAS TOFFOLI".to_string(),
             nome_usual: "MIN. DIAS TOFFOLI".to_string(),
-            cpf_mascarado: Some("***.998.776-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro".to_string(),
@@ -82,12 +94,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 22 de outubro de 2009".to_string()),
             biografia_resumo: Some("Ex-Advogado-Geral da União e ex-Presidente do Supremo Tribunal Federal.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/toffoli.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "LUIZ FUX".to_string(),
             nome_usual: "MIN. LUIZ FUX".to_string(),
-            cpf_mascarado: Some("***.321.654-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro".to_string(),
@@ -98,12 +113,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 2 de março de 2011".to_string()),
             biografia_resumo: Some("Magistrado de carreira, ex-Ministro do Superior Tribunal de Justiça (STJ) e ex-Presidente do STF.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/fux.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "ALEXANDRE DE MORAES".to_string(),
             nome_usual: "MIN. ALEXANDRE DE MORAES".to_string(),
-            cpf_mascarado: Some("***.432.109-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro".to_string(),
@@ -114,12 +132,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 21 de março de 2017".to_string()),
             biografia_resumo: Some("Ex-Ministro da Justiça, ex-Promotor de Justiça do MPSP e professor titular de direito da USP.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/alexandre.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "KASSIO NUNES MARQUES".to_string(),
             nome_usual: "MIN. NUNES MARQUES".to_string(),
-            cpf_mascarado: Some("***.654.987-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro".to_string(),
@@ -130,12 +151,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 4 de novembro de 2020".to_string()),
             biografia_resumo: Some("Ex-Desembargador Federal do TRF-1 e Ministro do Supremo Tribunal Federal.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/nunesmarques.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "ANDRÉ LUIZ DE ALMEIDA MENDONÇA".to_string(),
             nome_usual: "MIN. ANDRÉ MENDONÇA".to_string(),
-            cpf_mascarado: Some("***.765.432-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro".to_string(),
@@ -146,12 +170,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 15 de dezembro de 2021".to_string()),
             biografia_resumo: Some("Ex-Advogado-Geral da União, ex-Ministro da Justiça e Ministro do Supremo Tribunal Federal.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/andremendonca.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "CRISTIANO ZANIN MARTINS".to_string(),
             nome_usual: "MIN. CRISTIANO ZANIN".to_string(),
-            cpf_mascarado: Some("***.876.543-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro".to_string(),
@@ -162,12 +189,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 2 de agosto de 2023".to_string()),
             biografia_resumo: Some("Advogado e jurista, especialista em litígios complexos e Ministro do Supremo Tribunal Federal.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/cristianozanin.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "FLÁVIO DINO DE CASTRO E COSTA".to_string(),
             nome_usual: "MIN. FLÁVIO DINO".to_string(),
-            cpf_mascarado: Some("***.543.210-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_STF".to_string(),
             orgao: "Supremo Tribunal Federal".to_string(),
             cargo: "Ministro".to_string(),
@@ -178,14 +208,17 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 21 de fevereiro de 2024".to_string()),
             biografia_resumo: Some("Ex-Juiz Federal, ex-Governador do Maranhão, ex-Senador e ex-Ministro da Justiça.".to_string()),
             foto_url: Some("https://portal.stf.jus.br/hotsites/ministros/assets/img/ministros/flaviodino.jpg".to_string()),
-            origem_dado: "STF_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
 
         // 2. PROCURADORIA-GERAL DA REPÚBLICA (PGR / MPF)
         NovaAutoridade {
             nome_completo: "PAULO GUSTAVO GONET BRANCO".to_string(),
             nome_usual: "PAULO GONET BRANCO".to_string(),
-            cpf_mascarado: Some("***.654.321-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "PGR".to_string(),
             orgao: "Procuradoria-Geral da República".to_string(),
             cargo: "Procurador-Geral da República".to_string(),
@@ -196,12 +229,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 15 de dezembro de 2023".to_string()),
             biografia_resumo: Some("Subprocurador-Geral da República, jurista e atual Procurador-Geral da República e do CNMP.".to_string()),
             foto_url: Some("https://www.mpf.mp.br/pgr/institucional/biografias/fotos/paulo-gonet.jpg".to_string()),
-            origem_dado: "MPF_TRANSPARENCIA".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "ANTÔNIO AUGUSTO BRANDÃO DE ARAS".to_string(),
             nome_usual: "AUGUSTO ARAS".to_string(),
-            cpf_mascarado: Some("***.987.123-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "PGR".to_string(),
             orgao: "Procuradoria-Geral da República".to_string(),
             cargo: "Subprocurador-Geral da República (Ex-PGR)".to_string(),
@@ -212,14 +248,17 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 25 de setembro de 2019".to_string()),
             biografia_resumo: Some("Procurador-Geral da República nos mandatos de 2019 a 2023.".to_string()),
             foto_url: None,
-            origem_dado: "MPF_TRANSPARENCIA".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
 
         // 3. EMBAIXADORES E CHEFES DE MISSÃO DIPLOMÁTICA (MRE / SENADO)
         NovaAutoridade {
             nome_completo: "MARIA LUIZA RIBEIRO VIOTTI".to_string(),
             nome_usual: "EMB. MARIA LUIZA VIOTTI".to_string(),
-            cpf_mascarado: Some("***.345.678-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "EMBAIXADOR".to_string(),
             orgao: "Embaixada do Brasil em Washington (EUA)".to_string(),
             cargo: "Embaixadora do Brasil".to_string(),
@@ -230,12 +269,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Mensagem (SF) nº 17/2023, aprovada pelo Senado Federal".to_string()),
             biografia_resumo: Some("Diplomata de carreira, ex-Chef de Cabinet do Secretário-Geral da ONU e atual Embaixadora nos EUA.".to_string()),
             foto_url: None,
-            origem_dado: "SENADO_SABATINA".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "RICARDO NEIVA TAVARES".to_string(),
             nome_usual: "EMB. RICARDO NEIVA TAVARES".to_string(),
-            cpf_mascarado: Some("***.210.987-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "EMBAIXADOR".to_string(),
             orgao: "Embaixada do Brasil em Paris (França)".to_string(),
             cargo: "Embaixador do Brasil".to_string(),
@@ -246,12 +288,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Mensagem (SF) nº 12/2023, aprovada pelo Senado Federal".to_string()),
             biografia_resumo: Some("Diplomata de carreira e atual Embaixador do Brasil na França e Mônaco.".to_string()),
             foto_url: None,
-            origem_dado: "SENADO_SABATINA".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "ANTONIO DE AGUIAR PATRIOTA".to_string(),
             nome_usual: "EMB. ANTONIO PATRIOTA".to_string(),
-            cpf_mascarado: Some("***.876.123-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "EMBAIXADOR".to_string(),
             orgao: "Embaixada do Brasil em Londres (Reino Unido)".to_string(),
             cargo: "Embaixador do Brasil".to_string(),
@@ -262,12 +307,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Mensagem (SF) nº 21/2023, aprovada pelo Senado Federal".to_string()),
             biografia_resumo: Some("Ex-Ministro das Relações Exteriores e atual Embaixador do Brasil no Reino Unido.".to_string()),
             foto_url: None,
-            origem_dado: "SENADO_SABATINA".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "MARCOS BEZERRA ABBOTT GALVÃO".to_string(),
             nome_usual: "EMB. MARCOS GALVÃO".to_string(),
-            cpf_mascarado: Some("***.654.321-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "EMBAIXADOR".to_string(),
             orgao: "Embaixada do Brasil em Pequim (China)".to_string(),
             cargo: "Embaixador do Brasil".to_string(),
@@ -278,12 +326,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Mensagem (SF) nº 44/2022, aprovada pelo Senado Federal".to_string()),
             biografia_resumo: Some("Diplomata de carreira, ex-Secretário-Geral das Relações Exteriores e Embaixador na China.".to_string()),
             foto_url: None,
-            origem_dado: "SENADO_SABATINA".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "JULIO GLINTERNICK BITELLI".to_string(),
             nome_usual: "EMB. JULIO BITELLI".to_string(),
-            cpf_mascarado: Some("***.432.789-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "EMBAIXADOR".to_string(),
             orgao: "Embaixada do Brasil em Buenos Aires (Argentina)".to_string(),
             cargo: "Embaixador do Brasil".to_string(),
@@ -294,14 +345,17 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Mensagem (SF) nº 15/2023, aprovada pelo Senado Federal".to_string()),
             biografia_resumo: Some("Diplomata de carreira e Embaixador do Brasil na República Argentina.".to_string()),
             foto_url: None,
-            origem_dado: "SENADO_SABATINA".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
 
         // 4. SECRETÁRIOS DE ESTADO (1º ESCALÃO ESTADUAL)
         NovaAutoridade {
             nome_completo: "RENATO FEDER".to_string(),
             nome_usual: "RENATO FEDER".to_string(),
-            cpf_mascarado: Some("***.789.012-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "SECRETARIO_ESTADUAL".to_string(),
             orgao: "Secretaria da Educação do Estado de São Paulo".to_string(),
             cargo: "Secretário de Estado da Educação".to_string(),
@@ -312,12 +366,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 1º de janeiro de 2023 - Governo de SP".to_string()),
             biografia_resumo: Some("Empresário, gestor público e Secretário da Educação do Governo de São Paulo.".to_string()),
             foto_url: None,
-            origem_dado: "DIARIO_OFICIAL_SP".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "GUILHERME MURARO DERRITE".to_string(),
             nome_usual: "CAPITÃO DERRITE".to_string(),
-            cpf_mascarado: Some("***.654.123-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "SECRETARIO_ESTADUAL".to_string(),
             orgao: "Secretaria da Segurança Pública do Estado de São Paulo".to_string(),
             cargo: "Secretário de Estado da Segurança Pública".to_string(),
@@ -328,12 +385,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 1º de janeiro de 2023 - Governo de SP".to_string()),
             biografia_resumo: Some("Deputado Federal licenciado e Secretário da Segurança Pública de São Paulo.".to_string()),
             foto_url: None,
-            origem_dado: "DIARIO_OFICIAL_SP".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "SAMUEL YOSHIAKI OLIVEIRA KINOSHITA".to_string(),
             nome_usual: "SAMUEL KINOSHITA".to_string(),
-            cpf_mascarado: Some("***.321.987-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "SECRETARIO_ESTADUAL".to_string(),
             orgao: "Secretaria da Fazenda e Planejamento do Estado de São Paulo".to_string(),
             cargo: "Secretário de Estado da Fazenda e Planejamento".to_string(),
@@ -344,13 +404,16 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto de 1º de janeiro de 2023 - Governo de SP".to_string()),
             biografia_resumo: Some("Economista, gestor de investimentos e Secretário da Fazenda de São Paulo.".to_string()),
             foto_url: None,
-            origem_dado: "DIARIO_OFICIAL_SP".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         // 5. TRIBUNAL DE CONTAS DA UNIÃO (TCU) E MPTCU
         NovaAutoridade {
             nome_completo: "BRUNO DANTAS NASCIMENTO".to_string(),
             nome_usual: "MIN. BRUNO DANTAS".to_string(),
-            cpf_mascarado: Some("***.445.667-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_TCU".to_string(),
             orgao: "Tribunal de Contas da União".to_string(),
             cargo: "Ministro (Presidente)".to_string(),
@@ -361,12 +424,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 12 de agosto de 2014".to_string()),
             biografia_resumo: Some("Jurista, professor doutor em direito processual civil da PUC-SP e Ministro Presidente do Tribunal de Contas da União.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B3520185012579BE4BD5".to_string()),
-            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "VITAL DO RÊGO FILHO".to_string(),
             nome_usual: "MIN. VITAL DO RÊGO".to_string(),
-            cpf_mascarado: Some("***.332.114-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_TCU".to_string(),
             orgao: "Tribunal de Contas da União".to_string(),
             cargo: "Ministro (Vice-Presidente)".to_string(),
@@ -377,12 +443,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 19 de dezembro de 2014".to_string()),
             biografia_resumo: Some("Médico, advogado, ex-Senador da República pela Paraíba, ex-Deputado Federal e Ministro Vice-Presidente do TCU.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B352018501267D554C0E".to_string()),
-            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "WALTON ALENCAR RODRIGUES".to_string(),
             nome_usual: "MIN. WALTON ALENCAR".to_string(),
-            cpf_mascarado: Some("***.554.332-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_TCU".to_string(),
             orgao: "Tribunal de Contas da União".to_string(),
             cargo: "Ministro (Decano)".to_string(),
@@ -393,12 +462,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 12 de abril de 1999".to_string()),
             biografia_resumo: Some("Magistrado de carreira, ex-Procurador do Ministério Público junto ao TCU e Ministro Decano do Tribunal de Contas da União.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B35201850126F76E4C2A".to_string()),
-            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "BENJAMIN ZYMLER".to_string(),
             nome_usual: "MIN. BENJAMIN ZYMLER".to_string(),
-            cpf_mascarado: Some("***.778.990-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_TCU".to_string(),
             orgao: "Tribunal de Contas da União".to_string(),
             cargo: "Ministro".to_string(),
@@ -409,12 +481,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 6 de setembro de 2001".to_string()),
             biografia_resumo: Some("Engenheiro elétrico pelo IME, jurista, ex-Presidente do TCU e Ministro do Tribunal de Contas da União.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B352018501275E194C38".to_string()),
-            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "JOÃO AUGUSTO RIBEIRO NARDES".to_string(),
             nome_usual: "MIN. AUGUSTO NARDES".to_string(),
-            cpf_mascarado: Some("***.889.001-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_TCU".to_string(),
             orgao: "Tribunal de Contas da União".to_string(),
             cargo: "Ministro".to_string(),
@@ -425,12 +500,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 19 de setembro de 2005".to_string()),
             biografia_resumo: Some("Administrador, ex-Deputado Federal pelo Rio Grande do Sul, ex-Presidente do TCU e Ministro do Tribunal de Contas da União.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B35201850127B6654C46".to_string()),
-            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "AROLDO CEDRAZ DE OLIVEIRA".to_string(),
             nome_usual: "MIN. AROLDO CEDRAZ".to_string(),
-            cpf_mascarado: Some("***.223.445-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_TCU".to_string(),
             orgao: "Tribunal de Contas da União".to_string(),
             cargo: "Ministro".to_string(),
@@ -441,12 +519,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 28 de dezembro de 2006".to_string()),
             biografia_resumo: Some("Médico veterinário, professor universitário da UFBA, ex-Deputado Federal pela Bahia, ex-Presidente do TCU e Ministro do Tribunal de Contas da União.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B3520185012803304C54".to_string()),
-            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "ANTONIO AUGUSTO JUNHO ANASTASIA".to_string(),
             nome_usual: "MIN. ANTONIO ANASTASIA".to_string(),
-            cpf_mascarado: Some("***.667.889-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_TCU".to_string(),
             orgao: "Tribunal de Contas da União".to_string(),
             cargo: "Ministro".to_string(),
@@ -457,12 +538,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 1º de fevereiro de 2022".to_string()),
             biografia_resumo: Some("Jurista, professor de direito administrativo da UFMG, ex-Governador de Minas Gerais, ex-Senador da República e Ministro do Tribunal de Contas da União.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B352018501288B774C68".to_string()),
-            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "JORGE ANTONIO DE OLIVEIRA FRANCISCO".to_string(),
             nome_usual: "MIN. JORGE OLIVEIRA".to_string(),
-            cpf_mascarado: Some("***.113.557-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_TCU".to_string(),
             orgao: "Tribunal de Contas da União".to_string(),
             cargo: "Ministro".to_string(),
@@ -473,12 +557,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 30 de dezembro de 2020".to_string()),
             biografia_resumo: Some("Advogado, ex-Ministro-Chefe da Secretaria-Geral da Presidência da República e Ministro do Tribunal de Contas da União.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B352018501290C2F4C76".to_string()),
-            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "JHONATAN PEREIRA DE JESUS".to_string(),
             nome_usual: "MIN. JHONATAN DE JESUS".to_string(),
-            cpf_mascarado: Some("***.998.223-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "MINISTRO_TCU".to_string(),
             orgao: "Tribunal de Contas da União".to_string(),
             cargo: "Ministro".to_string(),
@@ -489,12 +576,15 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 28 de fevereiro de 2023".to_string()),
             biografia_resumo: Some("Médico, ex-Deputado Federal por Roraima e Ministro do Tribunal de Contas da União.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A0864372F90186BCB264E20556".to_string()),
-            origem_dado: "TCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
         NovaAutoridade {
             nome_completo: "CRISTINA MACHADO DA COSTA E SILVA".to_string(),
             nome_usual: "DRA. CRISTINA MACHADO".to_string(),
-            cpf_mascarado: Some("***.443.221-**".to_string()),
+            cpf_mascarado: None,
             tipo_agente: "PROCURADOR_MPTCU".to_string(),
             orgao: "Ministério Público junto ao TCU".to_string(),
             cargo: "Procuradora-Geral do MPTCU".to_string(),
@@ -505,14 +595,46 @@ pub fn obter_autoridades_cupula() -> Vec<NovaAutoridade> {
             ato_nomeacao: Some("Decreto Presidencial de 27 de junho de 2018".to_string()),
             biografia_resumo: Some("Procuradora de carreira e Procuradora-Geral do Ministério Público junto ao Tribunal de Contas da União.".to_string()),
             foto_url: Some("https://portal.tcu.gov.br/lumis/portal/file/fileDownload.jsp?fileId=8A8182A084E7B35201850129B7F34C8E".to_string()),
-            origem_dado: "MPTCU_DADOS_ABERTOS".to_string(),
+            origem_dado: "CATALOGO_MANUAL_NAO_VERIFICADO".to_string(),
+            fonte_url: None,
+            conferido_em: None,
+            evidencia_verificada: false,
         },
     ]
 }
 
 /// Sincroniza todas as autoridades de cúpula no banco SQLite
 pub fn sincronizar_autoridades_cupula(conn: &mut storage::rusqlite::Connection) -> Result<usize> {
-    let autoridades = obter_autoridades_cupula();
+    let autoridades = if let Ok(path) = std::env::var("RADAR_AUTORIDADES_JSON") {
+        let bytes = std::fs::read(path)?;
+        serde_json::from_slice::<Vec<NovaAutoridade>>(&bytes).map_err(|e| {
+            storage::StorageError::Pool(format!("Catálogo de autoridades inválido: {e}"))
+        })?
+    } else {
+        obter_autoridades_cupula()
+    };
+    for autoridade in &autoridades {
+        if autoridade.evidencia_verificada {
+            let url = autoridade
+                .fonte_url
+                .as_deref()
+                .and_then(|s| reqwest::Url::parse(s).ok());
+            if !url
+                .is_some_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+                || !autoridade
+                    .conferido_em
+                    .as_deref()
+                    .is_some_and(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok())
+                || autoridade
+                    .data_posse
+                    .as_deref()
+                    .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                    .is_none()
+            {
+                return Err(storage::StorageError::Pool("Autoridade verificada exige fonte_url HTTP(S), conferido_em RFC3339 e data_posse válida".into()));
+            }
+        }
+    }
     batch_insert_autoridades(conn, &autoridades)
 }
 
@@ -528,7 +650,10 @@ mod tests {
         run_migrations(&mut conn).unwrap();
 
         let inseridos = sincronizar_autoridades_cupula(&mut conn).unwrap();
-        assert!(inseridos >= 30, "Devem ser inseridas pelo menos 30 autoridades de cúpula");
+        assert!(
+            inseridos >= 30,
+            "Devem ser inseridas pelo menos 30 autoridades de cúpula"
+        );
 
         // Verifica Ministros do STF
         let count_stf: i64 = conn
@@ -538,7 +663,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count_stf, 11, "Devem existir exatamente 11 Ministros do STF cadastrados");
+        assert_eq!(
+            count_stf, 11,
+            "Devem existir exatamente 11 Ministros do STF cadastrados"
+        );
 
         // Verifica Ministros do TCU
         let count_tcu: i64 = conn
@@ -548,7 +676,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count_tcu, 9, "Devem existir exatamente 9 Ministros titulares do TCU");
+        assert_eq!(
+            count_tcu, 9,
+            "Devem existir exatamente 9 Ministros titulares do TCU"
+        );
 
         // Verifica Procuradoria do MPTCU
         let count_mptcu: i64 = conn
@@ -568,7 +699,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(count_emb >= 5, "Devem existir pelo menos 5 embaixadores estratégicos");
+        assert!(
+            count_emb >= 5,
+            "Devem existir pelo menos 5 embaixadores estratégicos"
+        );
 
         // Verifica integridade relacional na tabela cargos_autoridades
         let count_cargos: i64 = conn

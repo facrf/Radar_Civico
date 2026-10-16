@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { fetchJson } from '#lib/api';
 	import type { AlertaItem } from '#lib/types';
 
 	let alertas: AlertaItem[] = [];
 	let loading = true;
 	let executandoAuditoria = false;
 	let erroAuditoria: string | null = null;
+	let erroConsulta: string | null = null;
 	let request: AbortController | null = null;
 	let total = 0;
 	let alertaSelecionado: AlertaItem | null = null;
@@ -21,6 +23,7 @@
 		request?.abort();
 		const current = new AbortController();
 		request = current;
+		erroConsulta = null;
 		loading = true;
 		try {
 			const params = new URLSearchParams();
@@ -29,19 +32,13 @@
 			if (filtroSeveridade) params.append('severidade', filtroSeveridade);
 			if (filtroTipo) params.append('tipo', filtroTipo);
 
-			const res = await fetch(`/api/v1/auditoria/alertas?${params.toString()}`, { signal: current.signal });
-			if (res.ok) {
-				const data = await res.json();
-				if (request !== current) return;
-				alertas = data.alertas || [];
-				total = data.total || 0;
-				// Notifica layout para atualizar badge no menu superior
-				if (typeof window !== 'undefined') {
-					window.dispatchEvent(new CustomEvent('radar-alertas-updated'));
-				}
-			}
+            const data = await fetchJson<{ alertas: AlertaItem[]; total: number }>(`/api/v1/auditoria/alertas?${params.toString()}`, { signal: current.signal });
+            if (request !== current) return;
+            alertas = data.alertas || [];
+            total = data.total || 0;
+            if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('radar-alertas-updated'));
 		} catch (err) {
-			if (!current.signal.aborted) console.error('Erro ao buscar alertas:', err);
+			if (!current.signal.aborted && request === current) erroConsulta = err instanceof Error ? err.message : 'Falha de conexão ao consultar alertas.';
 		} finally {
 			if (request === current) loading = false;
 		}
@@ -215,14 +212,16 @@
 	<div>
 		<div class="flex items-center justify-between mb-4">
 			<h2 class="text-lg font-bold text-white flex items-center gap-2">
-				<span>Ranking de Irregularidades Detectadas</span>
+				<span>Indícios para conferência</span>
 				<span class="px-2.5 py-0.5 text-xs bg-slate-800 text-slate-300 rounded-full font-normal border border-slate-700">
 					{total} ocorrência{total === 1 ? '' : 's'}
 				</span>
 			</h2>
-			<span class="text-xs text-slate-500">Clique em um alerta para ver os detalhes da irregularidade</span>
+			<span class="text-xs text-slate-500">Consulte os critérios e as evidências de cada indício</span>
 		</div>
 
+        <p class="mb-3 text-xs text-slate-400">Alertas são resultados de regras sobre as bases importadas. Exigem conferência da fonte e não comprovam irregularidade.</p>
+        {#if erroConsulta}<div role="alert" class="mb-3 text-sm text-rose-300">{erroConsulta} <button type="button" class="underline" on:click={carregarAlertas}>Tentar novamente</button></div>{/if}
 		{#if loading}
 			<div class="py-12 flex justify-center items-center">
 				<div class="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
@@ -263,6 +262,7 @@
 							{alerta.titulo}
 						</h3>
 						<p class="text-sm text-slate-300 mt-1 leading-relaxed">{alerta.descricao}</p>
+						<p class="mt-2 text-xs text-slate-400">Confiança do vínculo: {alerta.detalhes?.confianca === 'CONFIRMADO' ? 'identidade confirmada pelos critérios da regra' : 'conferência necessária'}</p>
 						{#if alerta.detalhes?.volume_estimado === true}
 							<p class="mt-2 text-xs text-amber-300 font-medium">Volume estimado • conferir nota fiscal</p>
 						{/if}

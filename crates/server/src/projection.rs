@@ -1,15 +1,68 @@
 //! Projeção transacional das bases importadas para nós e relações navegáveis.
 use storage::{rusqlite::Connection, Result};
+mod incremental;
 
 /// Reutiliza apenas a projeção compatível e sem alterações nas fontes.
 pub fn refresh_if_needed(conn: &Connection) -> Result<usize> {
-    let cached: Option<usize> = conn.query_row(
-        "SELECT CASE WHEN dirty=0 AND version=2 THEN relations END FROM projection_state WHERE id=1",
-        [], |row| row.get(0),
+    let (dirty, version, count): (bool, i64, usize) = conn.query_row(
+        "SELECT dirty,version,relations FROM projection_state WHERE id=1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    match cached {
-        Some(count) => Ok(count),
-        None => refresh(conn),
+    if !dirty && version == 3 {
+        return Ok(count);
+    }
+    if version != 3 {
+        if conn.is_autocommit() {
+            let tx = storage::transaction_immediate_ref(conn)?;
+            let current: i64 =
+                tx.query_row("SELECT version FROM projection_state WHERE id=1", [], |r| {
+                    r.get(0)
+                })?;
+            let result = if current == 3 {
+                refresh_if_needed(&tx)?
+            } else {
+                refresh(&tx)?
+            };
+            tx.commit()?;
+            return Ok(result);
+        }
+        return refresh(conn);
+    }
+    let started = std::time::Instant::now();
+    let total = loop {
+        let (processed, count) = if conn.is_autocommit() {
+            let tx = storage::transaction_immediate_ref(conn)?;
+            let result = incremental::batch(&tx, 500)?;
+            tx.commit()?;
+            result
+        } else {
+            incremental::batch(conn, 500)?
+        };
+        if processed < 500 {
+            break count;
+        }
+    };
+    conn.execute(
+        "UPDATE projection_state SET last_duration_ms=?1,updated_at=CURRENT_TIMESTAMP WHERE id=1",
+        [started.elapsed().as_millis() as i64],
+    )?;
+    tracing::info!(
+        relations = total,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Projeção incremental atualizada"
+    );
+    Ok(total as usize)
+}
+
+pub async fn readiness(
+    axum::extract::State(pool): axum::extract::State<storage::DbPool>,
+) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    match pool.run_blocking(|conn| {
+        conn.query_row("SELECT dirty,version,relations,last_duration_ms,updated_at,(SELECT COUNT(*) FROM projection_changes) FROM projection_state WHERE id=1",[],|r|Ok((r.get::<_,bool>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,i64>(5)?))).map_err(Into::into)
+    }).await {
+        Ok((dirty,version,relations,duration,updated,pending))=>(if !dirty&&version==3 {axum::http::StatusCode::OK}else{axum::http::StatusCode::SERVICE_UNAVAILABLE},axum::Json(serde_json::json!({"pronto":!dirty&&version==3,"relacoes":relations,"eventos_pendentes":pending,"ultima_duracao_ms":duration,"atualizada_em":updated}))),
+        Err(error)=>(axum::http::StatusCode::SERVICE_UNAVAILABLE,axum::Json(serde_json::json!({"pronto":false,"erro":error.to_string()}))),
     }
 }
 
@@ -101,9 +154,10 @@ pub fn refresh(conn: &Connection) -> Result<usize> {
     let count = tx.query_row("SELECT COUNT(*) FROM conexoes_rede WHERE json_extract(metadata_json,'$.projection')='radar'",[],|r|r.get(0))?;
     tx.execute_batch("DROP TABLE temp.projection_roots")?;
     tx.execute(
-        "UPDATE projection_state SET dirty=0,version=2,relations=?1 WHERE id=1",
+        "UPDATE projection_state SET dirty=0,version=3,relations=?1,updated_at=CURRENT_TIMESTAMP WHERE id=1",
         [count],
     )?;
+    tx.execute("DELETE FROM projection_changes", [])?;
     Ok(count)
 }
 
@@ -158,3 +212,6 @@ pub fn ensure_company(conn: &Connection, root: &str) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

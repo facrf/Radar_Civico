@@ -34,7 +34,7 @@ pub fn run(conn: &Connection, window: i64) -> Result<()> {
     let sql = format!(
         r#"SELECT DISTINCT r.id,r.doador_cpf_cnpj,r.doador_nome,r.valor,c.politico_id,p.nome_completo,a.data_posse,q.socio_nome,ct.fornecedor_cnpj,q.razao_social,ct.id,ct.orgao_contratante,ct.valor_contratado,ct.objeto,ct.data_assinatura
         FROM receitas_campanha r JOIN candidaturas c ON c.id=r.candidatura_id JOIN politicos p ON p.id=c.politico_id
-        JOIN cargos_autoridades a ON a.politico_id=p.id
+        JOIN cargos_autoridades a ON a.politico_id=p.id AND a.evidencia_verificada=1
         JOIN empresas_qsa q ON {partner}={donor}
         JOIN contratos_publicos ct ON substr({supplier},1,8)=q.cnpj_basico AND TRIM(UPPER(ct.orgao_contratante))=TRIM(UPPER(a.orgao))
         WHERE valid_document({donor}) AND length({supplier})=14 AND valid_document({supplier})

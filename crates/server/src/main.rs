@@ -80,14 +80,7 @@ async fn main() -> Result<()> {
         info!("Tarefas interrompidas pelo reinício: {interrupted}");
         ingestion::progress::restore_import_progress(&pool)
             .context("Falha ao restaurar progresso de importação")?;
-        if let Err(e) = ingestion::sincronizar_autoridades_cupula(&mut conn) {
-            tracing::warn!(
-                "Aviso ao sincronizar autoridades de cúpula no arranque: {}",
-                e
-            );
-        } else {
-            info!("Autoridades de cúpula (STF, PGR, Embaixadores, Secretários) sincronizadas com sucesso.");
-        }
+        // Catálogos de autoridades só são carregados explicitamente, com evidência da fonte.
     }
 
     let web_dir = env::var("WEB_DIR").unwrap_or_else(|_| "web/build".into());
@@ -96,14 +89,29 @@ async fn main() -> Result<()> {
     if !eh_auditoria {
         let graph_pool = pool.clone();
         tokio::spawn(async move {
-            match graph_pool
-                .run_blocking(|conn| server::projection::refresh_if_needed(conn))
-                .await
-            {
-                Ok(relations) => info!("Rede de relacionamentos pronta: {relations} relações"),
-                Err(error) => tracing::error!("Falha ao atualizar rede: {error}"),
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            let mut announced = false;
+            loop {
+                interval.tick().await;
+                match graph_pool
+                    .run_blocking(|conn| server::projection::refresh_if_needed(conn))
+                    .await
+                {
+                    Ok(relations) => {
+                        if !announced {
+                            info!("Rede de relacionamentos pronta: {relations} relações");
+                            announced = true;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!("Projeção pendente; nova tentativa automática: {error}")
+                    }
+                }
             }
-            ingestion::progress::persist_progress_loop(graph_pool).await;
+        });
+        let progress_pool = pool.clone();
+        tokio::spawn(async move {
+            ingestion::progress::persist_progress_loop(progress_pool).await;
         });
     }
     if eh_auditoria {

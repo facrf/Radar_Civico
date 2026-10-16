@@ -1,6 +1,9 @@
+use chrono::{Datelike, NaiveDate};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use storage::rusqlite::Connection;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{IngestionError, Result};
 use crate::normalizer::limpar_cnpj;
@@ -40,6 +43,43 @@ pub struct PncpConsultaResponse {
     pub data: Vec<PncpContratoItem>,
     #[serde(rename = "totalRegistros", default)]
     pub total_registros: Option<i64>,
+    #[serde(rename = "totalPaginas", default)]
+    pub total_paginas: Option<u32>,
+    #[serde(rename = "numeroPagina", default)]
+    pub numero_pagina: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RelatorioPncp {
+    pub registros_gravados: usize,
+    pub paginas_processadas: usize,
+    pub periodos_concluidos: usize,
+    pub falhas: Vec<String>,
+    pub cancelado: bool,
+}
+impl RelatorioPncp {
+    pub fn status(&self) -> &'static str {
+        if self.cancelado {
+            "CANCELADO"
+        } else if self.falhas.is_empty() {
+            "CONCLUIDO"
+        } else if self.paginas_processadas > 0 {
+            "PARCIAL"
+        } else {
+            "ERRO"
+        }
+    }
+    pub fn resumo(&self) -> String {
+        format!("PNCP: {} registros gravados, {} páginas, {}/12 meses completos por data de publicação; {} falhas. {}",
+            self.registros_gravados,self.paginas_processadas,self.periodos_concluidos,self.falhas.len(),self.falhas.join("; "))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgressoPncp {
+    pub mes: u32,
+    pub pagina: u32,
+    pub registros_gravados: usize,
 }
 
 #[derive(Clone)]
@@ -82,67 +122,251 @@ impl PncpClient {
         Ok(lista)
     }
 
+    /// API de consulta filtra publicação, não fornecedor. Cada página ocupa no máximo 16 MiB.
+    async fn pagina(
+        &self,
+        inicio: NaiveDate,
+        fim: NaiveDate,
+        pagina: u32,
+        cancel: &CancellationToken,
+    ) -> Result<PncpConsultaResponse> {
+        let url = format!("{}/contratos", self.base_url);
+        for attempt in 0..3 {
+            let request = self.client.get(&url).query(&[
+                ("dataInicial", inicio.format("%Y%m%d").to_string()),
+                ("dataFinal", fim.format("%Y%m%d").to_string()),
+                ("pagina", pagina.to_string()),
+                ("tamanhoPagina", "500".into()),
+            ]);
+            let response = tokio::select! {
+                response=request.send()=>response?,
+                _=cancel.cancelled()=>return Err(IngestionError::Custom("PNCP cancelado".into())),
+            };
+            if response.status() == reqwest::StatusCode::NO_CONTENT {
+                return Ok(PncpConsultaResponse {
+                    data: Vec::new(),
+                    total_registros: Some(0),
+                    total_paginas: Some(0),
+                    numero_pagina: Some(pagina),
+                });
+            }
+            if (response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || response.status().is_server_error())
+                && attempt < 2
+            {
+                let seconds = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(1 << attempt)
+                    .min(30);
+                tokio::select! { _=tokio::time::sleep(std::time::Duration::from_secs(seconds))=>{}, _=cancel.cancelled()=>return Err(IngestionError::Custom("PNCP cancelado".into())) }
+                continue;
+            }
+            let mut response = response.error_for_status()?;
+            let mut bytes = Vec::new();
+            while let Some(chunk) = tokio::select! { r=response.chunk()=>r?, _=cancel.cancelled()=>return Err(IngestionError::Custom("PNCP cancelado".into())) }
+            {
+                if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
+                    return Err(IngestionError::Parse("Página PNCP excede 16 MiB".into()));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            if let Ok(envelope) = serde_json::from_slice::<PncpConsultaResponse>(&bytes) {
+                if envelope.numero_pagina.is_some_and(|n| n != pagina)
+                    || (envelope.data.is_empty()
+                        && envelope.total_paginas.is_some_and(|n| pagina < n))
+                {
+                    return Err(IngestionError::Parse(
+                        "PNCP retornou metadados de paginação inconsistentes".into(),
+                    ));
+                }
+                return Ok(envelope);
+            }
+            let data = serde_json::from_slice(&bytes)
+                .map_err(|e| IngestionError::Parse(format!("Página PNCP inválida: {e}")))?;
+            return Ok(PncpConsultaResponse {
+                data,
+                total_registros: None,
+                total_paginas: None,
+                numero_pagina: None,
+            });
+        }
+        Err(IngestionError::Custom("PNCP excedeu retentativas".into()))
+    }
+
+    fn periodo(ano: i32, mes: u32) -> Result<(NaiveDate, NaiveDate)> {
+        let inicio = NaiveDate::from_ymd_opt(ano, mes, 1)
+            .ok_or_else(|| IngestionError::Parse("Ano/mês PNCP inválido".into()))?;
+        let next = if mes == 12 {
+            NaiveDate::from_ymd_opt(ano + 1, 1, 1)
+        } else {
+            NaiveDate::from_ymd_opt(ano, mes + 1, 1)
+        };
+        let fim = next
+            .and_then(|d| d.pred_opt())
+            .ok_or_else(|| IngestionError::Parse("Período PNCP inválido".into()))?;
+        Ok((inicio, fim))
+    }
+
+    /// Grava por página, percorre os doze meses e preserva falhas parciais.
+    pub async fn sincronizar_ano<F, Fut>(
+        &self,
+        pool: &storage::DbPool,
+        ano: i32,
+        fornecedor: Option<&str>,
+        cancel: &CancellationToken,
+        mut progresso: F,
+    ) -> Result<RelatorioPncp>
+    where
+        F: FnMut(ProgressoPncp) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        if !(2000..=chrono::Utc::now().year() + 1).contains(&ano) {
+            return Err(IngestionError::Parse(
+                "Ano PNCP fora do intervalo permitido".into(),
+            ));
+        }
+        let filter = fornecedor.map(limpar_cnpj);
+        if filter.as_ref().is_some_and(|s| s.len() != 14) {
+            return Err(IngestionError::Parse(
+                "CNPJ do fornecedor deve ter 14 dígitos".into(),
+            ));
+        }
+        let mut report = RelatorioPncp::default();
+        for mes in 1..=12 {
+            let (inicio, fim) = Self::periodo(ano, mes)?;
+            let mut pagina = 1;
+            let mut previous_hash = None;
+            loop {
+                if cancel.is_cancelled() {
+                    report.cancelado = true;
+                    return Ok(report);
+                }
+                let response = match self.pagina(inicio, fim, pagina, cancel).await {
+                    Ok(r) => r,
+                    Err(error) => {
+                        if cancel.is_cancelled() {
+                            report.cancelado = true;
+                            return Ok(report);
+                        }
+                        report
+                            .falhas
+                            .push(format!("{ano}-{mes:02} página {pagina}: {error}"));
+                        break;
+                    }
+                };
+                let page_hash = storage::calcular_sha256_bytes(
+                    serde_json::to_string(&response.data)
+                        .map_err(|e| IngestionError::Parse(e.to_string()))?
+                        .as_bytes(),
+                );
+                if !response.data.is_empty() && previous_hash.as_ref() == Some(&page_hash) {
+                    report.falhas.push(format!("{ano}-{mes:02}: API repetiu página; coleta interrompida sem declarar conclusão"));
+                    break;
+                }
+                previous_hash = Some(page_hash);
+                let empty = response.data.is_empty();
+                let last = response.total_paginas.is_some_and(|last| pagina >= last);
+                let contratos = response
+                    .data
+                    .into_iter()
+                    .filter(|c| {
+                        filter
+                            .as_ref()
+                            .is_none_or(|f| limpar_cnpj(&c.ni_fornecedor) == *f)
+                    })
+                    .collect::<Vec<_>>();
+                let saved = pool
+                    .run_blocking(move |conn| {
+                        Self::salvar_contratos(conn, &contratos).map_err(|e| {
+                            storage::StorageError::Io(std::io::Error::other(e.to_string()))
+                        })
+                    })
+                    .await;
+                match saved {
+                    Ok(count) => report.registros_gravados += count,
+                    Err(error) => {
+                        report
+                            .falhas
+                            .push(format!("{ano}-{mes:02} gravação página {pagina}: {error}"));
+                        break;
+                    }
+                }
+                report.paginas_processadas += 1;
+                progresso(ProgressoPncp {
+                    mes,
+                    pagina,
+                    registros_gravados: report.registros_gravados,
+                })
+                .await;
+                if empty || last {
+                    report.periodos_concluidos += 1;
+                    break;
+                }
+                if pagina >= 100_000 {
+                    report
+                        .falhas
+                        .push(format!("{ano}-{mes:02}: limite de páginas excedido"));
+                    break;
+                }
+                pagina += 1;
+            }
+        }
+        Ok(report)
+    }
+
+    /// Compatibilidade: retorna somente o fornecedor após filtrar páginas oficiais localmente.
     pub async fn buscar_contratos_por_cnpj(
         &self,
         cnpj: &str,
         ano: i32,
     ) -> Result<Vec<PncpContratoItem>> {
-        let doc_clean = limpar_cnpj(cnpj);
-        let data_inicial = format!("{}0101", ano);
-        let data_final = format!("{}1231", ano);
-        let url = format!(
-            "{}/contratos?dataInicial={}&dataFinal={}&niFornecedor={}&pagina=1",
-            self.base_url, data_inicial, data_final, doc_clean
-        );
-
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(IngestionError::Reqwest)?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let err_body = resp.text().await.unwrap_or_default();
-            return Err(IngestionError::Custom(format!(
-                "API PNCP retornou status {status}: {err_body}"
-            )));
+        let filter = limpar_cnpj(cnpj);
+        let mut data = Vec::new();
+        let cancel = CancellationToken::new();
+        for mes in 1..=12 {
+            let (inicio, fim) = Self::periodo(ano, mes)?;
+            for pagina in 1..=100_000 {
+                let response = self.pagina(inicio, fim, pagina, &cancel).await?;
+                let last =
+                    response.data.is_empty() || response.total_paginas.is_some_and(|n| pagina >= n);
+                data.extend(
+                    response
+                        .data
+                        .into_iter()
+                        .filter(|c| limpar_cnpj(&c.ni_fornecedor) == filter),
+                );
+                if data.len() > 100_000 {
+                    return Err(IngestionError::Parse(
+                        "Resultado excede limite; use sincronizar_ano".into(),
+                    ));
+                }
+                if last {
+                    break;
+                }
+                if pagina == 100_000 {
+                    return Err(IngestionError::Parse(
+                        "PNCP excede limite de páginas".into(),
+                    ));
+                }
+            }
         }
-
-        let texto = resp.text().await.map_err(IngestionError::Reqwest)?;
-        Self::parse_contratos_json(&texto)
+        Ok(data)
     }
 
+    /// Página explícita de janeiro, mantida para compatibilidade; coleta anual usa sincronizar_ano.
     pub async fn buscar_contratos_por_periodo(
         &self,
         ano: i32,
         pagina: u32,
     ) -> Result<Vec<PncpContratoItem>> {
-        let data_inicial = format!("{}0101", ano);
-        let data_final = format!("{}0131", ano);
-        let url = format!(
-            "{}/contratos?dataInicial={}&dataFinal={}&pagina={}",
-            self.base_url, data_inicial, data_final, pagina
-        );
-
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(IngestionError::Reqwest)?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let err_body = resp.text().await.unwrap_or_default();
-            return Err(IngestionError::Custom(format!(
-                "API PNCP retornou status {status}: {err_body}"
-            )));
-        }
-
-        let texto = resp.text().await.map_err(IngestionError::Reqwest)?;
-        Self::parse_contratos_json(&texto)
+        let (inicio, fim) = Self::periodo(ano, 1)?;
+        Ok(self
+            .pagina(inicio, fim, pagina, &CancellationToken::new())
+            .await?
+            .data)
     }
 
     pub fn salvar_contratos(
@@ -177,7 +401,7 @@ impl PncpClient {
                 let affected = stmt.execute(storage::rusqlite::params![
                     c.orgao_entidade.razao_social,
                     fornecedor_cnpj,
-                    c.valor_global,
+                    storage::Money::from_reais(c.valor_global)?.reais(),
                     c.objeto_contrato,
                     c.data_assinatura,
                     c.data_vigencia_fim,
@@ -262,3 +486,7 @@ mod tests {
         assert_eq!(count_apos, 1);
     }
 }
+
+#[cfg(test)]
+#[path = "pncp_tests.rs"]
+mod paging_tests;

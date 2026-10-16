@@ -635,6 +635,8 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version:25, name:"todos_os_municipios_brasil", sql:include_str!("025_todos_os_municipios_brasil.sql") },
     Migration { version:26, name:"candidaturas_municipios_es", sql:include_str!("026_candidaturas_municipios_es.sql") },
     Migration { version:27, name:"tabela_arquivos_ingeridos_e_hashes", sql:include_str!("027_arquivos_ingeridos.sql") },
+    Migration { version:28, name:"qualidade_e_retificacoes", sql:include_str!("028_qualidade_e_retificacoes.sql") },
+    Migration { version:29, name:"projecao_incremental", sql:include_str!("029_projecao_incremental.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1093,14 +1095,23 @@ mod tests {
 
         let count: i64 =
             conn.query_row("SELECT count(*) FROM municipios_ibge", [], |r| r.get(0))?;
-        assert!(count >= 5570, "Deveria ter todos os 5570+ municípios brasileiros inseridos");
+        assert!(
+            count >= 5570,
+            "Deveria ter todos os 5570+ municípios brasileiros inseridos"
+        );
 
-        let count_es: i64 =
-            conn.query_row("SELECT count(*) FROM municipios_ibge WHERE uf = 'ES'", [], |r| r.get(0))?;
+        let count_es: i64 = conn.query_row(
+            "SELECT count(*) FROM municipios_ibge WHERE uf = 'ES'",
+            [],
+            |r| r.get(0),
+        )?;
         assert_eq!(count_es, 78, "Deveria ter todos os 78 municípios do ES");
 
-        let count_sp: i64 =
-            conn.query_row("SELECT count(*) FROM municipios_ibge WHERE uf = 'SP'", [], |r| r.get(0))?;
+        let count_sp: i64 = conn.query_row(
+            "SELECT count(*) FROM municipios_ibge WHERE uf = 'SP'",
+            [],
+            |r| r.get(0),
+        )?;
         assert_eq!(count_sp, 645, "Deveria ter todos os 645 municípios de SP");
 
         let (lat, lon): (f64, f64) = conn.query_row(
@@ -1401,5 +1412,63 @@ mod money_regressions {
             .unwrap();
         assert_eq!(val, None);
         super::run_migrations(&mut conn).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod quality_upgrade_regressions {
+    use super::*;
+    #[test]
+    fn atualiza_schema_27_preservando_cache_e_colocando_documento_sem_evidencia_em_quarentena() {
+        let pool = crate::DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        conn.execute_batch("CREATE TABLE _migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT DEFAULT CURRENT_TIMESTAMP)").unwrap();
+        for migration in MIGRATIONS.iter().filter(|m| m.version <= 27) {
+            conn.execute_batch(migration.sql).unwrap();
+            conn.execute(
+                "INSERT INTO _migrations(version,name) VALUES(?1,?2)",
+                (migration.version, migration.name),
+            )
+            .unwrap();
+        }
+        conn.execute_batch("INSERT INTO politicos(id,nome_completo,nome_urna,cpf_mascarado) VALUES(1,'LUÍS ROBERTO BARROSO','BARROSO','***.450.987-**'); INSERT INTO cargos_autoridades(politico_id,orgao,cargo,esfera,origem_dado) VALUES(1,'STF','MINISTRO','FEDERAL','STF_DADOS_ABERTOS'); UPDATE projection_state SET version=2,dirty=0,relations=7;").unwrap();
+        run_migrations(&mut conn).unwrap();
+        let state: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT version,dirty,relations FROM projection_state",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, (3, 1, 7));
+        assert_eq!(
+            conn.query_row("SELECT cpf_mascarado FROM politicos WHERE id=1", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT valor_anterior FROM qualidade_dados_eventos WHERE registro_id=1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "***.450.987-**"
+        );
+        assert_eq!(
+            conn.query_row("SELECT kind FROM projection_changes", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "politico"
+        );
+        assert!(!conn
+            .query_row(
+                "SELECT evidencia_verificada FROM cargos_autoridades",
+                [],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap());
     }
 }

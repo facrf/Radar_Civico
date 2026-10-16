@@ -256,3 +256,7 @@ Consulte [Melhorias e operação](docs/MELHORIAS_E_OPERACAO.md) para paginação
 ### Codificação de uploads locais
 
 Em **Configurações → Upload**, escolha **UTF-8** (padrão) ou **Latin-1 (ISO-8859-1)** para arquivos antigos. A opção aplica-se ao CSV avulso ou a todos os CSVs do ZIP. Pela API multipart, envie `codificacao=UTF-8` ou `codificacao=ISO-8859-1`; outras opções retornam erro. A conversão Latin-1 usa blocos limitados e preserva acentos sem carregar o arquivo inteiro em memória. UTF-8 inválido continua rejeitado quando UTF-8 for selecionado. ZIPs com codificações diferentes devem ser separados por codificação.
+
+## Qualidade dos dados e escala
+
+Consulte o [guia de confiabilidade e escala](docs/confiabilidade_e_escala.md) para avaliação de integridade, evidência de autoridades, cobertura PNCP, retificações CEAP, projeção incremental e backups em segundo plano.

@@ -154,8 +154,7 @@ impl BatchSink {
         spawn_blocking(move || {
             let mut conn = pool.get().map_err(IngestionError::Storage)?;
             aplicar_pragmas_ingestao(&conn).map_err(IngestionError::Storage)?;
-            batch_insert_alertas_beneficio(&mut conn, &records)
-                .map_err(IngestionError::Storage)
+            batch_insert_alertas_beneficio(&mut conn, &records).map_err(IngestionError::Storage)
         })
         .await
         .map_err(|e| IngestionError::TokioJoin(e.to_string()))?
@@ -220,6 +219,7 @@ pub mod tests {
 
         let sink = BatchSink::new(pool.clone());
         let despesas = vec![NovaDespesaParlamentar {
+            id_origem: None,
             casa_legislativa: "camara".to_string(),
             parlamentar_nome: "Deputado X".to_string(),
             parlamentar_cpf_mascarado: Some("***.123.456-**".to_string()),

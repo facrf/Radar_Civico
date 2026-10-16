@@ -19,11 +19,11 @@ pub enum ImportStage {
     Processando,
     Finalizando,
     Concluido,
+    Parcial,
     Cancelado,
     Interrompido,
     Erro,
 }
-
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportProgress {
@@ -115,6 +115,7 @@ impl ImportContext {
             if stage == ImportStage::Concluido
                 || stage == ImportStage::Cancelado
                 || stage == ImportStage::Erro
+                || stage == ImportStage::Parcial
             {
                 p.is_running = false;
                 p.finished_at = Some(Utc::now().to_rfc3339());
@@ -173,6 +174,14 @@ impl ImportContext {
             p.message = message.into();
             p.finished_at = Some(Utc::now().to_rfc3339());
             p.elapsed_seconds = self.started_instant.elapsed().as_secs();
+        }
+    }
+
+    pub fn finish_partial(&self, message: impl Into<String>) {
+        let message = message.into();
+        self.set_stage(ImportStage::Parcial, message.clone());
+        if let Ok(mut progress) = self.progress.write() {
+            progress.last_error = Some(message);
         }
     }
 

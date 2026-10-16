@@ -14,6 +14,7 @@ pub mod politico;
 pub mod politicos_duplicados;
 pub mod projection;
 pub mod routes;
+pub mod score;
 pub mod security;
 
 pub use dossie::{
@@ -39,13 +40,13 @@ pub use busca::{busca_handler, BuscaParams, ItemBuscaUnificada, RespostaBusca};
 pub use config::{
     carregar_parametros_auditoria, criar_backup_handler, download_backup_arquivo_handler,
     executar_ingestao_handler, exportar_banco_handler, exportar_tabela_handler,
-    import_status_handler, job_status_handler, listar_backups_handler, obter_audit_rules_handler,
-    obter_favicon_handler, obter_icone_handler, obter_identidade_handler, remover_icone_handler,
-    salvar_audit_rules_handler, salvar_icone_handler, salvar_parametros_auditoria,
-    sincronizar_autoridades_handler, sincronizar_camara_handler, sincronizar_diarios_handler,
-    sincronizar_tse_handler, sincronizar_tudo_handler, status_handler, testar_webhook_handler,
-    upload_arquivo_handler, verificar_tse_ano_handler, versao_handler,
-    listar_arquivos_ingeridos_handler, verificar_arquivo_hash_handler, BackupItemInfo,
+    import_status_handler, job_status_handler, listar_arquivos_ingeridos_handler,
+    listar_backups_handler, obter_audit_rules_handler, obter_favicon_handler, obter_icone_handler,
+    obter_identidade_handler, remover_icone_handler, salvar_audit_rules_handler,
+    salvar_icone_handler, salvar_parametros_auditoria, sincronizar_autoridades_handler,
+    sincronizar_camara_handler, sincronizar_diarios_handler, sincronizar_tse_handler,
+    sincronizar_tudo_handler, status_handler, testar_webhook_handler, upload_arquivo_handler,
+    verificar_arquivo_hash_handler, verificar_tse_ano_handler, versao_handler, BackupItemInfo,
     ConfigStatusResponse, ExecutarIngestaoRequest, ExecutarIngestaoResponse,
     IdentidadeVisualResponse, ImportProgress, JobInfo, ParametrosAuditoria,
     SalvarAuditRulesResponse, SalvarIconeResponse, SincronizarCamaraRequest, SincronizarTseRequest,
@@ -89,6 +90,7 @@ pub fn criar_router(pool: DbPool) -> Router {
 pub fn criar_router_com_auth(pool: DbPool, auth: security::AdminAuth) -> Router {
     let mut router = Router::new()
         .route("/health", get(|| async { "OK" }))
+        .route("/ready", get(projection::readiness))
         .route(
             "/admin/login",
             get(|| async { axum::response::Redirect::to("/") }),
@@ -310,10 +312,22 @@ pub fn criar_router_com_auth(pool: DbPool, auth: security::AdminAuth) -> Router 
             "/api/v1/config/backups/:nome_arquivo",
             get(download_backup_arquivo_handler),
         )
-        .route("/api/config/arquivos", get(listar_arquivos_ingeridos_handler))
-        .route("/api/v1/config/arquivos", get(listar_arquivos_ingeridos_handler))
-        .route("/api/config/verificar-hash", get(verificar_arquivo_hash_handler))
-        .route("/api/v1/config/verificar-hash", get(verificar_arquivo_hash_handler))
+        .route(
+            "/api/config/arquivos",
+            get(listar_arquivos_ingeridos_handler),
+        )
+        .route(
+            "/api/v1/config/arquivos",
+            get(listar_arquivos_ingeridos_handler),
+        )
+        .route(
+            "/api/config/verificar-hash",
+            get(verificar_arquivo_hash_handler),
+        )
+        .route(
+            "/api/v1/config/verificar-hash",
+            get(verificar_arquivo_hash_handler),
+        )
         .route("/api/config/webhook/test", post(testar_webhook_handler))
         .route("/api/v1/config/webhook/test", post(testar_webhook_handler))
         .route("/api/settings/webhook/test", post(testar_webhook_handler))
@@ -454,14 +468,8 @@ mod local_access_tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let headers = response.headers();
-        assert_eq!(
-            headers.get("x-content-type-options").unwrap(),
-            "nosniff"
-        );
-        assert_eq!(
-            headers.get("x-frame-options").unwrap(),
-            "SAMEORIGIN"
-        );
+        assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+        assert_eq!(headers.get("x-frame-options").unwrap(), "SAMEORIGIN");
         assert_eq!(
             headers.get("referrer-policy").unwrap(),
             "strict-origin-when-cross-origin"

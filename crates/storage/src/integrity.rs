@@ -52,17 +52,31 @@ pub struct RegistroArquivoIngerido {
 }
 
 /// Registra ou atualiza metadados e hash SHA-256 de um arquivo ingerido no banco de dados.
+#[derive(Debug, Clone, Copy)]
+pub struct NovoArquivoIngerido<'a> {
+    pub fonte: &'a str,
+    pub nome_arquivo: &'a str,
+    pub hash_sha256: &'a str,
+    pub tamanho_bytes: i64,
+    pub status: &'a str,
+    pub registros_afetados: i64,
+    pub detalhes: Option<&'a str>,
+}
+
 pub fn registrar_arquivo_ingerido(
     conn: &Connection,
-    fonte: &str,
-    nome_arquivo: &str,
-    hash_sha256: &str,
-    tamanho_bytes: i64,
-    status: &str,
-    registros_afetados: i64,
-    detalhes: Option<&str>,
+    registro: &NovoArquivoIngerido<'_>,
 ) -> Result<i64> {
-    conn.execute(
+    let NovoArquivoIngerido {
+        fonte,
+        nome_arquivo,
+        hash_sha256,
+        tamanho_bytes,
+        status,
+        registros_afetados,
+        detalhes,
+    } = *registro;
+    let id = conn.query_row(
         "INSERT INTO arquivos_ingeridos (
             fonte, nome_arquivo, hash_sha256, tamanho_bytes, status, registros_afetados, detalhes
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -70,7 +84,7 @@ pub fn registrar_arquivo_ingerido(
             status = excluded.status,
             registros_afetados = excluded.registros_afetados,
             detalhes = excluded.detalhes,
-            criado_em = CURRENT_TIMESTAMP;",
+            criado_em = CURRENT_TIMESTAMP RETURNING id",
         params![
             fonte,
             nome_arquivo,
@@ -80,9 +94,8 @@ pub fn registrar_arquivo_ingerido(
             registros_afetados,
             detalhes
         ],
+        |r| r.get(0),
     )?;
-
-    let id = conn.last_insert_rowid();
     Ok(id)
 }
 
@@ -202,17 +215,20 @@ mod tests {
         let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let id = registrar_arquivo_ingerido(
             &conn,
-            "UPLOAD_MANUAL",
-            "teste_ceap.csv",
-            hash,
-            1024,
-            "CONCLUIDO",
-            50,
-            Some("Tipo: CEAP"),
+            &NovoArquivoIngerido {
+                fonte: "UPLOAD_MANUAL",
+                nome_arquivo: "teste_ceap.csv",
+                hash_sha256: hash,
+                tamanho_bytes: 1024,
+                status: "CONCLUIDO",
+                registros_afetados: 50,
+                detalhes: Some("Tipo: CEAP"),
+            },
         )?;
         assert!(id > 0);
 
-        let achado = buscar_arquivo_por_hash(&conn, "UPLOAD_MANUAL", hash)?.expect("Deve encontrar");
+        let achado =
+            buscar_arquivo_por_hash(&conn, "UPLOAD_MANUAL", hash)?.expect("Deve encontrar");
         assert_eq!(achado.nome_arquivo, "teste_ceap.csv");
         assert_eq!(achado.registros_afetados, 50);
 
@@ -233,21 +249,25 @@ mod tests {
 
         registrar_arquivo_ingerido(
             &conn,
-            "TSE",
-            "consulta_cand_2024_ES.csv",
-            hash_original,
-            5000,
-            "CONCLUIDO",
-            100,
-            None,
+            &NovoArquivoIngerido {
+                fonte: "TSE",
+                nome_arquivo: "consulta_cand_2024_ES.csv",
+                hash_sha256: hash_original,
+                tamanho_bytes: 5000,
+                status: "CONCLUIDO",
+                registros_afetados: 100,
+                detalhes: None,
+            },
         )?;
 
         // Mesma consulta com o mesmo hash não é retificação
-        let retificacao = verificar_retificacao(&conn, "TSE", "consulta_cand_2024_ES.csv", hash_original)?;
+        let retificacao =
+            verificar_retificacao(&conn, "TSE", "consulta_cand_2024_ES.csv", hash_original)?;
         assert!(retificacao.is_none());
 
         // Mesma consulta com novo hash deve apontar retificação do hash anterior
-        let retificacao = verificar_retificacao(&conn, "TSE", "consulta_cand_2024_ES.csv", hash_retificado)?;
+        let retificacao =
+            verificar_retificacao(&conn, "TSE", "consulta_cand_2024_ES.csv", hash_retificado)?;
         assert_eq!(retificacao, Some(hash_original.to_string()));
 
         Ok(())

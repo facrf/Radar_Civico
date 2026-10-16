@@ -185,6 +185,8 @@ pub fn batch_insert_alertas_beneficio(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NovaDespesaParlamentar {
+    #[serde(default)]
+    pub id_origem: Option<String>,
     pub casa_legislativa: String,
     pub parlamentar_nome: String,
     pub parlamentar_cpf_mascarado: Option<String>,
@@ -208,33 +210,8 @@ pub fn batch_insert_despesas_parlamentares(
 
     let tx = transaction_immediate(conn)?;
     let mut inseridos = 0;
-    {
-        let mut stmt = tx.prepare_cached(
-            "INSERT OR IGNORE INTO despesas_parlamentares (
-                casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado,
-                data_emissao, categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf,
-                valor_liquido, numero_documento, url_nota_fiscal, detalhes_litros
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        )?;
-
-        for d in despesas {
-            let changes = stmt.execute(rusqlite::params![
-                d.casa_legislativa,
-                d.parlamentar_nome,
-                d.parlamentar_cpf_mascarado,
-                d.data_emissao,
-                d.categoria_despesa,
-                d.fornecedor_nome,
-                d.fornecedor_cnpj_cpf,
-                crate::Money::from_reais(d.valor_liquido)?.reais(),
-                d.numero_documento,
-                d.url_nota_fiscal,
-                d.detalhes_litros,
-            ])?;
-            if changes > 0 {
-                inseridos += 1;
-            }
-        }
+    for despesa in despesas {
+        inseridos += crate::upsert_despesa_parlamentar(&tx, despesa)?.1;
     }
     tx.commit()?;
 
@@ -416,6 +393,12 @@ pub struct NovaAutoridade {
     pub biografia_resumo: Option<String>,
     pub foto_url: Option<String>,
     pub origem_dado: String,
+    #[serde(default)]
+    pub fonte_url: Option<String>,
+    #[serde(default)]
+    pub conferido_em: Option<String>,
+    #[serde(default)]
+    pub evidencia_verificada: bool,
 }
 
 pub fn batch_insert_autoridades(
@@ -478,12 +461,16 @@ pub fn batch_insert_autoridades(
                 )
                 .unwrap_or(false);
 
+            if ja_tem_cargo && a.evidencia_verificada {
+                tx.execute("UPDATE cargos_autoridades SET fonte_url=?4,conferido_em=?5,evidencia_verificada=1,data_posse=?6,data_exoneracao=?7,ato_nomeacao=?8,origem_dado=?9 WHERE politico_id=?1 AND orgao=?2 AND cargo=?3",
+                    rusqlite::params![politico_id,a.orgao,a.cargo,a.fonte_url,a.conferido_em,a.data_posse,a.data_exoneracao,a.ato_nomeacao,a.origem_dado])?;
+            }
             if !ja_tem_cargo {
                 tx.execute(
                     "INSERT INTO cargos_autoridades (
                         politico_id, orgao, cargo, esfera, uf, data_posse,
-                        data_exoneracao, ato_nomeacao, biografia_resumo, origem_dado
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        data_exoneracao, ato_nomeacao, biografia_resumo, origem_dado,fonte_url,conferido_em,evidencia_verificada
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,?11,?12,?13)",
                     rusqlite::params![
                         politico_id,
                         a.orgao,
@@ -494,7 +481,7 @@ pub fn batch_insert_autoridades(
                         a.data_exoneracao,
                         a.ato_nomeacao,
                         a.biografia_resumo,
-                        a.origem_dado
+                        a.origem_dado,a.fonte_url,a.conferido_em,a.evidencia_verificada
                     ],
                 )?;
             }
@@ -694,6 +681,7 @@ mod tests {
 
         let despesas = vec![
             NovaDespesaParlamentar {
+                id_origem: None,
                 casa_legislativa: "CAMARA".to_string(),
                 parlamentar_nome: "DEPUTADO JOAO".to_string(),
                 parlamentar_cpf_mascarado: Some("***.123.456-**".to_string()),
@@ -707,6 +695,7 @@ mod tests {
                 detalhes_litros: Some(50.0),
             },
             NovaDespesaParlamentar {
+                id_origem: None,
                 casa_legislativa: "CAMARA".to_string(),
                 parlamentar_nome: "DEPUTADA MARIA".to_string(),
                 parlamentar_cpf_mascarado: Some("***.987.654-**".to_string()),

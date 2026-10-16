@@ -1,4 +1,5 @@
 <script lang="ts">
+	import AvaliacaoIntegridade from "#lib/components/AvaliacaoIntegridade.svelte";
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import type {
@@ -763,15 +764,7 @@
 													🏛️ {politico.tipo_agente === 'MINISTRO_STF' ? 'STF' : politico.tipo_agente === 'MINISTRO_TCU' ? 'TCU' : politico.tipo_agente === 'PROCURADOR_MPTCU' ? 'MPTCU' : politico.tipo_agente === 'PGR' ? 'MPU' : politico.tipo_agente === 'EMBAIXADOR' ? 'MRE' : 'Estado'}
 												</span>
 											{/if}
-											{#if politico.score_integridade !== undefined}
-												<span
-													class="px-1.5 py-0.5 rounded text-[10px] font-bold border font-mono flex items-center gap-1"
-													style="background-color: {politico.cor_risco_hex || '#10b981'}20; color: {politico.cor_risco_hex || '#10b981'}; border-color: {politico.cor_risco_hex || '#10b981'}50;"
-													title="Score de Integridade: {politico.score_integridade}/100 • Risco {politico.nivel_risco || 'MÍNIMO'}"
-												>
-													🛡️ {politico.score_integridade}
-												</span>
-											{/if}
+											<AvaliacaoIntegridade avaliacao={politico.avaliacao_integridade} />
 											{#if politico.tem_alertas}
 												<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 ml-auto" title="Anomalias identificadas">
 													⚠️ Alerta
@@ -1012,23 +1005,7 @@
 
 									<!-- Status / Score de Integridade -->
 									<td class="py-3 px-3 text-center">
-										{#if politico.score_integridade !== undefined}
-											<span
-												class="px-1.5 py-0.5 rounded text-[10px] font-bold border font-mono inline-flex items-center gap-1 whitespace-nowrap"
-												style="background-color: {politico.cor_risco_hex || '#10b981'}20; color: {politico.cor_risco_hex || '#10b981'}; border-color: {politico.cor_risco_hex || '#10b981'}50;"
-												title="Score de Integridade: {politico.score_integridade}/100 • Risco {politico.nivel_risco || 'MÍNIMO'}"
-											>
-												🛡️ {politico.score_integridade} ({politico.nivel_risco || 'MÍNIMO'})
-											</span>
-										{:else if politico.tem_alertas}
-											<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 whitespace-nowrap">
-												⚠️ Alerta
-											</span>
-										{:else}
-											<span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 whitespace-nowrap">
-												Regular
-											</span>
-										{/if}
+										<AvaliacaoIntegridade avaliacao={politico.avaliacao_integridade} />
 									</td>
 
 									<!-- Ações -->

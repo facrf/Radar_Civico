@@ -1,3 +1,8 @@
+pub use super::identidade::{
+    obter_favicon_handler, obter_icone_handler, obter_identidade_handler, remover_icone_handler,
+    salvar_icone_handler, IdentidadeVisualResponse, ObterIconeParams, RemoverIconeParams,
+    SalvarIconeResponse, DEFAULT_ICON_SVG,
+};
 use axum::body::Body;
 use axum::extract::{Multipart, Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -28,41 +33,6 @@ pub const TABELAS_PERMITIDAS: &[&str] = &[
     "emendas_parlamentares",
     "arquivos_ingeridos",
 ];
-
-pub const DEFAULT_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <rect width="32" height="32" rx="8" fill="#0f172a"/>
-  <path d="M16 4L6 8v7c0 6.6 4.3 12.8 10 14 5.7-1.2 10-7.4 10-14V8l-10-4z" fill="none" stroke="#10b981" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="16" cy="15" r="4" fill="none" stroke="#10b981" stroke-width="1.8"/>
-  <circle cx="16" cy="15" r="1.5" fill="#10b981"/>
-  <line x1="16" y1="15" x2="20" y2="12" stroke="#10b981" stroke-width="1.8" stroke-linecap="round"/>
-</svg>"##;
-
-#[derive(Debug, Deserialize)]
-pub struct ObterIconeParams {
-    pub tipo: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RemoverIconeParams {
-    pub alvo: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SalvarIconeResponse {
-    pub status: String,
-    pub mensagem: String,
-    pub alvo: String,
-    pub mime_type: String,
-    pub tamanho_bytes: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IdentidadeVisualResponse {
-    pub tem_icone_customizado: bool,
-    pub tem_favicon_customizado: bool,
-    pub icone_url: String,
-    pub favicon_url: String,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TotalRegistros {
@@ -452,10 +422,7 @@ pub(crate) fn sqlite_http_error(error: storage::StorageError) -> ConfigError {
             } else {
                 msg
             };
-            (
-                status,
-                Json(json!({"erro": user_msg})),
-            )
+            (status, Json(json!({"erro": user_msg})))
         }
     }
 }
@@ -564,10 +531,9 @@ pub async fn status_handler(
             conn.query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
                 r.get(0)
             })?;
-        let arquivos_ingeridos: i64 =
-            conn.query_row("SELECT count(*) FROM arquivos_ingeridos", [], |r| {
-                r.get(0)
-            }).unwrap_or(0);
+        let arquivos_ingeridos: i64 = conn
+            .query_row("SELECT count(*) FROM arquivos_ingeridos", [], |r| r.get(0))
+            .unwrap_or(0);
 
         let ultimo_evento_sincronizacao: Option<String> = conn
             .query_row(
@@ -751,105 +717,16 @@ async fn executar_rotina_fonte(
     ano: i32,
     job_id: &str,
 ) -> Result<String, String> {
-    if fonte == "PNCP" {
-        atualizar_job(
-            pool,
-            job_id,
-            20,
-            &format!("Consultando fornecedores na base local para busca de contratos no PNCP ({ano})..."),
-        )
-        .await;
-
-        let pool_forn = pool.clone();
-        let cnpjs = pool_forn
-            .run_blocking(|conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT DISTINCT fornecedor_cnpj_cpf FROM despesas_parlamentares 
-                     WHERE length(REPLACE(REPLACE(REPLACE(fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', '')) = 14 
-                     LIMIT 25",
-                )?;
-                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-                let mut list = Vec::new();
-                for r in rows.flatten() {
-                    let clean = r.trim().to_string();
-                    if !clean.is_empty() && !list.contains(&clean) {
-                        list.push(clean);
-                    }
-                }
-                Ok(list)
-            })
-            .await
-            .unwrap_or_default();
-
-        let client = ingestion::PncpClient::new();
-        let mut inseridos_total = 0;
-
-        if !cnpjs.is_empty() {
-            let total = cnpjs.len();
-            for (i, cnpj) in cnpjs.iter().enumerate() {
-                let prog = (25 + ((i as u32 * 65) / total as u32).min(65)) as u8;
-                atualizar_job(
-                    pool,
-                    job_id,
-                    prog,
-                    &format!("PNCP: consultando fornecedor {}/{} ({cnpj})...", i + 1, total),
-                )
-                .await;
-
-                if let Ok(contratos) = client.buscar_contratos_por_cnpj(cnpj, ano).await {
-                    if !contratos.is_empty() {
-                        let pool_save = pool.clone();
-                        if let Ok(ins) = pool_save
-                            .run_blocking(move |conn| {
-                                ingestion::PncpClient::salvar_contratos(conn, &contratos)
-                                    .map_err(|e| storage::StorageError::Io(std::io::Error::other(e.to_string())))
-                            })
-                            .await
-                        {
-                            inseridos_total += ins;
-                        }
-                    }
-                }
-            }
-        } else {
-            // Se não houver fornecedores na base, faz uma consulta do período inicial do ano no PNCP
-            atualizar_job(
-                pool,
-                job_id,
-                40,
-                &format!("PNCP: consultando contratos públicos gerais para o ano {ano}..."),
-            )
-            .await;
-            if let Ok(contratos) = client.buscar_contratos_por_periodo(ano, 1).await {
-                if !contratos.is_empty() {
-                    let pool_save = pool.clone();
-                    if let Ok(ins) = pool_save
-                        .run_blocking(move |conn| {
-                            ingestion::PncpClient::salvar_contratos(conn, &contratos)
-                                .map_err(|e| storage::StorageError::Io(std::io::Error::other(e.to_string())))
-                        })
-                        .await
-                    {
-                        inseridos_total += ins;
-                    }
-                }
-            }
-        }
-
-        let total_banco: i64 = pool
-            .run_blocking(|conn| Ok(conn.query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))?))
-            .await
-            .unwrap_or(0);
-
-        return Ok(format!(
-            "Sincronização PNCP ({ano}) concluída: {inseridos_total} novos contratos sincronizados da API oficial. Total atual na base: {total_banco} contratos."
-        ));
-    }
-
     if fonte == "OAB" || fonte == "CNA" {
         let pool_oab = pool.clone();
         let count: i64 = pool_oab
-            .run_blocking(|conn| Ok(conn.query_row("SELECT count(*) FROM registros_profissionais WHERE orgao_emissor = 'OAB'", [], |r| r.get(0))?))
+            .run_blocking(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM registros_profissionais WHERE orgao_emissor = 'OAB'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
             .await
             .unwrap_or(0);
 
@@ -943,6 +820,24 @@ pub async fn executar_ingestao_handler(
         )
         .await;
 
+        if fonte_spawn == "PNCP" {
+            match super::pncp::sincronizar(&pool_spawn, ano, &job_id_spawn).await {
+                Ok(report) => {
+                    atualizar_job_concluido(
+                        &pool_spawn,
+                        &job_id_spawn,
+                        100,
+                        report.status(),
+                        &report.resumo(),
+                    )
+                    .await
+                }
+                Err(error) => {
+                    atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "ERRO", &error).await
+                }
+            }
+            return;
+        }
         let res = executar_rotina_fonte(&pool_spawn, &fonte_spawn, ano, &job_id_spawn).await;
         match res {
             Ok(msg) => {
@@ -1544,7 +1439,7 @@ pub async fn sincronizar_autoridades_handler(
         let total_cargos = total;
 
         let msg = format!(
-            "Sincronização de autoridades concluída: {} cargos registrados no sistema.",
+            "Catálogo de autoridades: {} cargos cadastrados. Registros sem fonte e data de conferência permanecem não verificados e não confirmam vigência.",
             total_cargos
         );
         atualizar_job_concluido(&pool_spawn, &job_id_spawn, 100, "CONCLUIDO", &msg).await;
@@ -1879,76 +1774,18 @@ pub async fn sincronizar_tudo_handler(
             }
         }
         if incluir_pncp {
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                82,
-                &format!("PNCP: sincronizando contratos para o ano {ano_fiscal}..."),
-            )
-            .await;
-
-            let pool_forn = pool_spawn.clone();
-            let cnpjs = pool_forn
-                .run_blocking(|conn| {
-                    let mut stmt = conn.prepare(
-                        "SELECT DISTINCT fornecedor_cnpj_cpf FROM despesas_parlamentares 
-                         WHERE length(REPLACE(REPLACE(REPLACE(fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', '')) = 14 
-                         LIMIT 15",
-                    )?;
-                    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-                    let mut list = Vec::new();
-                    for r in rows.flatten() {
-                        let clean = r.trim().to_string();
-                        if !clean.is_empty() && !list.contains(&clean) {
-                            list.push(clean);
-                        }
+            match super::pncp::sincronizar(&pool_spawn, ano_fiscal, &job_id_spawn).await {
+                Ok(report) => {
+                    if report.periodos_concluidos > 0 {
+                        successes += 1;
                     }
-                    Ok(list)
-                })
-                .await
-                .unwrap_or_default();
-
-            let client = ingestion::PncpClient::new();
-            let mut inseridos_pncp = 0;
-            if !cnpjs.is_empty() {
-                for cnpj in &cnpjs {
-                    if let Ok(contratos) = client.buscar_contratos_por_cnpj(cnpj, ano_fiscal).await {
-                        if !contratos.is_empty() {
-                            let pool_save = pool_spawn.clone();
-                            if let Ok(ins) = pool_save
-                                .run_blocking(move |conn| {
-                                    ingestion::PncpClient::salvar_contratos(conn, &contratos)
-                                        .map_err(|e| storage::StorageError::Io(std::io::Error::other(e.to_string())))
-                                })
-                                .await
-                            {
-                                inseridos_pncp += ins;
-                            }
-                        }
+                    if !report.falhas.is_empty() {
+                        failures.push(report.resumo());
                     }
+                    atualizar_job(&pool_spawn, &job_id_spawn, 86, &report.resumo()).await;
                 }
-            } else if let Ok(contratos) = client.buscar_contratos_por_periodo(ano_fiscal, 1).await {
-                if !contratos.is_empty() {
-                    let pool_save = pool_spawn.clone();
-                    if let Ok(ins) = pool_save
-                        .run_blocking(move |conn| {
-                            ingestion::PncpClient::salvar_contratos(conn, &contratos)
-                                .map_err(|e| storage::StorageError::Io(std::io::Error::other(e.to_string())))
-                        })
-                        .await
-                    {
-                        inseridos_pncp += ins;
-                    }
-                }
+                Err(error) => failures.push(format!("PNCP: {error}")),
             }
-            successes += 1;
-            atualizar_job(
-                &pool_spawn,
-                &job_id_spawn,
-                86,
-                &format!("PNCP: {inseridos_pncp} contratos sincronizados"),
-            )
-            .await;
         }
         if incluir_autoridades {
             let result = pool_spawn
@@ -2533,7 +2370,10 @@ fn processar_csv_records<R: std::io::Read>(
                     "NOME_COMPLETO",
                 ],
             );
-            let col_cpf = find_col(&headers, &["CPF_MASCARADO", "CPF", "NR_CPF", "CPF_ADVOGADO"]);
+            let col_cpf = find_col(
+                &headers,
+                &["CPF_MASCARADO", "CPF", "NR_CPF", "CPF_ADVOGADO"],
+            );
             let col_orgao = find_col(&headers, &["ORGAO_EMISSOR", "ORGAO", "CONSELHO"]);
             let col_reg = find_col(
                 &headers,
@@ -2547,7 +2387,10 @@ fn processar_csv_records<R: std::io::Read>(
                     "OAB",
                 ],
             );
-            let col_uf = find_col(&headers, &["SECCIONAL_UF", "UF", "ESTADO", "SECCIONAL", "SG_UF"]);
+            let col_uf = find_col(
+                &headers,
+                &["SECCIONAL_UF", "UF", "ESTADO", "SECCIONAL", "SG_UF"],
+            );
             let col_sit = find_col(
                 &headers,
                 &[
@@ -2634,12 +2477,7 @@ fn processar_csv_records<R: std::io::Read>(
             );
             let col_objeto = find_col(
                 &headers,
-                &[
-                    "OBJETO",
-                    "OBJETOCONTRATO",
-                    "OBJETO_CONTRATO",
-                    "DESCRICAO",
-                ],
+                &["OBJETO", "OBJETOCONTRATO", "OBJETO_CONTRATO", "DESCRICAO"],
             );
             let col_dt_ass = find_col(
                 &headers,
@@ -2737,14 +2575,6 @@ fn processar_csv_records<R: std::io::Read>(
 
             let tx = conn;
             {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT INTO despesas_parlamentares (
-                        casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado, data_emissao,
-                        categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf, valor_liquido, numero_documento,
-                        parlamentar_id,emitido_em,municipio_emissao,uf_emissao,latitude_emissao,longitude_emissao,presencial
-                     ) VALUES ('CAMARA', ?1, ?2, ?3, ?8, ?4, ?5, ?6, ?7,?9,?10,?11,?12,?13,?14,?15)"
-                ).map_err(std::io::Error::other)?;
-
                 for record in reader.records() {
                     let record = record.map_err(std::io::Error::other)?;
                     let parl = required_field(&record, col_parlamentar, "parlamentar")?;
@@ -2773,13 +2603,52 @@ fn processar_csv_records<R: std::io::Read>(
                     .unwrap_or("GERAL");
                     let (person, time, city, uf, lat, lon, presence) =
                         ceap_evidence(tx, &headers, &record)?;
-                    if !forn_doc.is_empty() {
-                        count += stmt
-                            .execute(rusqlite::params![
-                                parl, cpf, dt, forn_nome, forn_doc, valor, doc, category, person,
-                                time, city, uf, lat, lon, presence
-                            ])
-                            .map_err(std::io::Error::other)?;
+                    let raw_id = optional_csv(&headers, &record, &["ID_ORIGEM"]);
+                    let official_id = storage::identificador_ceap(
+                        optional_csv(&headers, &record, &["IDEDOCUMENTO", "CODDOCUMENTO"])
+                            .unwrap_or(""),
+                        optional_csv(&headers, &record, &["NUMRESSARCIMENTO"]).unwrap_or("0"),
+                        optional_csv(&headers, &record, &["NUMPARCELA", "PARCELA"]).unwrap_or("0"),
+                        optional_csv(&headers, &record, &["NUMLOTE", "CODLOTE"]).unwrap_or("0"),
+                    );
+                    let despesa = storage::NovaDespesaParlamentar {
+                        id_origem: raw_id.map(str::to_owned).or(official_id),
+                        casa_legislativa: "CAMARA".into(),
+                        parlamentar_nome: parl.into(),
+                        parlamentar_cpf_mascarado: (!cpf.is_empty())
+                            .then(|| ingestion::mascarar_cpf(cpf)),
+                        data_emissao: dt
+                            .ok_or_else(|| std::io::Error::other("Data CEAP ausente"))?,
+                        categoria_despesa: category.into(),
+                        fornecedor_nome: forn_nome.into(),
+                        fornecedor_cnpj_cpf: ingestion::limpar_cnpj(forn_doc),
+                        valor_liquido: valor,
+                        numero_documento: Some(doc.into()),
+                        url_nota_fiscal: optional_csv(
+                            &headers,
+                            &record,
+                            &["URLDOCUMENTO", "URL_NOTA_FISCAL"],
+                        )
+                        .map(str::to_owned),
+                        detalhes_litros: optional_csv(
+                            &headers,
+                            &record,
+                            &["DETALHES_LITROS", "LITROS"],
+                        )
+                        .map(|s| {
+                            s.replace(',', ".")
+                                .parse::<f64>()
+                                .map_err(std::io::Error::other)
+                        })
+                        .transpose()?,
+                    };
+                    let (id, changes) = storage::upsert_despesa_parlamentar(tx, &despesa)
+                        .map_err(std::io::Error::other)?;
+                    count += changes;
+                    // Arquivos sem evidência presencial não apagam evidências já conferidas.
+                    if person.is_some() || time.is_some() || presence {
+                        tx.execute("UPDATE despesas_parlamentares SET parlamentar_id=?2,emitido_em=?3,municipio_emissao=?4,uf_emissao=?5,latitude_emissao=?6,longitude_emissao=?7,presencial=?8 WHERE id=?1",
+                            rusqlite::params![id,person,time,city,uf,lat,lon,presence]).map_err(std::io::Error::other)?;
                     }
                 }
             }
@@ -2920,11 +2789,24 @@ fn processar_csv_records<R: std::io::Read>(
                     ingestion::tse_ckan::normalizar_cargo(get(&["DS_CARGO", "CARGO"], "DS_CARGO")?);
                 let partido = get(&["SG_PARTIDO", "SIGLA_PARTIDO", "PARTIDO"], "SG_PARTIDO")?;
                 let uf = get(&["SG_UF", "UF"], "SG_UF")?;
-                let municipio =
-                    find_col(&headers, &["NM_UE", "NM_MUNICIPIO", "MUNICIPIO", "NOME_MUNICIPIO", "NOME_UE"])
-                        .and_then(|i| record.get(i))
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty() && !s.starts_with('#') && !s.eq_ignore_ascii_case("BRASIL") && !s.eq_ignore_ascii_case(uf));
+                let municipio = find_col(
+                    &headers,
+                    &[
+                        "NM_UE",
+                        "NM_MUNICIPIO",
+                        "MUNICIPIO",
+                        "NOME_MUNICIPIO",
+                        "NOME_UE",
+                    ],
+                )
+                .and_then(|i| record.get(i))
+                .map(|s| s.trim())
+                .filter(|s| {
+                    !s.is_empty()
+                        && !s.starts_with('#')
+                        && !s.eq_ignore_ascii_case("BRASIL")
+                        && !s.eq_ignore_ascii_case(uf)
+                });
                 let situacao = find_col(&headers, &["DS_SIT_TOT_TURNO", "SITUACAO_TOTALIZACAO"])
                     .and_then(|i| record.get(i));
                 tx.execute("INSERT INTO politicos(sq_candidato,cpf_mascarado,nome_completo,nome_urna) VALUES (?1,?2,?3,?4) ON CONFLICT(sq_candidato) DO UPDATE SET cpf_mascarado=excluded.cpf_mascarado,nome_completo=excluded.nome_completo,nome_urna=excluded.nome_urna", rusqlite::params![sq, cpf, nome, urna]).map_err(std::io::Error::other)?;
@@ -3302,7 +3184,9 @@ pub async fn upload_arquivo_handler(
 
     // Verificação de Idempotência: se o mesmo arquivo já foi processado com sucesso, retorna imediatamente
     if let Ok(conn_check) = pool.get() {
-        if let Ok(Some(existente)) = storage::buscar_arquivo_por_hash(&conn_check, "UPLOAD_MANUAL", &hash_sha256) {
+        if let Ok(Some(existente)) =
+            storage::buscar_arquivo_por_hash(&conn_check, "UPLOAD_MANUAL", &hash_sha256)
+        {
             if existente.status == "CONCLUIDO" {
                 return Ok(Json(UploadResponse {
                     status: "CONCLUIDO".to_string(),
@@ -3322,7 +3206,9 @@ pub async fn upload_arquivo_handler(
     }
 
     let retificacao_anterior = pool.get().ok().and_then(|c| {
-        storage::verificar_retificacao(&c, "UPLOAD_MANUAL", &nome_arquivo, &hash_sha256).ok().flatten()
+        storage::verificar_retificacao(&c, "UPLOAD_MANUAL", &nome_arquivo, &hash_sha256)
+            .ok()
+            .flatten()
     });
 
     let temp_path = temp_file.path().to_path_buf();
@@ -3488,13 +3374,15 @@ pub async fn upload_arquivo_handler(
         );
         let _ = storage::registrar_arquivo_ingerido(
             &conn,
-            "UPLOAD_MANUAL",
-            &nome_arquivo,
-            &hash_sha256,
-            tamanho_total as i64,
-            "CONCLUIDO",
-            registros_inseridos as i64,
-            Some(&format!("Tipo: {tipo_detectado}")),
+            &storage::NovoArquivoIngerido {
+                fonte: "UPLOAD_MANUAL",
+                nome_arquivo: &nome_arquivo,
+                hash_sha256: &hash_sha256,
+                tamanho_bytes: tamanho_total as i64,
+                status: "CONCLUIDO",
+                registros_afetados: registros_inseridos as i64,
+                detalhes: Some(&format!("Tipo: {tipo_detectado}")),
+            },
         );
     }
 
@@ -3512,602 +3400,11 @@ pub async fn upload_arquivo_handler(
     }))
 }
 
-pub async fn obter_icone_handler(
-    State(pool): State<DbPool>,
-    Query(params): Query<ObterIconeParams>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let tipo = params
-        .tipo
-        .unwrap_or_else(|| "app".to_string())
-        .to_lowercase();
-    let chave = if tipo == "favicon" {
-        "favicon"
-    } else {
-        "app_icon"
-    };
-
-    if let Ok(conn) = pool.get() {
-        let res: std::result::Result<(Vec<u8>, String), _> = conn.query_row(
-            "SELECT valor_blob, mime_type FROM configuracoes_sistema WHERE chave = ?1",
-            [chave],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        );
-
-        if let Ok((blob, mime)) = res {
-            if !blob.is_empty() {
-                let mut headers = HeaderMap::new();
-                if let Ok(mime_val) = HeaderValue::from_str(&mime) {
-                    headers.insert(header::CONTENT_TYPE, mime_val);
-                } else {
-                    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
-                }
-                headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-                if mime == "image/svg+xml" {
-                    headers.insert(
-                        header::CONTENT_SECURITY_POLICY,
-                        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'"),
-                    );
-                }
-                headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-                return Ok((headers, Body::from(blob)));
-            }
-        }
-
-        if chave == "favicon" {
-            let res_app: std::result::Result<(Vec<u8>, String), _> = conn.query_row(
-                "SELECT valor_blob, mime_type FROM configuracoes_sistema WHERE chave = 'app_icon'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            );
-            if let Ok((blob, mime)) = res_app {
-                if !blob.is_empty() {
-                    let mut headers = HeaderMap::new();
-                    if let Ok(mime_val) = HeaderValue::from_str(&mime) {
-                        headers.insert(header::CONTENT_TYPE, mime_val);
-                    } else {
-                        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
-                    }
-                    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-                    if mime == "image/svg+xml" {
-                        headers.insert(
-                            header::CONTENT_SECURITY_POLICY,
-                            HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'"),
-                        );
-                    }
-                    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-                    return Ok((headers, Body::from(blob)));
-                }
-            }
-        }
-    }
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("image/svg+xml"),
-    );
-    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'"),
-    );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    Ok((headers, Body::from(DEFAULT_ICON_SVG)))
-}
-
-pub async fn obter_favicon_handler(
-    State(pool): State<DbPool>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    obter_icone_handler(
-        State(pool),
-        Query(ObterIconeParams {
-            tipo: Some("favicon".to_string()),
-        }),
-    )
-    .await
-}
-
-fn validar_arquivo_imagem(bytes: &[u8], mime_type: &str) -> Result<(), &'static str> {
-    match mime_type {
-        "image/png" => {
-            if bytes.len() >= 8 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-                Ok(())
-            } else {
-                Err("Assinatura de arquivo PNG inválida")
-            }
-        }
-        "image/jpeg" => {
-            if bytes.len() >= 3 && bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-                Ok(())
-            } else {
-                Err("Assinatura de arquivo JPEG inválida")
-            }
-        }
-        "image/webp" => {
-            if bytes.len() > 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-                Ok(())
-            } else {
-                Err("Assinatura de arquivo WebP inválida")
-            }
-        }
-        "image/x-icon" | "image/vnd.microsoft.icon" => {
-            if bytes.len() >= 4
-                && (bytes.starts_with(&[0x00, 0x00, 0x01, 0x00])
-                    || bytes.starts_with(&[0x00, 0x00, 0x02, 0x00]))
-            {
-                Ok(())
-            } else {
-                Err("Assinatura de arquivo ICO inválida")
-            }
-        }
-        "image/svg+xml" => {
-            let svg_str =
-                std::str::from_utf8(bytes).map_err(|_| "Arquivo SVG não contém UTF-8 válido")?;
-            let lower = svg_str.to_lowercase();
-            if lower.contains("<script")
-                || lower.contains("javascript:")
-                || lower.contains("<foreignobject")
-                || lower.contains("onload=")
-                || lower.contains("onerror=")
-                || lower.contains("onclick=")
-                || lower.contains("onmouseover=")
-            {
-                return Err("Arquivo SVG contém scripts ou elementos executáveis não permitidos");
-            }
-            if !lower.contains("<svg") {
-                return Err("Arquivo não é um SVG válido (tag <svg> ausente)");
-            }
-            Ok(())
-        }
-        _ => Err("Tipo MIME de imagem não permitido"),
-    }
-}
-
-pub async fn salvar_icone_handler(
-    State(pool): State<DbPool>,
-    mut multipart: Multipart,
-) -> Result<Json<SalvarIconeResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let mut alvo = "ambos".to_string();
-    let mut bytes = Vec::new();
-    let mut mime_type = "image/png".to_string();
-
-    while let Ok(Some(mut field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
-        if name == "alvo" {
-            if let Ok(b) = field.bytes().await {
-                alvo = String::from_utf8_lossy(&b).trim().to_lowercase();
-            }
-        } else if name == "arquivo" || field.file_name().is_some() {
-            if let Some(content_type) = field.content_type() {
-                mime_type = content_type.to_string();
-            } else if let Some(file_name) = field.file_name() {
-                let fn_lower = file_name.to_lowercase();
-                if fn_lower.ends_with(".svg") {
-                    mime_type = "image/svg+xml".to_string();
-                } else if fn_lower.ends_with(".ico") {
-                    mime_type = "image/x-icon".to_string();
-                } else if fn_lower.ends_with(".jpg") || fn_lower.ends_with(".jpeg") {
-                    mime_type = "image/jpeg".to_string();
-                } else if fn_lower.ends_with(".webp") {
-                    mime_type = "image/webp".to_string();
-                }
-            }
-
-            while let Ok(Some(chunk)) = field.chunk().await {
-                bytes.extend_from_slice(&chunk);
-                if bytes.len() > 5 * 1024 * 1024 {
-                    return Err((
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        Json(json!({"erro": "Tamanho máximo da imagem excedido (limite 5 MB)"})),
-                    ));
-                }
-            }
-        }
-    }
-
-    if bytes.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"erro": "Nenhum arquivo de imagem enviado"})),
-        ));
-    }
-
-    let alvo_lower = alvo.to_lowercase();
-    if !["icone", "favicon", "ambos"].contains(&alvo_lower.as_str()) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"erro": "Alvo inválido: use icone, favicon ou ambos"})),
-        ));
-    }
-    alvo = alvo_lower;
-
-    let mime_clean = match mime_type.to_lowercase().as_str() {
-        "image/svg+xml" | "image/svg" => "image/svg+xml",
-        "image/png" => "image/png",
-        "image/jpeg" | "image/jpg" => "image/jpeg",
-        "image/webp" => "image/webp",
-        "image/x-icon" | "image/vnd.microsoft.icon" => "image/x-icon",
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"erro": "Tipo de imagem não suportado. Formatos aceitos: PNG, JPEG, WebP, ICO, SVG."})),
-            ));
-        }
-    };
-
-    if let Err(msg) = validar_arquivo_imagem(&bytes, mime_clean) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"erro": msg})),
-        ));
-    }
-    let mime_final = mime_clean.to_string();
-
-    let conn = pool.get().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"erro": format!("Erro ao obter conexão do pool: {e}")})),
-        )
-    })?;
-
-    if alvo == "icone" || alvo == "ambos" {
-        conn.execute(
-            "INSERT OR REPLACE INTO configuracoes_sistema (chave, valor_texto, valor_blob, mime_type, atualizado_em)
-             VALUES ('app_icon', 'icone_custom', ?1, ?2, CURRENT_TIMESTAMP)",
-            rusqlite::params![&bytes, &mime_final],
-        ).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro": format!("Falha ao salvar ícone no SQLite: {e}")})),
-            )
-        })?;
-    }
-
-    if alvo == "favicon" || alvo == "ambos" {
-        conn.execute(
-            "INSERT OR REPLACE INTO configuracoes_sistema (chave, valor_texto, valor_blob, mime_type, atualizado_em)
-             VALUES ('favicon', 'favicon_custom', ?1, ?2, CURRENT_TIMESTAMP)",
-            rusqlite::params![&bytes, &mime_final],
-        ).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro": format!("Falha ao salvar favicon no SQLite: {e}")})),
-            )
-        })?;
-    }
-
-    Ok(Json(SalvarIconeResponse {
-        status: "CONCLUIDO".to_string(),
-        mensagem: "Identidade visual atualizada com sucesso!".to_string(),
-        alvo,
-        mime_type: mime_final,
-        tamanho_bytes: bytes.len(),
-    }))
-}
-
-pub async fn remover_icone_handler(
-    State(pool): State<DbPool>,
-    Query(params): Query<RemoverIconeParams>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let alvo = params
-        .alvo
-        .unwrap_or_else(|| "ambos".to_string())
-        .to_lowercase();
-    let conn = pool.get().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"erro": format!("Erro de banco: {e}")})),
-        )
-    })?;
-
-    if alvo == "icone" || alvo == "ambos" {
-        let _ = conn.execute(
-            "DELETE FROM configuracoes_sistema WHERE chave = 'app_icon'",
-            [],
-        );
-    }
-    if alvo == "favicon" || alvo == "ambos" {
-        let _ = conn.execute(
-            "DELETE FROM configuracoes_sistema WHERE chave = 'favicon'",
-            [],
-        );
-    }
-
-    Ok(Json(json!({
-        "status": "CONCLUIDO",
-        "mensagem": "Ícone restaurado para o padrão original"
-    })))
-}
-
-pub async fn obter_identidade_handler(
-    State(pool): State<DbPool>,
-) -> Result<Json<IdentidadeVisualResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let mut tem_icone = false;
-    let mut tem_fav = false;
-    if let Ok(conn) = pool.get() {
-        tem_icone = conn
-            .query_row(
-                "SELECT 1 FROM configuracoes_sistema WHERE chave = 'app_icon'",
-                [],
-                |_| Ok(()),
-            )
-            .is_ok();
-        tem_fav = conn
-            .query_row(
-                "SELECT 1 FROM configuracoes_sistema WHERE chave = 'favicon'",
-                [],
-                |_| Ok(()),
-            )
-            .is_ok();
-    }
-
-    Ok(Json(IdentidadeVisualResponse {
-        tem_icone_customizado: tem_icone,
-        tem_favicon_customizado: tem_fav,
-        icone_url: "/api/v1/config/icone".to_string(),
-        favicon_url: "/api/v1/config/favicon".to_string(),
-    }))
-}
-
-pub async fn exportar_banco_handler(
-    State(pool): State<DbPool>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let temp_file = tempfile::Builder::new()
-        .prefix("radar_backup_")
-        .suffix(".sqlite")
-        .tempfile()
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"erro": format!("Falha ao criar arquivo de backup: {e}")})),
-            )
-        })?;
-
-    let temp_path = temp_file.path().to_path_buf();
-    pool.backup_to_file(&temp_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"erro": format!("Falha ao executar backup SQLite: {e}")})),
-        )
-    })?;
-
-    let file = tokio::fs::File::open(&temp_path).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"erro": format!("Falha ao abrir arquivo para streaming: {e}")})),
-        )
-    })?;
-
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
-    let headers = [
-        (header::CONTENT_TYPE, "application/vnd.sqlite3"),
-        (
-            header::CONTENT_DISPOSITION,
-            "attachment; filename=\"radar_civico_backup.sqlite\"",
-        ),
-    ];
-
-    Ok((headers, body))
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackupItemInfo {
-    pub nome_arquivo: String,
-    pub tamanho_bytes: u64,
-    pub tamanho_formatado: String,
-    pub criado_em: String,
-    pub download_url: String,
-    #[serde(default)]
-    pub hash_sha256: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TestarWebhookRequest {
-    pub url: String,
-    pub evento: Option<String>,
-}
-
-pub async fn criar_backup_handler(
-    State(pool): State<DbPool>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let backup_dir = std::path::Path::new("data/backups");
-    if let Err(e) = tokio::fs::create_dir_all(backup_dir).await {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(
-                json!({"status": "erro", "mensagem": format!("Falha ao criar diretório de backups: {e}")}),
-            ),
-        ));
-    }
-
-    let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
-    let nome_arquivo = format!("radar_backup_{timestamp}.sqlite");
-    let destino = backup_dir.join(&nome_arquivo);
-
-    let hash_sha256 = pool.backup_to_file_with_checksum(&destino).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "erro", "mensagem": format!("Falha no snapshot SQLite: {e}")})),
-        )
-    })?;
-
-    let meta = tokio::fs::metadata(&destino).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "erro", "mensagem": format!("Falha ao ler metadados do backup: {e}")})),
-        )
-    })?;
-
-    let tamanho_bytes = meta.len();
-    let tamanho_formatado = format!("{:.2} MB", (tamanho_bytes as f64) / 1_048_576.0);
-
-    Ok(Json(json!({
-        "status": "sucesso",
-        "nome_arquivo": nome_arquivo,
-        "tamanho_bytes": tamanho_bytes,
-        "tamanho_formatado": tamanho_formatado,
-        "hash_sha256": hash_sha256,
-        "criado_em": Utc::now().to_rfc3339(),
-        "mensagem": "Backup quente do SQLite concluído com sucesso."
-    })))
-}
-
-pub async fn listar_backups_handler(
-) -> Result<Json<Vec<BackupItemInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    let backup_dir = std::path::Path::new("data/backups");
-    if !backup_dir.exists() {
-        return Ok(Json(Vec::new()));
-    }
-
-    let mut lista = Vec::new();
-    let mut entries = tokio::fs::read_dir(backup_dir).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "erro", "mensagem": format!("Falha ao ler diretório de backups: {e}")})),
-        )
-    })?;
-
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("sqlite") {
-            if let Ok(meta) = entry.metadata().await {
-                let nome_arquivo = entry.file_name().to_string_lossy().to_string();
-                let tamanho_bytes = meta.len();
-                let tamanho_formatado = format!("{:.2} MB", (tamanho_bytes as f64) / 1_048_576.0);
-                let criado_em = meta
-                    .modified()
-                    .ok()
-                    .map(|sys_time| {
-                        let dt: chrono::DateTime<Utc> = sys_time.into();
-                        dt.to_rfc3339()
-                    })
-                    .unwrap_or_else(|| Utc::now().to_rfc3339());
-
-                let sidecar_path = backup_dir.join(format!("{nome_arquivo}.sha256"));
-                let hash_sha256 = if let Ok(conteudo) = tokio::fs::read_to_string(&sidecar_path).await {
-                    conteudo.split_whitespace().next().map(|s| s.to_string())
-                } else if let Ok((h, _)) = storage::calcular_sha256_file(&path) {
-                    let _ = tokio::fs::write(&sidecar_path, format!("{h}  {nome_arquivo}\n")).await;
-                    Some(h)
-                } else {
-                    None
-                };
-
-                lista.push(BackupItemInfo {
-                    download_url: format!("/api/v1/config/backups/{nome_arquivo}"),
-                    nome_arquivo,
-                    tamanho_bytes,
-                    tamanho_formatado,
-                    criado_em,
-                    hash_sha256,
-                });
-            }
-        }
-    }
-
-    lista.sort_by(|a, b| b.criado_em.cmp(&a.criado_em));
-    Ok(Json(lista))
-}
-
-pub async fn download_backup_arquivo_handler(
-    AxumPath(nome_arquivo): AxumPath<String>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let nome_limpo = std::path::Path::new(&nome_arquivo)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"status": "erro", "mensagem": "Nome de arquivo inválido"})),
-            )
-        })?;
-
-    let arquivo_path = std::path::Path::new("data/backups").join(nome_limpo);
-    if !arquivo_path.exists() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": "erro", "mensagem": "Arquivo de backup não encontrado"})),
-        ));
-    }
-
-    let file = tokio::fs::File::open(&arquivo_path).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "erro", "mensagem": format!("Falha ao abrir backup: {e}")})),
-        )
-    })?;
-
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
-    let is_sidecar = nome_limpo.ends_with(".sha256");
-    let content_type = if is_sidecar {
-        "text/plain; charset=utf-8"
-    } else {
-        "application/vnd.sqlite3"
-    };
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(content_type),
-    );
-    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{nome_limpo}\"")) {
-        headers.insert(header::CONTENT_DISPOSITION, v);
-    }
-
-    if !is_sidecar {
-        let sidecar_path = std::path::Path::new("data/backups").join(format!("{nome_limpo}.sha256"));
-        if let Ok(conteudo) = tokio::fs::read_to_string(&sidecar_path).await {
-            if let Some(h) = conteudo.split_whitespace().next() {
-                if let Ok(val) = HeaderValue::from_str(h) {
-                    headers.insert("x-checksum-sha256", val);
-                }
-            }
-        }
-    }
-
-    Ok((headers, body))
-}
-
-pub async fn listar_arquivos_ingeridos_handler(
-    State(pool): State<DbPool>,
-) -> Result<Json<Vec<storage::RegistroArquivoIngerido>>, (StatusCode, Json<serde_json::Value>)> {
-    let conn = pool.get().map_err(sqlite_http_error)?;
-    let lista = storage::listar_arquivos_ingeridos(&conn, Some(100)).map_err(sqlite_http_error)?;
-    Ok(Json(lista))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct VerificarHashParams {
-    pub hash: String,
-    pub fonte: Option<String>,
-    pub nome: Option<String>,
-}
-
-pub async fn verificar_arquivo_hash_handler(
-    State(pool): State<DbPool>,
-    Query(params): Query<VerificarHashParams>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let conn = pool.get().map_err(sqlite_http_error)?;
-    let fonte = params.fonte.as_deref().unwrap_or("UPLOAD_MANUAL");
-    let existente = storage::buscar_arquivo_por_hash(&conn, fonte, &params.hash).map_err(sqlite_http_error)?;
-    let retificacao = if let Some(nome) = params.nome.as_deref() {
-        storage::verificar_retificacao(&conn, fonte, nome, &params.hash).map_err(sqlite_http_error)?
-    } else {
-        None
-    };
-
-    Ok(Json(json!({
-        "hash": params.hash,
-        "fonte": fonte,
-        "ja_ingerido": existente.is_some(),
-        "arquivo": existente,
-        "retificacao_de_hash": retificacao
-    })))
-}
+pub use super::backups::{
+    criar_backup_handler, download_backup_arquivo_handler, exportar_banco_handler,
+    listar_backups_handler, BackupItemInfo, TestarWebhookRequest,
+};
+pub use super::integridade::{listar_arquivos_ingeridos_handler, verificar_arquivo_hash_handler};
 
 pub async fn testar_webhook_handler(
     Json(payload): Json<TestarWebhookRequest>,
@@ -4487,7 +3784,9 @@ mod tests {
             .unwrap();
         let upload_res2: UploadResponse = serde_json::from_slice(&bytes2).unwrap();
         assert_eq!(upload_res2.registros_inseridos, 0);
-        assert!(upload_res2.mensagem.contains("já foi processado anteriormente"));
+        assert!(upload_res2
+            .mensagem
+            .contains("já foi processado anteriormente"));
     }
 
     #[tokio::test]
@@ -4825,7 +4124,11 @@ mod tests {
         assert_eq!(total_pncp, 1);
 
         let cnpj: String = conn
-            .query_row("SELECT fornecedor_cnpj FROM contratos_publicos WHERE id = 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT fornecedor_cnpj FROM contratos_publicos WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(cnpj, "12345678000190");
     }
@@ -5137,7 +4440,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_backup_e_webhook_endpoints() {
-        let pool = DbPool::open_in_memory().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let pool = DbPool::open(directory.path().join("test.db")).unwrap();
         let mut conn = pool.get().unwrap();
         storage::run_migrations(&mut conn).unwrap();
 
@@ -5149,15 +4453,40 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res_backup = app.clone().oneshot(req_backup).await.unwrap();
-        assert_eq!(res_backup.status(), StatusCode::OK);
+        assert_eq!(res_backup.status(), StatusCode::ACCEPTED);
         let bytes_b = axum::body::to_bytes(res_backup.into_body(), usize::MAX)
             .await
             .unwrap();
         let resp_b: serde_json::Value = serde_json::from_slice(&bytes_b).unwrap();
-        assert_eq!(resp_b["status"], "sucesso");
+        assert_eq!(resp_b["status"], "PROCESSANDO");
         assert!(resp_b["nome_arquivo"].as_str().is_some());
-        assert!(resp_b["hash_sha256"].as_str().is_some());
-        assert_eq!(resp_b["hash_sha256"].as_str().unwrap().len(), 64);
+        drop(conn);
+        let job_id = resp_b["job_id"].as_str().unwrap();
+        let mut completed = false;
+        for _ in 0..100 {
+            let saved = storage::jobs::load(&pool.get().unwrap(), "config", job_id)
+                .unwrap()
+                .unwrap();
+            let job: JobInfo = serde_json::from_str(&saved).unwrap();
+            if job.status == "CONCLUIDO" {
+                completed = true;
+                break;
+            }
+            assert_ne!(job.status, "ERRO", "{}", job.mensagem);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(completed, "Backup não concluiu no prazo do teste");
+        let hash_path = directory.path().join("backups").join(format!(
+            "{}.sha256",
+            resp_b["nome_arquivo"].as_str().unwrap()
+        ));
+        let hash = std::fs::read_to_string(hash_path)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string();
+        assert_eq!(hash.len(), 64);
 
         let req_list = Request::builder()
             .uri("/api/v1/config/backups")
@@ -5182,8 +4511,13 @@ mod tests {
         assert_eq!(res_down.status(), StatusCode::OK);
         assert!(res_down.headers().contains_key("x-checksum-sha256"));
         assert_eq!(
-            res_down.headers().get("x-checksum-sha256").unwrap().to_str().unwrap(),
-            resp_b["hash_sha256"].as_str().unwrap()
+            res_down
+                .headers()
+                .get("x-checksum-sha256")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            hash
         );
 
         let req_wh_invalid = Request::builder()
@@ -5220,14 +4554,17 @@ mod tests {
             storage::run_migrations(&mut conn).unwrap();
             storage::registrar_arquivo_ingerido(
                 &conn,
-                "UPLOAD_MANUAL",
-                "teste_gastos.csv",
-                "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-                2048,
-                "CONCLUIDO",
-                25,
-                Some("Tipo: CEAP"),
-            ).unwrap();
+                &storage::NovoArquivoIngerido {
+                    fonte: "UPLOAD_MANUAL",
+                    nome_arquivo: "teste_gastos.csv",
+                    hash_sha256: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                    tamanho_bytes: 2048,
+                    status: "CONCLUIDO",
+                    registros_afetados: 25,
+                    detalhes: Some("Tipo: CEAP"),
+                },
+            )
+            .unwrap();
         }
 
         let app = crate::criar_router(pool.clone());
@@ -5239,8 +4576,11 @@ mod tests {
             .unwrap();
         let res_list = app.clone().oneshot(req_list).await.unwrap();
         assert_eq!(res_list.status(), StatusCode::OK);
-        let bytes_list = axum::body::to_bytes(res_list.into_body(), usize::MAX).await.unwrap();
-        let lista: Vec<storage::RegistroArquivoIngerido> = serde_json::from_slice(&bytes_list).unwrap();
+        let bytes_list = axum::body::to_bytes(res_list.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let lista: Vec<storage::RegistroArquivoIngerido> =
+            serde_json::from_slice(&bytes_list).unwrap();
         assert_eq!(lista.len(), 1);
         assert_eq!(lista[0].nome_arquivo, "teste_gastos.csv");
         assert_eq!(lista[0].registros_afetados, 25);
@@ -5252,7 +4592,9 @@ mod tests {
             .unwrap();
         let res_verif = app.clone().oneshot(req_verif).await.unwrap();
         assert_eq!(res_verif.status(), StatusCode::OK);
-        let bytes_verif = axum::body::to_bytes(res_verif.into_body(), usize::MAX).await.unwrap();
+        let bytes_verif = axum::body::to_bytes(res_verif.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json_verif: serde_json::Value = serde_json::from_slice(&bytes_verif).unwrap();
         assert_eq!(json_verif["ja_ingerido"], true);
         assert_eq!(json_verif["arquivo"]["nome_arquivo"], "teste_gastos.csv");
@@ -5264,10 +4606,15 @@ mod tests {
             .unwrap();
         let res_retif = app.oneshot(req_retif).await.unwrap();
         assert_eq!(res_retif.status(), StatusCode::OK);
-        let bytes_retif = axum::body::to_bytes(res_retif.into_body(), usize::MAX).await.unwrap();
+        let bytes_retif = axum::body::to_bytes(res_retif.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json_retif: serde_json::Value = serde_json::from_slice(&bytes_retif).unwrap();
         assert_eq!(json_retif["ja_ingerido"], false);
-        assert_eq!(json_retif["retificacao_de_hash"], "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        assert_eq!(
+            json_retif["retificacao_de_hash"],
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+        );
     }
 
     #[tokio::test]

@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { fetchJson } from '#lib/api';
 	import type { ItemBusca } from '#lib/types';
 
 	let query = '';
+	let erroBusca: string | null = null;
 	let request: AbortController | null = null;
 	let loading = false;
 	let resultados: ItemBusca[] = [];
@@ -20,19 +22,15 @@
 			return;
 		}
 
+		erroBusca = null;
 		loading = true;
 		buscou = true;
 		try {
-			const res = await fetch(`/api/v1/busca?q=${encodeURIComponent(termo)}`, { signal: current.signal });
-			if (res.ok) {
-				const data = await res.json();
-				if (request !== current) return;
-				resultados = data.resultados || data.itens || [];
-			} else {
-				resultados = [];
-			}
+            const data = await fetchJson<{ resultados?: ItemBusca[]; itens?: ItemBusca[] }>(`/api/v1/busca?q=${encodeURIComponent(termo)}`, { signal: current.signal });
+            if (request !== current) return;
+            resultados = data.resultados || data.itens || [];
 		} catch (err) {
-			if (!current.signal.aborted) { console.error('Erro na busca:', err); resultados = []; }
+			if (!current.signal.aborted && request === current) { erroBusca = err instanceof Error ? err.message : 'Falha de conexão. Tente novamente.'; resultados = []; }
 		} finally {
 			if (request === current) loading = false;
 		}
@@ -43,6 +41,7 @@
 		request = null;
 		loading = false;
 		query = '';
+		erroBusca = null;
 		resultados = [];
 		buscou = false;
 		if (inputRef) {
@@ -180,6 +179,11 @@
 		</button>
 	</form>
 
+    {#if erroBusca}
+        <div role="alert" class="mt-4 rounded-xl border border-rose-500/40 p-4 text-sm text-rose-300">
+            <p>{erroBusca}</p><button type="button" on:click={executarBusca} class="mt-2 underline">Tentar novamente</button>
+        </div>
+    {/if}
 	<!-- Resultados da Busca -->
 	{#if resultados.length > 0}
 		<div class="mt-4 bg-slate-800/90 border border-slate-700/80 rounded-xl overflow-hidden shadow-2xl divide-y divide-slate-700/50">
@@ -238,7 +242,7 @@
 				</div>
 			{/each}
 		</div>
-	{:else if buscou && !loading}
+	{:else if buscou && !loading && !erroBusca}
 		<div class="mt-4 p-6 text-center text-sm text-slate-400 bg-slate-800/40 rounded-xl border border-slate-800 space-y-1">
 			<p class="text-slate-300 font-medium">Nenhum registro encontrado para "{query}".</p>
 			<p class="text-xs text-slate-500">

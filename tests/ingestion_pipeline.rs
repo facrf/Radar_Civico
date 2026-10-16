@@ -49,7 +49,10 @@ CNPJ_BASICO;CNPJ_ORDEM;CNPJ_DV;RAZAO_SOCIAL;SOCIO_CPF_CNPJ_MASCARADO;SOCIO_NOME;
 
     manager.register(Arc::new(TseImporter::with_mock_data(2024, zip_buffer)));
     manager.register(Arc::new(ReceitaFederalImporter::with_mock_csv(csv_qsa)));
-    manager.register(Arc::new(PncpImporter::new(2024)));
+    manager.register(Arc::new(PncpImporter::with_mock_json(
+        2024,
+        "resposta inválida",
+    )));
     manager.register(Arc::new(QueridoDiarioImporter::default()));
     manager.register(Arc::new(CnaOabImporter::default()));
 

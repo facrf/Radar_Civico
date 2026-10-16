@@ -87,6 +87,9 @@ export interface CargoAutoridadeItem {
 	ato_nomeacao: string | null;
 	biografia_resumo: string | null;
 	origem_dado: string | null;
+	fonte_url?: string | null;
+	conferido_em?: string | null;
+	evidencia_verificada?: boolean;
 }
 
 export interface DossiePolitico {
@@ -108,7 +111,8 @@ export interface DossiePolitico {
 	evolucao_patrimonial?: PontoEvolucaoPatrimonial[];
 	alertas_evolucao_patrimonial?: AlertaEvolucaoPatrimonial[];
 	cargos_autoridades?: CargoAutoridadeItem[];
-	score_integridade?: number;
+	score_integridade?: number | null;
+	avaliacao_integridade?: AvaliacaoIntegridade | null;
 	nivel_risco?: string;
 	cor_risco_hex?: string;
 	alertas_parentesco?: AlertaPossivelParentesco[];
@@ -423,7 +427,8 @@ export interface ItemPoliticoListagem {
 	mandatos?: string[];
 	ano_eleicao?: number | null;
 	tipo_agente?: string | null;
-	score_integridade?: number;
+	score_integridade?: number | null;
+	avaliacao_integridade?: AvaliacaoIntegridade | null;
 	nivel_risco?: string;
 	cor_risco_hex?: string;
 }
@@ -514,7 +519,8 @@ export interface PoliticoDetalheResponse {
 	alertas_evolucao_patrimonial?: AlertaEvolucaoPatrimonial[];
 	tipo_agente?: string | null;
 	cargos_autoridades?: CargoAutoridadeItem[];
-	score_integridade?: number;
+	score_integridade?: number | null;
+	avaliacao_integridade?: AvaliacaoIntegridade | null;
 	nivel_risco?: string;
 	cor_risco_hex?: string;
 	alertas_parentesco?: AlertaPossivelParentesco[];
@@ -620,3 +626,14 @@ export interface MesclarPoliticosResponse {
 }
 
 
+
+export interface AvaliacaoIntegridade {
+    situacao: string;
+    score: number | null;
+    nivel_risco: string;
+    cor_hex: string;
+    ultima_auditoria: string | null;
+    metodologia: string;
+    cobertura: string;
+    alertas_por_severidade: [number,number,number,number];
+}

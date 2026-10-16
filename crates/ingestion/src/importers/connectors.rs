@@ -283,74 +283,36 @@ impl SourceImporter for PncpImporter {
             return Ok(());
         }
 
-        // Obtém a lista de CNPJs prioritários para sincronização (da CEAP e empresas_qsa)
-        let cnpjs_alvo = if let Some(ref filtro) = self.cnpj_filtro {
-            vec![filtro.clone()]
-        } else {
-            let conn = pool.get().map_err(IngestionError::Storage)?;
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT fornecedor_cnpj_cpf FROM despesas_parlamentares 
-                 WHERE length(REPLACE(REPLACE(REPLACE(fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', '')) = 14 
-                 LIMIT 25"
-            ).map_err(IngestionError::Sqlite)?;
-
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(IngestionError::Sqlite)?;
-            let mut list = Vec::new();
-            for r in rows.flatten() {
-                let clean = r.trim().to_string();
-                if !clean.is_empty() && !list.contains(&clean) {
-                    list.push(clean);
-                }
-            }
-            list
-        };
-
-        if cnpjs_alvo.is_empty() {
-            return Err(IngestionError::Custom(
-                "Nenhum fornecedor catalogado para consulta no PNCP. Importe primeiro dados da CEAP/Câmara ou empresas QSA, ou informe um CNPJ.".into()
-            ));
-        }
-
-        ctx.set_stage(
-            ImportStage::Processando,
-            format!("Consultando contratos PNCP para {} fornecedores...", cnpjs_alvo.len()),
+        let worker_ctx = ctx.clone();
+        let report = crate::pncp::PncpClient::new()
+            .sincronizar_ano(
+                &pool,
+                ano,
+                self.cnpj_filtro.as_deref(),
+                &ctx.cancellation_token,
+                move |p| {
+                    worker_ctx.update_progress(
+                        format!("PNCP mês {:02}, página {}", p.mes, p.pagina),
+                        p.mes as usize - 1,
+                        12,
+                        p.registros_gravados as u64,
+                    );
+                    std::future::ready(())
+                },
+            )
+            .await?;
+        ctx.update_progress(
+            "PNCP por data de publicação",
+            report.periodos_concluidos,
+            12,
+            report.registros_gravados as u64,
         );
-
-        let client = crate::pncp::PncpClient::new();
-        let total_cnpjs = cnpjs_alvo.len();
-        let mut total_inseridos = 0;
-
-        for (idx, cnpj) in cnpjs_alvo.iter().enumerate() {
-            if ctx.is_cancelled() {
-                ctx.set_stage(ImportStage::Cancelado, "Sincronização PNCP cancelada");
-                return Ok(());
-            }
-
-            ctx.update_progress(format!("CNPJ: {cnpj}"), idx + 1, total_cnpjs, total_inseridos as u64);
-
-            match client.buscar_contratos_por_cnpj(cnpj, ano).await {
-                Ok(contratos) if !contratos.is_empty() => {
-                    let pool_worker = pool.clone();
-                    let inseridos = spawn_blocking(move || -> Result<usize> {
-                        let mut conn = pool_worker.get().map_err(IngestionError::Storage)?;
-                        crate::pncp::PncpClient::salvar_contratos(&mut conn, &contratos)
-                    })
-                    .await
-                    .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
-                    total_inseridos += inseridos;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!("Consulta CNPJ {} no PNCP: {}", cnpj, e);
-                }
-            }
+        match report.status() {
+            "CANCELADO" => ctx.set_stage(ImportStage::Cancelado, report.resumo()),
+            "PARCIAL" => ctx.finish_partial(report.resumo()),
+            "ERRO" => return Err(IngestionError::Custom(report.resumo())),
+            _ => ctx.finish(report.resumo()),
         }
-
-        ctx.update_progress("pncp_contratos", total_cnpjs, total_cnpjs, total_inseridos as u64);
-        ctx.finish(format!(
-            "PNCP: {} novos contratos salvos a partir de {} fornecedores consultados",
-            total_inseridos, total_cnpjs
-        ));
         Ok(())
     }
 }
@@ -541,7 +503,7 @@ pub mod tests {
             run_migrations(&mut conn).unwrap();
         }
         let sink = Arc::new(BatchSink::new(pool.clone()));
-        let importer = PncpImporter::new(2024);
+        let importer = PncpImporter::with_mock_json(2024, "resposta inválida");
         let ctx = Arc::new(ImportContext::new("pncp"));
 
         importer.run(Arc::clone(&ctx), sink).await.unwrap_err();
@@ -639,7 +601,13 @@ pub mod tests {
             run_migrations(&mut conn).unwrap();
         }
         let sink = Arc::new(BatchSink::new(pool.clone()));
-        let importer = CamaraCeapImporter::new(2024);
+        use std::io::{Cursor, Write};
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("ceap.csv", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"txNomeParlamentar;datEmissao;txtCNPJCPF;vlrLiquido;txtFornecedor\nMARIA;2024-01-02;11222333000181;10,00;EMPRESA\n").unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        let importer = CamaraCeapImporter::with_mock_zip(2024, bytes);
         let ctx = Arc::new(ImportContext::new("camara_ceap"));
 
         importer.run(Arc::clone(&ctx), sink).await.unwrap();

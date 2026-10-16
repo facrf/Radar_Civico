@@ -80,6 +80,12 @@ pub struct CargoAutoridadeItem {
     pub ato_nomeacao: Option<String>,
     pub biografia_resumo: Option<String>,
     pub origem_dado: Option<String>,
+    #[serde(default)]
+    pub fonte_url: Option<String>,
+    #[serde(default)]
+    pub conferido_em: Option<String>,
+    #[serde(default)]
+    pub evidencia_verificada: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -121,9 +127,11 @@ pub struct DossiePolitico {
     #[serde(default)]
     pub tipo_agente: Option<String>,
     #[serde(default)]
-    pub score_integridade: u32,
+    pub score_integridade: Option<u32>,
     #[serde(default)]
     pub nivel_risco: String,
+    #[serde(default)]
+    pub avaliacao_integridade: Option<storage::AvaliacaoPolitico>,
     #[serde(default)]
     pub cor_risco_hex: String,
     pub candidaturas: Vec<CandidaturaItem>,
@@ -211,9 +219,11 @@ pub struct PoliticoDetalheResponse {
     #[serde(default)]
     pub cargos_autoridades: Vec<CargoAutoridadeItem>,
     #[serde(default)]
-    pub score_integridade: u32,
+    pub score_integridade: Option<u32>,
     #[serde(default)]
     pub nivel_risco: String,
+    #[serde(default)]
+    pub avaliacao_integridade: Option<storage::AvaliacaoPolitico>,
     #[serde(default)]
     pub cor_risco_hex: String,
     #[serde(default)]
@@ -295,9 +305,11 @@ pub struct ItemPoliticoListagem {
     #[serde(default)]
     pub tipo_agente: Option<String>,
     #[serde(default)]
-    pub score_integridade: u32,
+    pub score_integridade: Option<u32>,
     #[serde(default)]
     pub nivel_risco: String,
+    #[serde(default)]
+    pub avaliacao_integridade: Option<storage::AvaliacaoPolitico>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -526,8 +538,9 @@ pub fn carregar_dossie(
                 foto_mime: row.get(9)?,
                 foto_url: row.get(10)?,
                 tipo_agente: row.get(11).ok(),
-                score_integridade: 100,
-                nivel_risco: "MÍNIMO".to_string(),
+                score_integridade: None,
+                nivel_risco: "NÃO AVALIADO".to_string(),
+                avaliacao_integridade: None,
                 cor_risco_hex: "#10b981".to_string(),
                 candidaturas: Vec::new(),
                 historico_bens: Vec::new(),
@@ -729,7 +742,7 @@ pub fn carregar_dossie(
     {
         let mut stmt_cargos = conn.prepare(
             "SELECT id, orgao, cargo, esfera, uf, data_posse, data_exoneracao,
-                    ato_nomeacao, biografia_resumo, origem_dado
+                    ato_nomeacao, biografia_resumo, origem_dado,fonte_url,conferido_em,evidencia_verificada
              FROM cargos_autoridades
              WHERE politico_id = ?1
              ORDER BY data_posse DESC, id DESC",
@@ -747,6 +760,9 @@ pub fn carregar_dossie(
                 ato_nomeacao: row.get(7)?,
                 biografia_resumo: row.get(8)?,
                 origem_dado: row.get(9)?,
+                fonte_url: row.get(10)?,
+                conferido_em: row.get(11)?,
+                evidencia_verificada: row.get(12)?,
             })
         })?;
 
@@ -848,25 +864,11 @@ pub fn carregar_dossie(
             auditor::auditar_possivel_parentesco(&dossie.nome_completo, uf_pol, &alvos_parentesco);
     }
 
-    // Score de Integridade Cívica
-    {
-        let qtd_criticos = dossie.alertas_auxilio.len();
-        let qtd_graves = dossie.alertas_parentesco.len();
-        let qtd_medios = dossie.alertas_evolucao_patrimonial.len();
-        let qtd_leves = 0;
-
-        let resumo_score = auditor::calcular_score_integridade(
-            qtd_criticos,
-            qtd_graves,
-            qtd_medios,
-            qtd_leves,
-            &[],
-        );
-
-        dossie.score_integridade = resumo_score.score;
-        dossie.nivel_risco = resumo_score.nivel_risco;
-        dossie.cor_risco_hex = resumo_score.cor_hex;
-    }
+    let evaluation = crate::score::avaliar(&conn, politico_id)?;
+    dossie.score_integridade = evaluation.score;
+    dossie.nivel_risco = evaluation.nivel_risco.clone();
+    dossie.cor_risco_hex = evaluation.cor_hex.clone();
+    dossie.avaliacao_integridade = Some(evaluation);
 
     Ok(Some(dossie))
 }
@@ -876,72 +878,79 @@ pub async fn politico_emendas_handler(
     State(pool): State<DbPool>,
     Path(id): Path<i64>,
 ) -> Result<Json<PoliticoEmendasResponse>, StatusCode> {
-    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let (nome_completo, nome_urna): (String, String) = conn
-        .query_row(
-            "SELECT nome_completo, nome_urna FROM politicos WHERE id = ?1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        let (nome_completo, nome_urna): (String, String) = conn
+            .query_row(
+                "SELECT nome_completo, nome_urna FROM politicos WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, ano, numero_emenda, tipo_emenda, localidade_destino, uf,
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, ano, numero_emenda, tipo_emenda, localidade_destino, uf,
                 beneficiario, valor_empenhado, valor_pago
          FROM emendas_parlamentares
          WHERE politico_id = ?1 OR UPPER(autor_nome) = UPPER(?2) OR UPPER(autor_nome) = UPPER(?3)
          ORDER BY ano DESC, valor_empenhado DESC",
-        )
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let rows = stmt
-        .query_map(params![id, nome_urna, nome_completo], |row| {
-            Ok(EmendaItem {
-                id: row.get(0)?,
-                ano: row.get(1)?,
-                numero_emenda: row.get(2)?,
-                tipo_emenda: row.get(3)?,
-                localidade_destino: row.get(4)?,
-                uf: row.get(5)?,
-                beneficiario: row.get(6)?,
-                valor_empenhado: row.get(7)?,
-                valor_pago: row.get(8)?,
+        let rows = stmt
+            .query_map(params![id, nome_urna, nome_completo], |row| {
+                Ok(EmendaItem {
+                    id: row.get(0)?,
+                    ano: row.get(1)?,
+                    numero_emenda: row.get(2)?,
+                    tipo_emenda: row.get(3)?,
+                    localidade_destino: row.get(4)?,
+                    uf: row.get(5)?,
+                    beneficiario: row.get(6)?,
+                    valor_empenhado: row.get(7)?,
+                    valor_pago: row.get(8)?,
+                })
             })
-        })
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let mut emendas = Vec::new();
-    let mut total_empenhado = storage::Money::ZERO;
-    let mut total_pago = storage::Money::ZERO;
-
-    for r in rows.flatten() {
-        total_empenhado = total_empenhado
-            .checked_add(
-                storage::Money::from_reais(r.valor_empenhado)
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-            )
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        total_pago = total_pago
-            .checked_add(
-                storage::Money::from_reais(r.valor_pago)
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-            )
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        emendas.push(r);
-    }
 
-    let total_empenhado = total_empenhado.reais();
-    let total_pago = total_pago.reais();
-    Ok(Json(PoliticoEmendasResponse {
-        politico_id: id,
-        autor_nome: nome_urna,
-        total_empenhado,
-        total_pago,
-        total_emendas: emendas.len(),
-        emendas,
-    }))
+        let mut emendas = Vec::new();
+        let mut total_empenhado = storage::Money::ZERO;
+        let mut total_pago = storage::Money::ZERO;
+
+        for r in rows.flatten() {
+            total_empenhado = total_empenhado
+                .checked_add(
+                    storage::Money::from_reais(r.valor_empenhado)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                )
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            total_pago = total_pago
+                .checked_add(
+                    storage::Money::from_reais(r.valor_pago)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                )
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            emendas.push(r);
+        }
+
+        let total_empenhado = total_empenhado.reais();
+        let total_pago = total_pago.reais();
+        Ok(Json(PoliticoEmendasResponse {
+            politico_id: id,
+            autor_nome: nome_urna,
+            total_empenhado,
+            total_pago,
+            total_emendas: emendas.len(),
+            emendas,
+        }))
+    })
+    .await
+    .map_err(|error| {
+        tracing::error!(%error,"Falha no worker SQLite");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
 }
 
 /// Handler legado para dossiê básico de político
@@ -949,11 +958,16 @@ pub async fn politico_dossie_handler(
     State(pool): State<DbPool>,
     Path(id): Path<i64>,
 ) -> Result<Json<DossiePolitico>, StatusCode> {
-    match carregar_dossie(&pool, id) {
+    tokio::task::spawn_blocking(move || match carregar_dossie(&pool, id) {
         Ok(Some(dossie)) => Ok(Json(dossie)),
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+    })
+    .await
+    .map_err(|error| {
+        tracing::error!(%error,"Falha no worker SQLite");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
 }
 
 /// GET /api/politicos/:id/evolucao-patrimonial e /api/v1/politicos/:id/evolucao-patrimonial
@@ -961,24 +975,65 @@ pub async fn politico_evolucao_patrimonial_handler(
     State(pool): State<DbPool>,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<PontoEvolucaoPatrimonial>>, StatusCode> {
-    let dossie = carregar_dossie(&pool, id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(dossie.evolucao_patrimonial))
+    tokio::task::spawn_blocking(move || {
+        let dossie = carregar_dossie(&pool, id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?;
+        Ok(Json(dossie.evolucao_patrimonial))
+    })
+    .await
+    .map_err(|error| {
+        tracing::error!(%error,"Falha no worker SQLite");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
 }
 
 const ACCENT_PAIRS: &[(char, char)] = &[
-    ('Á', 'a'), ('À', 'a'), ('Ã', 'a'), ('Â', 'a'), ('Ä', 'a'),
-    ('É', 'e'), ('È', 'e'), ('Ê', 'e'), ('Ë', 'e'),
-    ('Í', 'i'), ('Ì', 'i'), ('Î', 'i'), ('Ï', 'i'),
-    ('Ó', 'o'), ('Ò', 'o'), ('Õ', 'o'), ('Ô', 'o'), ('Ö', 'o'),
-    ('Ú', 'u'), ('Ù', 'u'), ('Û', 'u'), ('Ü', 'u'),
+    ('Á', 'a'),
+    ('À', 'a'),
+    ('Ã', 'a'),
+    ('Â', 'a'),
+    ('Ä', 'a'),
+    ('É', 'e'),
+    ('È', 'e'),
+    ('Ê', 'e'),
+    ('Ë', 'e'),
+    ('Í', 'i'),
+    ('Ì', 'i'),
+    ('Î', 'i'),
+    ('Ï', 'i'),
+    ('Ó', 'o'),
+    ('Ò', 'o'),
+    ('Õ', 'o'),
+    ('Ô', 'o'),
+    ('Ö', 'o'),
+    ('Ú', 'u'),
+    ('Ù', 'u'),
+    ('Û', 'u'),
+    ('Ü', 'u'),
     ('Ç', 'c'),
-    ('á', 'a'), ('à', 'a'), ('ã', 'a'), ('â', 'a'), ('ä', 'a'),
-    ('é', 'e'), ('è', 'e'), ('ê', 'e'), ('ë', 'e'),
-    ('í', 'i'), ('ì', 'i'), ('î', 'i'), ('ï', 'i'),
-    ('ó', 'o'), ('ò', 'o'), ('õ', 'o'), ('ô', 'o'), ('ö', 'o'),
-    ('ú', 'u'), ('ù', 'u'), ('û', 'u'), ('ü', 'u'),
+    ('á', 'a'),
+    ('à', 'a'),
+    ('ã', 'a'),
+    ('â', 'a'),
+    ('ä', 'a'),
+    ('é', 'e'),
+    ('è', 'e'),
+    ('ê', 'e'),
+    ('ë', 'e'),
+    ('í', 'i'),
+    ('ì', 'i'),
+    ('î', 'i'),
+    ('ï', 'i'),
+    ('ó', 'o'),
+    ('ò', 'o'),
+    ('õ', 'o'),
+    ('ô', 'o'),
+    ('ö', 'o'),
+    ('ú', 'u'),
+    ('ù', 'u'),
+    ('û', 'u'),
+    ('ü', 'u'),
     ('ç', 'c'),
 ];
 
@@ -1009,6 +1064,7 @@ pub async fn listar_politicos_handler(
     State(pool): State<DbPool>,
     Query(params): Query<ListarPoliticosQueryParams>,
 ) -> Result<Json<ListarPoliticosResponse>, (StatusCode, String)> {
+    tokio::task::spawn_blocking(move || {
     let conn = pool
         .get()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1398,8 +1454,9 @@ pub async fn listar_politicos_handler(
                 mandatos,
                 ano_eleicao,
                 tipo_agente,
-                score_integridade: 100,
-                nivel_risco: "MÍNIMO".to_string(),
+                score_integridade: None,
+                nivel_risco: "NÃO AVALIADO".to_string(),
+                avaliacao_integridade: None,
             })
         })
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -1421,12 +1478,13 @@ pub async fn listar_politicos_handler(
         if let Some((tot, qtd)) = ceap_res {
             pol.total_despesas_ceap = tot;
             pol.total_itens_ceap = qtd;
-            pol.tem_alertas = tot > 350000.0;
-            if pol.tem_alertas {
-                pol.score_integridade = 65;
-                pol.nivel_risco = "MODERADO".to_string();
-            }
+
         }
+        let evaluation=crate::score::avaliar(&conn,pol.id).map_err(|e|(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?;
+        pol.score_integridade=evaluation.score;
+        pol.nivel_risco=evaluation.nivel_risco.clone();
+        pol.tem_alertas=evaluation.alertas_por_severidade.iter().sum::<usize>()>0;
+        pol.avaliacao_integridade=Some(evaluation);
     }
 
     if apenas_gastos {
@@ -1451,6 +1509,7 @@ pub async fn listar_politicos_handler(
         municipios_disponiveis,
         politicos,
     }))
+    }).await.map_err(|error| { tracing::error!(%error,"Falha no worker SQLite"); (StatusCode::INTERNAL_SERVER_ERROR,error.to_string()) })?
 }
 
 /// GET /api/politicos/:id e /api/v1/politicos/:id
@@ -1458,6 +1517,7 @@ pub async fn politico_detalhe_handler(
     State(pool): State<DbPool>,
     Path(id): Path<i64>,
 ) -> Result<Json<PoliticoDetalheResponse>, StatusCode> {
+    tokio::task::spawn_blocking(move || {
     let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut stmt = conn
@@ -1682,6 +1742,9 @@ pub async fn politico_detalhe_handler(
         valor_categoria_mais_gasta: (val_cat_mais_gasta * 100.0).round() / 100.0,
     };
 
+    drop(stmt_ceap);
+    drop(stmt);
+    drop(conn);
     // Carrega dossiê detalhado (candidaturas, bens, doadores, auxílios, cargos_autoridades)
     let dossie_base = carregar_dossie(&pool, id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -1698,8 +1761,9 @@ pub async fn politico_detalhe_handler(
             foto_mime: foto_mime.clone(),
             foto_url: foto_url.clone(),
             tipo_agente: tipo_agente.clone(),
-            score_integridade: 100,
-            nivel_risco: "Mínimo".to_string(),
+            score_integridade: None,
+            nivel_risco: "NÃO AVALIADO".to_string(),
+            avaliacao_integridade: None,
             cor_risco_hex: "#10b981".to_string(),
             candidaturas: Vec::new(),
             historico_bens: Vec::new(),
@@ -1741,10 +1805,12 @@ pub async fn politico_detalhe_handler(
         cargos_autoridades: dossie_base.cargos_autoridades,
         score_integridade: dossie_base.score_integridade,
         nivel_risco: dossie_base.nivel_risco,
+        avaliacao_integridade: dossie_base.avaliacao_integridade,
         cor_risco_hex: dossie_base.cor_risco_hex,
         alertas_parentesco: dossie_base.alertas_parentesco,
         emendas: dossie_base.emendas,
     }))
+    }).await.map_err(|error| { tracing::error!(%error,"Falha no worker SQLite"); StatusCode::INTERNAL_SERVER_ERROR })?
 }
 
 /// GET /api/politicos/:id/despesas-geo e /api/v1/politicos/:id/despesas-geo
@@ -1752,18 +1818,19 @@ pub async fn politico_despesas_geo_handler(
     State(pool): State<DbPool>,
     Path(id): Path<i64>,
 ) -> Result<Json<PoliticoDespesasGeoResponse>, StatusCode> {
-    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let (nome_completo, nome_urna) = match conn.query_row(
-        "SELECT nome_completo, nome_urna FROM politicos WHERE id = ?1",
-        [id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-    ) {
-        Ok(res) => res,
-        Err(_) => return Err(StatusCode::NOT_FOUND),
-    };
+        let (nome_completo, nome_urna) = match conn.query_row(
+            "SELECT nome_completo, nome_urna FROM politicos WHERE id = ?1",
+            [id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        ) {
+            Ok(res) => res,
+            Err(_) => return Err(StatusCode::NOT_FOUND),
+        };
 
-    let uf_politico: String = conn
+        let uf_politico: String = conn
         .query_row(
             "SELECT uf FROM candidaturas WHERE politico_id = ?1 ORDER BY ano_eleicao DESC LIMIT 1",
             [id],
@@ -1774,92 +1841,105 @@ pub async fn politico_despesas_geo_handler(
             est
         });
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, data_emissao, categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf,
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, data_emissao, categoria_despesa, fornecedor_nome, fornecedor_cnpj_cpf,
                     valor_liquido, detalhes_litros, numero_documento, url_nota_fiscal
              FROM despesas_parlamentares
              WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2
              ORDER BY data_emissao DESC
              LIMIT 500",
-        )
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let mut pontos = Vec::new();
-    let mut total_valor_geo = storage::Money::ZERO;
-    let mut despesas_fora_uf_total = 0;
-    let mut despesas_fora_uf_valor = storage::Money::ZERO;
-
-    let rows = stmt
-        .query_map([&nome_completo, &nome_urna], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, f64>(5)?,
-                r.get::<_, Option<f64>>(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, Option<String>>(8)?,
-            ))
-        })
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    for r in rows.flatten() {
-        let (id_desp, dt, cat, forn_nome, forn_cnpj, val, litros, num_doc, url_doc) = r;
-        total_valor_geo = total_valor_geo
-            .checked_add(
-                storage::Money::from_reais(val).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
             )
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        let geo =
-            resolver_coordenadas_despesa(&conn, &forn_nome, &forn_cnpj, &cat, val, &uf_politico);
+        let mut pontos = Vec::new();
+        let mut total_valor_geo = storage::Money::ZERO;
+        let mut despesas_fora_uf_total = 0;
+        let mut despesas_fora_uf_valor = storage::Money::ZERO;
 
-        if geo.fora_uf_origem {
-            despesas_fora_uf_total += 1;
-            despesas_fora_uf_valor = despesas_fora_uf_valor
+        let rows = stmt
+            .query_map([&nome_completo, &nome_urna], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, f64>(5)?,
+                    r.get::<_, Option<f64>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, Option<String>>(8)?,
+                ))
+            })
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        for r in rows.flatten() {
+            let (id_desp, dt, cat, forn_nome, forn_cnpj, val, litros, num_doc, url_doc) = r;
+            total_valor_geo = total_valor_geo
                 .checked_add(
                     storage::Money::from_reais(val)
                         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
                 )
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let geo = resolver_coordenadas_despesa(
+                &conn,
+                &forn_nome,
+                &forn_cnpj,
+                &cat,
+                val,
+                &uf_politico,
+            );
+
+            if geo.fora_uf_origem {
+                despesas_fora_uf_total += 1;
+                despesas_fora_uf_valor = despesas_fora_uf_valor
+                    .checked_add(
+                        storage::Money::from_reais(val)
+                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                    )
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+
+            pontos.push(PontoDespesaGeo {
+                id: id_desp,
+                fornecedor_nome: forn_nome,
+                fornecedor_cnpj: forn_cnpj,
+                municipio: geo.municipio,
+                uf: geo.uf,
+                latitude: geo.latitude,
+                longitude: geo.longitude,
+                valor: (val * 100.0).round() / 100.0,
+                data: dt,
+                categoria: cat,
+                litros,
+                numero_documento: num_doc,
+                url_documento: url_doc,
+                fora_uf_origem: geo.fora_uf_origem,
+                alerta_distancia: geo.alerta_distancia,
+                distancia_origem_km: geo.distancia_origem_km,
+                motivo_alerta: geo.motivo_alerta,
+            });
         }
 
-        pontos.push(PontoDespesaGeo {
-            id: id_desp,
-            fornecedor_nome: forn_nome,
-            fornecedor_cnpj: forn_cnpj,
-            municipio: geo.municipio,
-            uf: geo.uf,
-            latitude: geo.latitude,
-            longitude: geo.longitude,
-            valor: (val * 100.0).round() / 100.0,
-            data: dt,
-            categoria: cat,
-            litros,
-            numero_documento: num_doc,
-            url_documento: url_doc,
-            fora_uf_origem: geo.fora_uf_origem,
-            alerta_distancia: geo.alerta_distancia,
-            distancia_origem_km: geo.distancia_origem_km,
-            motivo_alerta: geo.motivo_alerta,
-        });
-    }
-
-    let total_valor_geo = total_valor_geo.reais();
-    let despesas_fora_uf_valor = despesas_fora_uf_valor.reais();
-    Ok(Json(PoliticoDespesasGeoResponse {
-        politico_id: id,
-        politico_nome: nome_completo,
-        politico_uf: uf_politico,
-        total_despesas_geo: pontos.len(),
-        total_valor_geo: (total_valor_geo * 100.0).round() / 100.0,
-        despesas_fora_uf_total,
-        despesas_fora_uf_valor: (despesas_fora_uf_valor * 100.0).round() / 100.0,
-        pontos,
-    }))
+        let total_valor_geo = total_valor_geo.reais();
+        let despesas_fora_uf_valor = despesas_fora_uf_valor.reais();
+        Ok(Json(PoliticoDespesasGeoResponse {
+            politico_id: id,
+            politico_nome: nome_completo,
+            politico_uf: uf_politico,
+            total_despesas_geo: pontos.len(),
+            total_valor_geo: (total_valor_geo * 100.0).round() / 100.0,
+            despesas_fora_uf_total,
+            despesas_fora_uf_valor: (despesas_fora_uf_valor * 100.0).round() / 100.0,
+            pontos,
+        }))
+    })
+    .await
+    .map_err(|error| {
+        tracing::error!(%error,"Falha no worker SQLite");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
 }
 
 /// POST /api/politicos/:id/buscar-foto-tse e /api/v1/politicos/:id/buscar-foto-tse
@@ -1964,19 +2044,6 @@ pub async fn salvar_foto_manual_handler(
     Path(id): Path<i64>,
     Json(payload): Json<SalvarFotoManualRequest>,
 ) -> Result<Json<BuscarFotoResponse>, (StatusCode, Json<BuscarFotoResponse>)> {
-    let conn = pool.get().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(BuscarFotoResponse {
-                sucesso: false,
-                mensagem: format!("Erro ao obter conexão do banco de dados: {}", e),
-                foto_base64: None,
-                foto_mime: None,
-                origem: None,
-            }),
-        )
-    })?;
-
     let bytes_finais;
     let mime_final;
 
@@ -2051,10 +2118,16 @@ pub async fn salvar_foto_manual_handler(
         ));
     }
 
-    let res = conn.execute(
-        "UPDATE politicos SET foto_blob = ?1, foto_mime = ?2 WHERE id = ?3",
-        storage::rusqlite::params![bytes_finais, mime_final, id],
-    );
+    let saved_bytes = bytes_finais.clone();
+    let saved_mime = mime_final.clone();
+    let res = pool
+        .run_blocking(move |conn| {
+            Ok(conn.execute(
+                "UPDATE politicos SET foto_blob=?1,foto_mime=?2 WHERE id=?3",
+                storage::rusqlite::params![saved_bytes, saved_mime, id],
+            )?)
+        })
+        .await;
 
     match res {
         Ok(rows) if rows > 0 => {
@@ -2085,46 +2158,54 @@ pub async fn obter_foto_handler(
     State(pool): State<DbPool>,
     Path(id): Path<i64>,
 ) -> Result<axum::response::Response, StatusCode> {
-    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let res: Option<(Vec<u8>, Option<String>)> = conn
-        .query_row(
-            "SELECT foto_blob, foto_mime FROM politicos WHERE id = ?1",
-            [id],
-            |r| {
-                let blob: Option<Vec<u8>> = r.get(0)?;
-                let mime: Option<String> = r.get(1)?;
-                Ok((blob, mime))
-            },
-        )
-        .ok()
-        .and_then(|(b, m)| b.map(|bytes| (bytes, m)));
+        let res: Option<(Vec<u8>, Option<String>)> = conn
+            .query_row(
+                "SELECT foto_blob, foto_mime FROM politicos WHERE id = ?1",
+                [id],
+                |r| {
+                    let blob: Option<Vec<u8>> = r.get(0)?;
+                    let mime: Option<String> = r.get(1)?;
+                    Ok((blob, mime))
+                },
+            )
+            .ok()
+            .and_then(|(b, m)| b.map(|bytes| (bytes, m)));
 
-    match res {
-        Some((bytes, _mime)) if crate::photos::image_mime(&bytes).is_some() => {
-            let mime_str = crate::photos::image_mime(&bytes).unwrap_or("application/octet-stream");
-            axum::response::Response::builder()
-                .header(axum::http::header::CONTENT_TYPE, mime_str)
-                .header(axum::http::header::CACHE_CONTROL, "public, max-age=86400")
-                .body(axum::body::Body::from(bytes))
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-        }
-        _ => {
-            use axum::response::IntoResponse;
-            let url_opt: Option<String> = conn
-                .query_row("SELECT foto_url FROM politicos WHERE id = ?1", [id], |r| {
-                    r.get(0)
-                })
-                .ok()
-                .flatten();
+        match res {
+            Some((bytes, _mime)) if crate::photos::image_mime(&bytes).is_some() => {
+                let mime_str =
+                    crate::photos::image_mime(&bytes).unwrap_or("application/octet-stream");
+                axum::response::Response::builder()
+                    .header(axum::http::header::CONTENT_TYPE, mime_str)
+                    .header(axum::http::header::CACHE_CONTROL, "public, max-age=86400")
+                    .body(axum::body::Body::from(bytes))
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            }
+            _ => {
+                use axum::response::IntoResponse;
+                let url_opt: Option<String> = conn
+                    .query_row("SELECT foto_url FROM politicos WHERE id = ?1", [id], |r| {
+                        r.get(0)
+                    })
+                    .ok()
+                    .flatten();
 
-            if let Some(url) = url_opt {
-                Ok(axum::response::Redirect::temporary(&url).into_response())
-            } else {
-                Err(StatusCode::NOT_FOUND)
+                if let Some(url) = url_opt {
+                    Ok(axum::response::Redirect::temporary(&url).into_response())
+                } else {
+                    Err(StatusCode::NOT_FOUND)
+                }
             }
         }
-    }
+    })
+    .await
+    .map_err(|error| {
+        tracing::error!(%error,"Falha no worker SQLite");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
 }
 
 /// DELETE /api/politicos/:id/foto e /api/v1/politicos/:id/foto
@@ -2132,31 +2213,47 @@ pub async fn remover_foto_handler(
     State(pool): State<DbPool>,
     Path(id): Path<i64>,
 ) -> Result<Json<BuscarFotoResponse>, (StatusCode, Json<BuscarFotoResponse>)> {
-    let conn = pool.get().map_err(|e| {
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(BuscarFotoResponse {
+                    sucesso: false,
+                    mensagem: format!("Erro ao obter conexão: {}", e),
+                    foto_base64: None,
+                    foto_mime: None,
+                    origem: None,
+                }),
+            )
+        })?;
+
+        let _ = conn.execute(
+        "UPDATE politicos SET foto_blob = NULL, foto_mime = NULL, foto_url = NULL WHERE id = ?1",
+        [id],
+    );
+
+        Ok(Json(BuscarFotoResponse {
+            sucesso: true,
+            mensagem: "Foto removida com sucesso do banco de dados.".to_string(),
+            foto_base64: None,
+            foto_mime: None,
+            origem: None,
+        }))
+    })
+    .await
+    .map_err(|error| {
+        tracing::error!(%error,"Falha no worker SQLite");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(BuscarFotoResponse {
                 sucesso: false,
-                mensagem: format!("Erro ao obter conexão: {}", e),
+                mensagem: error.to_string(),
                 foto_base64: None,
                 foto_mime: None,
                 origem: None,
             }),
         )
-    })?;
-
-    let _ = conn.execute(
-        "UPDATE politicos SET foto_blob = NULL, foto_mime = NULL, foto_url = NULL WHERE id = ?1",
-        [id],
-    );
-
-    Ok(Json(BuscarFotoResponse {
-        sucesso: true,
-        mensagem: "Foto removida com sucesso do banco de dados.".to_string(),
-        foto_base64: None,
-        foto_mime: None,
-        origem: None,
-    }))
+    })?
 }
 
 /// Sincroniza fotos oficiais da Câmara dos Deputados para parlamentares cadastrados
@@ -2622,11 +2719,17 @@ mod tests {
             .unwrap();
         let res_uf = app.clone().oneshot(req_uf).await.unwrap();
         assert_eq!(res_uf.status(), StatusCode::OK);
-        let bytes_uf = axum::body::to_bytes(res_uf.into_body(), usize::MAX).await.unwrap();
+        let bytes_uf = axum::body::to_bytes(res_uf.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_uf: ListarPoliticosResponse = serde_json::from_slice(&bytes_uf).unwrap();
         assert_eq!(resp_uf.total, 2);
-        assert!(resp_uf.municipios_disponiveis.contains(&"Campinas".to_string()));
-        assert!(resp_uf.municipios_disponiveis.contains(&"Santos".to_string()));
+        assert!(resp_uf
+            .municipios_disponiveis
+            .contains(&"Campinas".to_string()));
+        assert!(resp_uf
+            .municipios_disponiveis
+            .contains(&"Santos".to_string()));
 
         // 2. Busca exata por município Campinas
         let req_camp = Request::builder()
@@ -2635,11 +2738,16 @@ mod tests {
             .unwrap();
         let res_camp = app.clone().oneshot(req_camp).await.unwrap();
         assert_eq!(res_camp.status(), StatusCode::OK);
-        let bytes_camp = axum::body::to_bytes(res_camp.into_body(), usize::MAX).await.unwrap();
+        let bytes_camp = axum::body::to_bytes(res_camp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_camp: ListarPoliticosResponse = serde_json::from_slice(&bytes_camp).unwrap();
         assert_eq!(resp_camp.total, 1);
         assert_eq!(resp_camp.politicos[0].nome_urna, "CAMPINAS 2024");
-        assert_eq!(resp_camp.politicos[0].municipio.as_deref(), Some("Campinas"));
+        assert_eq!(
+            resp_camp.politicos[0].municipio.as_deref(),
+            Some("Campinas")
+        );
 
         // 3. Busca parcial e case-insensitive (ex: "sant")
         let req_sant = Request::builder()
@@ -2648,7 +2756,9 @@ mod tests {
             .unwrap();
         let res_sant = app.clone().oneshot(req_sant).await.unwrap();
         assert_eq!(res_sant.status(), StatusCode::OK);
-        let bytes_sant = axum::body::to_bytes(res_sant.into_body(), usize::MAX).await.unwrap();
+        let bytes_sant = axum::body::to_bytes(res_sant.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_sant: ListarPoliticosResponse = serde_json::from_slice(&bytes_sant).unwrap();
         assert_eq!(resp_sant.total, 1);
         assert_eq!(resp_sant.politicos[0].nome_urna, "SANTOS 2024");
@@ -2660,7 +2770,9 @@ mod tests {
             .unwrap();
         let res_go = app.clone().oneshot(req_go).await.unwrap();
         assert_eq!(res_go.status(), StatusCode::OK);
-        let bytes_go = axum::body::to_bytes(res_go.into_body(), usize::MAX).await.unwrap();
+        let bytes_go = axum::body::to_bytes(res_go.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_go: ListarPoliticosResponse = serde_json::from_slice(&bytes_go).unwrap();
         assert_eq!(resp_go.total, 1);
         assert_eq!(resp_go.politicos[0].nome_urna, "GOIANIA 2024");
@@ -2685,11 +2797,16 @@ mod tests {
             .unwrap();
         let res_marata = app.clone().oneshot(req_marata).await.unwrap();
         assert_eq!(res_marata.status(), StatusCode::OK);
-        let bytes_marata = axum::body::to_bytes(res_marata.into_body(), usize::MAX).await.unwrap();
+        let bytes_marata = axum::body::to_bytes(res_marata.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_marata: ListarPoliticosResponse = serde_json::from_slice(&bytes_marata).unwrap();
         assert_eq!(resp_marata.total, 1);
         assert_eq!(resp_marata.politicos[0].nome_urna, "TONINHO BITENCOURT");
-        assert_eq!(resp_marata.politicos[0].municipio.as_deref(), Some("Marataízes"));
+        assert_eq!(
+            resp_marata.politicos[0].municipio.as_deref(),
+            Some("Marataízes")
+        );
 
         // 5.2 Busca sem acento ("marataizes") delimitado em UF=ES
         let req_marata_sem_acento = Request::builder()
@@ -2698,8 +2815,11 @@ mod tests {
             .unwrap();
         let res_marata_sa = app.clone().oneshot(req_marata_sem_acento).await.unwrap();
         assert_eq!(res_marata_sa.status(), StatusCode::OK);
-        let bytes_marata_sa = axum::body::to_bytes(res_marata_sa.into_body(), usize::MAX).await.unwrap();
-        let resp_marata_sa: ListarPoliticosResponse = serde_json::from_slice(&bytes_marata_sa).unwrap();
+        let bytes_marata_sa = axum::body::to_bytes(res_marata_sa.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp_marata_sa: ListarPoliticosResponse =
+            serde_json::from_slice(&bytes_marata_sa).unwrap();
         assert_eq!(resp_marata_sa.total, 1);
         assert_eq!(resp_marata_sa.politicos[0].nome_urna, "TONINHO BITENCOURT");
     }
@@ -2903,8 +3023,8 @@ mod tests {
             .await
             .unwrap();
         let resp_det: PoliticoDetalheResponse = serde_json::from_slice(&bytes_det).unwrap();
-        assert_eq!(resp_det.score_integridade, 100);
-        assert_eq!(resp_det.nivel_risco, "MÍNIMO");
+        assert_eq!(resp_det.score_integridade, None);
+        assert_eq!(resp_det.nivel_risco, "NÃO AVALIADO");
         assert_eq!(resp_det.emendas.len(), 1);
 
         // Testar listagem contendo score de integridade
@@ -2920,7 +3040,7 @@ mod tests {
         let resp_list: ListarPoliticosResponse = serde_json::from_slice(&bytes_list).unwrap();
         assert!(!resp_list.politicos.is_empty());
         let item = resp_list.politicos.iter().find(|p| p.id == pol_id).unwrap();
-        assert_eq!(item.score_integridade, 100);
-        assert_eq!(item.nivel_risco, "MÍNIMO");
+        assert_eq!(item.score_integridade, None);
+        assert_eq!(item.nivel_risco, "NÃO AVALIADO");
     }
 }
