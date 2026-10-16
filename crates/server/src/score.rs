@@ -38,8 +38,11 @@ mod tests {
         assert_eq!(avaliar(&conn, id).unwrap().score, Some(100));
         conn.execute("INSERT INTO alertas_auditoria(tipo,severidade,titulo,descricao,alvo_nome,fonte_dado,detalhes_json) VALUES('TESTE','ALTA','Indício','Conferir','MARIA','TESTE',?1)",[format!("{{\"politico_id\":{id}}}")]).unwrap();
         assert_eq!(avaliar(&conn, id).unwrap().score, Some(85));
-        conn.execute("UPDATE auditoria_estado SET pendente=1", [])
-            .unwrap();
+        crate::config::salvar_parametros_auditoria(
+            &conn,
+            &crate::config::ParametrosAuditoria::default(),
+        )
+        .unwrap();
         assert_eq!(avaliar(&conn, id).unwrap().score, None);
     }
 }

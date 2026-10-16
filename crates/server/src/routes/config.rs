@@ -285,6 +285,8 @@ pub fn salvar_parametros_auditoria(
         [&json_str],
     );
 
+    // Alterar parâmetros exige nova execução completa antes de publicar notas atuais.
+    conn.execute("UPDATE auditoria_estado SET pendente=1 WHERE id=1", [])?;
     Ok(())
 }
 
@@ -336,7 +338,7 @@ pub async fn salvar_audit_rules_handler(
     })?;
     Ok(Json(SalvarAuditRulesResponse {
         status: "sucesso".into(),
-        mensagem: "Parâmetros salvos e alertas recalculados com sucesso.".into(),
+        mensagem: "Parâmetros salvos e alertas de combustível recalculados. Execute a auditoria completa para atualizar as notas.".into(),
         parametros: payload,
         alertas_recalculados: recalculados,
         alertas_obsoletos_expurgados: obsoletos,

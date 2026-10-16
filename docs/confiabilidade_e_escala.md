@@ -6,7 +6,7 @@ Listagem, dossiê e detalhe usam a mesma avaliação (`alertas-locais-v1`). O va
 
 `score_integridade` é `null` quando faltam dados, ainda não houve auditoria válida ou as fontes mudaram desde a última auditoria. `avaliacao_integridade` informa situação, cobertura, metodologia, data da auditoria e quantidades por severidade. Uma nota 100 significa ausência de alertas nas bases locais avaliadas. A cobertura local não equivale à cobertura nacional completa, nem comprova regularidade.
 
-Novos dados deixam a avaliação pendente. A auditoria só publica uma avaliação atual após confirmar sua transação. Os cartões apresentam indícios para conferência, e falhas de consulta têm mensagem e botão de nova tentativa.
+Novos dados e alterações dos parâmetros deixam a avaliação pendente. A auditoria só publica uma avaliação atual após confirmar sua transação. Os cartões apresentam indícios para conferência, e falhas de consulta têm mensagem e botão de nova tentativa.
 
 ## Autoridades e evidência
 
