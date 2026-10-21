@@ -2,7 +2,7 @@
 # Multi-stage Dockerfile para Radar Cívico
 
 # Stage 1: Build frontend SPA (SvelteKit + Tailwind CSS)
-FROM node:22-slim AS web-builder
+FROM --platform=$BUILDPLATFORM node:22-slim AS web-builder
 WORKDIR /app
 
 ARG APP_VERSION
@@ -25,6 +25,7 @@ RUN npm run check && npm run build
 FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
+ARG TARGETARCH
 ARG APP_VERSION
 ARG APP_COMMIT
 ARG APP_COUNT
@@ -46,7 +47,7 @@ COPY version.json* ./
 # target compartilhado. Atualizar os mtimes força o Cargo a validar o código local.
 RUN --mount=type=cache,id=radar-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=radar-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=radar-cargo-target,target=/app/target,sharing=locked \
+    --mount=type=cache,id=radar-cargo-target-${TARGETARCH:-amd64},target=/app/target,sharing=locked \
     find crates tests -type f -exec touch {} + && touch Cargo.toml Cargo.lock && \
     cargo build --locked --release -p server && cp target/release/server /app/server-binary
 

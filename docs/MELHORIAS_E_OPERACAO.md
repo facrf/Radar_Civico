@@ -68,6 +68,12 @@ A tabela `tarefas_importacao` mantém namespace, identificação, payload JSON, 
 2. `npm ci`, `npm run check` e `npm run build`, com cache npm;
 3. build da imagem, sem publicação, seguido de inicialização em banco temporário e verificação de `/health`.
 
+`.github/workflows/publish-ghcr.yml` publica as imagens no GitHub Container Registry (`ghcr.io`):
+- Executado automaticamente após o espelhamento do Gitea no GitHub (`main` e tags `v*`).
+- Suporte a multi-arquitetura nativa (`linux/amd64`, `linux/arm64`) utilizando Buildx e QEMU.
+- Otimização com `BUILDPLATFORM` no build de assets web e isolamento de cache de compilação Rust por arquitetura (`TARGETARCH`).
+- Publicação com tags de versão semântica, branch, commit SHA e `latest`.
+
 O Dockerfile requer BuildKit/Buildx. Os caches de registry, Git e target Cargo persistem no builder local, com trava de compartilhamento. O binário é copiado para fora do mount antes de construir a imagem final. O contexto Rust inclui apenas manifests, crates, testes e versão; editar documentação ou frontend não invalida sua camada. No GitHub, o cache externo preserva camadas da imagem; mounts locais do BuildKit dependem do ciclo de vida do builder.
 
 Referências: [cache Docker](https://docs.docker.com/build/cache/optimize/), [Actions cache](https://github.com/actions/cache), [build-push](https://github.com/docker/build-push-action).
