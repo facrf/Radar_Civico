@@ -40,7 +40,7 @@ pub use busca::{busca_handler, BuscaParams, ItemBuscaUnificada, RespostaBusca};
 pub use config::{
     carregar_parametros_auditoria, criar_backup_handler, download_backup_arquivo_handler,
     executar_ingestao_handler, exportar_banco_handler, exportar_tabela_handler,
-    import_status_handler, job_status_handler, listar_arquivos_ingeridos_handler,
+    import_status_handler, invalidar_cache_status, job_status_handler, listar_arquivos_ingeridos_handler,
     listar_backups_handler, obter_audit_rules_handler, obter_favicon_handler, obter_icone_handler,
     obter_identidade_handler, remover_icone_handler, salvar_audit_rules_handler,
     salvar_icone_handler, salvar_parametros_auditoria, sincronizar_autoridades_handler,

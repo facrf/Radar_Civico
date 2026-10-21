@@ -119,3 +119,27 @@ Validação local em 13/10/2026 (America/Sao_Paulo):
 - Retratos de presidentes e ministros são distribuídos em `web/static/autoridades`, associados por nome completo exato e armazenados no SQLite quando não existe imagem válida. Fontes, autores e licenças estão em `/fontes-fotos` e `/autoridades/fontes.json`. Fotos manuais válidas são preservadas.
 - Atualização dos retratos: `python3 scripts/atualizar_fotos_autoridades.py` (requer requests). O script respeita limites de requisições e conserva o catálogo anterior em caso de falha.
 - O frontend exige Node.js 22.17+; o Docker usa Node 22. SvelteKit 3, Svelte 5 e Tailwind 4 substituem as versões antigas.
+
+## Otimização de Performance e Escala (Outubro/2026)
+
+### 1. Migração 30: Restauração de Índices Essenciais
+- Criação dos índices `idx_bens_candidatura`, `idx_receitas_candidatura`, `idx_despesas_candidatura` e `idx_candidaturas_eleicao`.
+- Elimina varreduras de tabela completa (`SCAN`) em `bens_candidato` (2,88M linhas), `receitas_campanha` (6,23M linhas) e `despesas_campanha` (8,01M linhas).
+- Reduz o tempo de resposta da rota de dossiê do político de **~35 segundos para menos de 5 milissegundos**.
+
+### 2. Cache em Memória de Status do Sistema
+- `GET /api/v1/config/status` conta com cache de 120 segundos via `Mutex<Option<(Instant, ConfigStatusResponse)>>`.
+- Evita 14 consultas consecutivas de `SELECT count(*)`, em especial nas tabelas massivas `beneficios_emergenciais` (257M linhas) e `empresas_qsa` (62M linhas).
+- Tempo de resposta para carregamento das configurações cai de **26 segundos para < 0,1 milissegundo**.
+- Invalidação automática via `invalidar_cache_status()` após a conclusão de qualquer tarefa de importação ou sincronização.
+
+### 3. Cache de Filtros Globais de Políticos
+- `GET /api/politicos` e `GET /api/v1/politicos` mantêm cache em memória (TTL de 300 segundos) para as listas de `partidos_disponiveis`, `ufs_disponiveis`, `anos_disponiveis` e `cargos_disponiveis`.
+- Elimina 4 varreduras completas da tabela `candidaturas` (1,18M linhas) a cada clique de paginação ou navegação.
+
+### 4. Proteção na Busca Textual de Doadores
+- Em `crates/server/src/busca.rs`, consultas numéricas com 8 ou mais dígitos usam busca exata/indexada por `doador_cpf_cnpj` (`idx_receitas_campanha_doador`).
+- Termos de busca em texto exigem comprimento mínimo de 4 caracteres para consultar `receitas_campanha`, evitando varreduras completas de 6,3 segundos para termos curtos.
+
+### 5. Complexidade Linear em Fornecedores Fantasmas
+- Em `crates/auditor/src/fornecedores_fantasmas.rs`, o cruzamento de pagamentos contra o cadastro da Receita Federal foi otimizado com `HashMap`, reduzindo a complexidade de $O(N \times M)$ para $O(N + M)$.

@@ -471,9 +471,26 @@ fn formatar_tamanho(bytes: u64) -> String {
     }
 }
 
+static STATUS_CACHE: std::sync::Mutex<Option<(std::time::Instant, ConfigStatusResponse)>> =
+    std::sync::Mutex::new(None);
+
+pub fn invalidar_cache_status() {
+    if let Ok(mut lock) = STATUS_CACHE.lock() {
+        *lock = None;
+    }
+}
+
 pub async fn status_handler(
     State(pool): State<DbPool>,
 ) -> Result<Json<ConfigStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
+    if let Ok(lock) = STATUS_CACHE.lock() {
+        if let Some((instant, ref dados)) = *lock {
+            if instant.elapsed() < std::time::Duration::from_secs(120) {
+                return Ok(Json(dados.clone()));
+            }
+        }
+    }
+
     let (tamanho_banco_bytes, tamanho_banco_formatado, caminho_banco) =
         if let Some(path) = pool.file_path() {
             let mut total_bytes = 0u64;
@@ -497,97 +514,103 @@ pub async fn status_handler(
             (0u64, "0 B (memória)".to_string(), ":memory:".to_string())
         };
 
-    pool.run_blocking(move |conn| {
-        let politicos: i64 = conn.query_row("SELECT count(*) FROM politicos", [], |r| r.get(0))?;
-        let candidaturas: i64 =
-            conn.query_row("SELECT count(*) FROM candidaturas", [], |r| r.get(0))?;
-        let receitas_campanha: i64 =
-            conn.query_row("SELECT count(*) FROM receitas_campanha", [], |r| r.get(0))?;
-        let despesas_campanha: i64 =
-            conn.query_row("SELECT count(*) FROM despesas_campanha", [], |r| r.get(0))?;
-        let despesas_parlamentares: i64 =
-            conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
-                r.get(0)
-            })?;
-        let contratos_publicos: i64 =
-            conn.query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))?;
-        let alertas_auditoria: i64 =
-            conn.query_row("SELECT count(*) FROM alertas_auditoria", [], |r| r.get(0))?;
-        let empresas_qsa: i64 =
-            conn.query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))?;
-        let registros_profissionais: i64 =
-            conn.query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
-                r.get(0)
-            })?;
-        let beneficios_emergenciais: i64 =
-            conn.query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
-                r.get(0)
-            })?;
-        let alertas_beneficio_indevido: i64 =
-            conn.query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| {
-                r.get(0)
-            })?;
-        let cargos_autoridades: i64 =
-            conn.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0))?;
-        let emendas_parlamentares: i64 =
-            conn.query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
-                r.get(0)
-            })?;
-        let arquivos_ingeridos: i64 = conn
-            .query_row("SELECT count(*) FROM arquivos_ingeridos", [], |r| r.get(0))
-            .unwrap_or(0);
+    let resp = pool
+        .run_blocking(move |conn| {
+            let politicos: i64 = conn.query_row("SELECT count(*) FROM politicos", [], |r| r.get(0))?;
+            let candidaturas: i64 =
+                conn.query_row("SELECT count(*) FROM candidaturas", [], |r| r.get(0))?;
+            let receitas_campanha: i64 =
+                conn.query_row("SELECT count(*) FROM receitas_campanha", [], |r| r.get(0))?;
+            let despesas_campanha: i64 =
+                conn.query_row("SELECT count(*) FROM despesas_campanha", [], |r| r.get(0))?;
+            let despesas_parlamentares: i64 =
+                conn.query_row("SELECT count(*) FROM despesas_parlamentares", [], |r| {
+                    r.get(0)
+                })?;
+            let contratos_publicos: i64 =
+                conn.query_row("SELECT count(*) FROM contratos_publicos", [], |r| r.get(0))?;
+            let alertas_auditoria: i64 =
+                conn.query_row("SELECT count(*) FROM alertas_auditoria", [], |r| r.get(0))?;
+            let empresas_qsa: i64 =
+                conn.query_row("SELECT count(*) FROM empresas_qsa", [], |r| r.get(0))?;
+            let registros_profissionais: i64 =
+                conn.query_row("SELECT count(*) FROM registros_profissionais", [], |r| {
+                    r.get(0)
+                })?;
+            let beneficios_emergenciais: i64 =
+                conn.query_row("SELECT count(*) FROM beneficios_emergenciais", [], |r| {
+                    r.get(0)
+                })?;
+            let alertas_beneficio_indevido: i64 =
+                conn.query_row("SELECT count(*) FROM alertas_beneficio_indevido", [], |r| {
+                    r.get(0)
+                })?;
+            let cargos_autoridades: i64 =
+                conn.query_row("SELECT count(*) FROM cargos_autoridades", [], |r| r.get(0))?;
+            let emendas_parlamentares: i64 =
+                conn.query_row("SELECT count(*) FROM emendas_parlamentares", [], |r| {
+                    r.get(0)
+                })?;
+            let arquivos_ingeridos: i64 = conn
+                .query_row("SELECT count(*) FROM arquivos_ingeridos", [], |r| r.get(0))
+                .unwrap_or(0);
 
-        let ultimo_evento_sincronizacao: Option<String> = conn
-            .query_row(
-                "SELECT data_inicio || ' (' || fonte || ' - ' || status || ')'
-             FROM historico_sincronizacao 
-             ORDER BY id DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .ok()
-            .or_else(|| {
-                conn.query_row(
-                    "SELECT applied_at || ' (Migrações Aplicadas)'
-                 FROM _migrations
-                 ORDER BY version DESC LIMIT 1",
+            let ultimo_evento_sincronizacao: Option<String> = conn
+                .query_row(
+                    "SELECT data_inicio || ' (' || fonte || ' - ' || status || ')'
+                 FROM historico_sincronizacao 
+                 ORDER BY id DESC LIMIT 1",
                     [],
                     |r| r.get(0),
                 )
                 .ok()
-            });
+                .or_else(|| {
+                    conn.query_row(
+                        "SELECT applied_at || ' (Migrações Aplicadas)'
+                     FROM _migrations
+                     ORDER BY version DESC LIMIT 1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .ok()
+                });
 
-        Ok(ConfigStatusResponse {
-            tamanho_banco_bytes,
-            tamanho_banco_formatado,
-            caminho_banco,
-            total_registros: TotalRegistros {
-                politicos,
-                candidaturas,
-                receitas_campanha,
-                despesas_campanha,
-                despesas_parlamentares,
-                contratos_publicos,
-                alertas_auditoria,
-                empresas_qsa,
-                registros_profissionais,
-                beneficios_emergenciais,
-                alertas_beneficio_indevido,
-                cargos_autoridades,
-                emendas_parlamentares,
-                arquivos_ingeridos,
-            },
-            ultimo_evento_sincronizacao,
-            versao_sistema: option_env!("APP_VERSION")
-                .unwrap_or(env!("CARGO_PKG_VERSION"))
-                .to_string(),
-            git_commit: option_env!("APP_GIT_COMMIT").map(|s| s.to_string()),
-            commit_count: option_env!("APP_COMMIT_COUNT").and_then(|s| s.parse().ok()),
+            Ok(ConfigStatusResponse {
+                tamanho_banco_bytes,
+                tamanho_banco_formatado,
+                caminho_banco,
+                total_registros: TotalRegistros {
+                    politicos,
+                    candidaturas,
+                    receitas_campanha,
+                    despesas_campanha,
+                    despesas_parlamentares,
+                    contratos_publicos,
+                    alertas_auditoria,
+                    empresas_qsa,
+                    registros_profissionais,
+                    beneficios_emergenciais,
+                    alertas_beneficio_indevido,
+                    cargos_autoridades,
+                    emendas_parlamentares,
+                    arquivos_ingeridos,
+                },
+                ultimo_evento_sincronizacao,
+                versao_sistema: option_env!("APP_VERSION")
+                    .unwrap_or(env!("CARGO_PKG_VERSION"))
+                    .to_string(),
+                git_commit: option_env!("APP_GIT_COMMIT").map(|s| s.to_string()),
+                commit_count: option_env!("APP_COMMIT_COUNT").and_then(|s| s.parse().ok()),
+            })
         })
-    })
-    .await
-    .map(Json)
-    .map_err(sqlite_http_error)
+        .await
+        .map_err(sqlite_http_error)?;
+
+    if let Ok(mut lock) = STATUS_CACHE.lock() {
+        *lock = Some((std::time::Instant::now(), resp.clone()));
+    }
+
+    Ok(Json(resp))
 }
 
 pub async fn versao_handler() -> Json<VersaoResponse> {
@@ -631,6 +654,7 @@ pub async fn atualizar_job_concluido(
     if let Err(error) = concluir_job(pool, job_id, progresso, status, mensagem).await {
         tracing::error!(job_id, stage = "completion", error = %error, "Falha ao persistir conclusão; resultado pendente requer recuperação");
     }
+    invalidar_cache_status();
 }
 
 async fn concluir_job(

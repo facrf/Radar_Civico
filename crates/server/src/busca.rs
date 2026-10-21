@@ -240,32 +240,63 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
     }
 
     // 4. Busca em receitas_campanha (Doadores)
-    if (!termo_trim.is_empty()) && resultados.len() < limite {
+    if resultados.len() < limite {
         let rem_limite = limite - resultados.len();
-        let like_query = format!("%{}%", termo_trim);
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT doador_cpf_cnpj, doador_nome
-             FROM receitas_campanha
-             WHERE doador_nome LIKE ?1 OR doador_cpf_cnpj LIKE ?1
-             LIMIT ?2",
-        )?;
+        if !digits.is_empty() && digits.len() >= 8 {
+            // Busca exata/indexada por CPF ou CNPJ de doador
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT DISTINCT doador_cpf_cnpj, doador_nome
+                 FROM receitas_campanha
+                 WHERE doador_cpf_cnpj = ?1
+                 LIMIT ?2",
+            ) {
+                if let Ok(rows) = stmt.query_map(storage::rusqlite::params![termo_trim, rem_limite], |row| {
+                    let doc: String = row.get(0)?;
+                    let nome: String = row.get(1)?;
 
-        let rows = stmt.query_map(storage::rusqlite::params![like_query, rem_limite], |row| {
-            let doc: String = row.get(0)?;
-            let nome: String = row.get(1)?;
+                    Ok(ItemBuscaUnificada::novo(
+                        "DOADOR",
+                        None,
+                        &doc,
+                        &nome,
+                        Some("Doador eleitoral".to_string()),
+                    ).com_documento(&doc))
+                }) {
+                    for r in rows.flatten() {
+                        if !resultados.iter().any(|existing| existing.identificador == r.identificador && existing.titulo == r.titulo) {
+                            resultados.push(r);
+                        }
+                    }
+                }
+            }
+        } else if termo_trim.len() >= 4 && termo_trim.chars().any(|c| c.is_alphabetic()) {
+            // Busca textual por nome do doador para termos com tamanho representativo (evita lock de 6s em termos curtos)
+            let rem_limite = limite - resultados.len();
+            let like_query = format!("%{}%", termo_trim);
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT DISTINCT doador_cpf_cnpj, doador_nome
+                 FROM receitas_campanha
+                 WHERE doador_nome LIKE ?1
+                 LIMIT ?2",
+            ) {
+                if let Ok(rows) = stmt.query_map(storage::rusqlite::params![like_query, rem_limite], |row| {
+                    let doc: String = row.get(0)?;
+                    let nome: String = row.get(1)?;
 
-            Ok(ItemBuscaUnificada::novo(
-                "DOADOR",
-                None,
-                &doc,
-                &nome,
-                Some("Doador eleitoral".to_string()),
-            ).com_documento(&doc))
-        })?;
-
-        for r in rows.flatten() {
-            if !resultados.iter().any(|existing| existing.identificador == r.identificador && existing.titulo == r.titulo) {
-                resultados.push(r);
+                    Ok(ItemBuscaUnificada::novo(
+                        "DOADOR",
+                        None,
+                        &doc,
+                        &nome,
+                        Some("Doador eleitoral".to_string()),
+                    ).com_documento(&doc))
+                }) {
+                    for r in rows.flatten() {
+                        if !resultados.iter().any(|existing| existing.identificador == r.identificador && existing.titulo == r.titulo) {
+                            resultados.push(r);
+                        }
+                    }
+                }
             }
         }
     }

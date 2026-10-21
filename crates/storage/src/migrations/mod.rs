@@ -637,6 +637,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version:27, name:"tabela_arquivos_ingeridos_e_hashes", sql:include_str!("027_arquivos_ingeridos.sql") },
     Migration { version:28, name:"qualidade_e_retificacoes", sql:include_str!("028_qualidade_e_retificacoes.sql") },
     Migration { version:29, name:"projecao_incremental", sql:include_str!("029_projecao_incremental.sql") },
+    Migration { version:30, name:"restaurar_indices_essenciais", sql:include_str!("030_restaurar_indices_essenciais.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1470,5 +1471,29 @@ mod quality_upgrade_regressions {
                 |r| r.get::<_, bool>(0)
             )
             .unwrap());
+    }
+
+    #[test]
+    fn test_migrations_indices_essenciais() -> Result<()> {
+        let pool = crate::DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        let has_index = |conn: &rusqlite::Connection, idx_name: &str| -> bool {
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                [idx_name],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+                > 0
+        };
+
+        assert!(has_index(&conn, "idx_bens_candidatura"));
+        assert!(has_index(&conn, "idx_receitas_candidatura"));
+        assert!(has_index(&conn, "idx_despesas_candidatura"));
+        assert!(has_index(&conn, "idx_candidaturas_eleicao"));
+
+        Ok(())
     }
 }

@@ -47,13 +47,16 @@ pub fn auditar_fornecedores_fantasmas(
 ) -> Vec<AlertaFornecedorFantasma> {
     let mut alertas = Vec::new();
 
+    let mut mapa_receita: std::collections::HashMap<String, &FornecedorReceita> =
+        std::collections::HashMap::with_capacity(cadastro_receita.len());
+    for f in cadastro_receita {
+        mapa_receita.insert(limpar_cnpj(&f.cnpj), f);
+    }
+
     for pag in pagamentos {
         let pag_cnpj_clean = limpar_cnpj(&pag.fornecedor_cnpj);
 
-        if let Some(forn) = cadastro_receita
-            .iter()
-            .find(|f| limpar_cnpj(&f.cnpj) == pag_cnpj_clean)
-        {
+        if let Some(&forn) = mapa_receita.get(&pag_cnpj_clean) {
             let situacao = forn.situacao_cadastral.trim().to_uppercase();
 
             // 1. Situação cadastral irregular na Receita Federal

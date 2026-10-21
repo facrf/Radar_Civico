@@ -1059,6 +1059,133 @@ fn normalizar_texto_sql(campo: &str) -> String {
     sql
 }
 
+#[derive(Clone)]
+struct FiltrosPoliticosCache {
+    partidos: Vec<String>,
+    ufs: Vec<String>,
+    anos: Vec<i32>,
+    cargos: Vec<String>,
+}
+
+static FILTROS_POLITICOS_CACHE: std::sync::Mutex<
+    Option<(std::time::Instant, FiltrosPoliticosCache)>,
+> = std::sync::Mutex::new(None);
+
+pub fn invalidar_cache_filtros_politicos() {
+    if let Ok(mut lock) = FILTROS_POLITICOS_CACHE.lock() {
+        *lock = None;
+    }
+}
+
+fn obter_filtros_globais(conn: &storage::rusqlite::Connection) -> FiltrosPoliticosCache {
+    if let Ok(lock) = FILTROS_POLITICOS_CACHE.lock() {
+        if let Some((instant, ref dados)) = *lock {
+            if instant.elapsed() < std::time::Duration::from_secs(300) {
+                return dados.clone();
+            }
+        }
+    }
+
+    let mut partidos = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT sigla_partido FROM candidaturas WHERE sigla_partido IS NOT NULL AND sigla_partido != '' ORDER BY sigla_partido ASC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for p in rows.flatten() {
+                partidos.push(p);
+            }
+        }
+    }
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT orgao FROM cargos_autoridades WHERE orgao IS NOT NULL AND orgao != '' ORDER BY orgao ASC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for o in rows.flatten() {
+                if !partidos.contains(&o) {
+                    partidos.push(o);
+                }
+            }
+        }
+    }
+
+    let mut ufs = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT uf FROM candidaturas WHERE uf IS NOT NULL AND uf != '' AND length(uf) = 2 ORDER BY uf ASC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for u in rows.flatten() {
+                ufs.push(u);
+            }
+        }
+    }
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT uf FROM cargos_autoridades WHERE uf IS NOT NULL AND uf != '' AND length(uf) = 2 ORDER BY uf ASC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for u in rows.flatten() {
+                if !ufs.contains(&u) {
+                    ufs.push(u);
+                }
+            }
+        }
+    }
+    ufs.sort();
+
+    let mut anos = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT ano_eleicao FROM candidaturas WHERE ano_eleicao IS NOT NULL AND ano_eleicao > 1900 ORDER BY ano_eleicao DESC") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, i32>(0)) {
+            for a in rows.flatten() {
+                anos.push(a);
+            }
+        }
+    }
+    if anos.is_empty() {
+        anos = vec![2024, 2022, 2020, 2018];
+    }
+
+    let mut cargos = vec![
+        "MINISTRO DO STF".to_string(),
+        "MINISTRO DO TCU".to_string(),
+        "PROCURADOR-GERAL DA REPÚBLICA".to_string(),
+        "EMBAIXADOR".to_string(),
+        "SECRETÁRIO DE ESTADO".to_string(),
+        "PRESIDENTE".to_string(),
+        "VICE-PRESIDENTE".to_string(),
+        "GOVERNADOR".to_string(),
+        "VICE-GOVERNADOR".to_string(),
+        "SENADOR".to_string(),
+        "DEPUTADO FEDERAL".to_string(),
+        "DEPUTADO ESTADUAL".to_string(),
+        "DEPUTADO DISTRITAL".to_string(),
+        "PREFEITO".to_string(),
+        "VICE-PREFEITO".to_string(),
+        "VEREADOR".to_string(),
+    ];
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT cargo FROM candidaturas WHERE cargo IS NOT NULL AND cargo != '' AND cargo NOT IN ('1','2','3','4','5','6','7','8','11','12','13','CARGO','INDEFINIDO') ORDER BY cargo ASC") {
+        if let Ok(cargos_iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for c in cargos_iter.flatten() {
+                if !cargos.contains(&c) {
+                    cargos.push(c);
+                }
+            }
+        }
+    }
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT cargo FROM cargos_autoridades WHERE cargo IS NOT NULL AND cargo != '' ORDER BY cargo ASC") {
+        if let Ok(cargos_iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for c in cargos_iter.flatten() {
+                if !cargos.contains(&c) {
+                    cargos.push(c);
+                }
+            }
+        }
+    }
+
+    let cache_obj = FiltrosPoliticosCache {
+        partidos,
+        ufs,
+        anos,
+        cargos,
+    };
+
+    if let Ok(mut lock) = FILTROS_POLITICOS_CACHE.lock() {
+        *lock = Some((std::time::Instant::now(), cache_obj.clone()));
+    }
+
+    cache_obj
+}
+
 /// GET /api/politicos e /api/v1/politicos
 pub async fn listar_politicos_handler(
     State(pool): State<DbPool>,
@@ -1080,43 +1207,12 @@ pub async fn listar_politicos_handler(
     let filtro_cargo = params.cargo.as_deref().unwrap_or("").trim();
     let apenas_gastos = params.apenas_com_gastos.unwrap_or(false);
 
-    // Listas distintas para preenchimento dos filtros no frontend
-    let mut partidos_disponiveis = Vec::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT sigla_partido FROM candidaturas WHERE sigla_partido IS NOT NULL AND sigla_partido != '' ORDER BY sigla_partido ASC") {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for p in rows.flatten() {
-                partidos_disponiveis.push(p);
-            }
-        }
-    }
-    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT orgao FROM cargos_autoridades WHERE orgao IS NOT NULL AND orgao != '' ORDER BY orgao ASC") {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for o in rows.flatten() {
-                if !partidos_disponiveis.contains(&o) {
-                    partidos_disponiveis.push(o);
-                }
-            }
-        }
-    }
-
-    let mut ufs_disponiveis = Vec::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT uf FROM candidaturas WHERE uf IS NOT NULL AND uf != '' AND length(uf) = 2 ORDER BY uf ASC") {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for u in rows.flatten() {
-                ufs_disponiveis.push(u);
-            }
-        }
-    }
-    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT uf FROM cargos_autoridades WHERE uf IS NOT NULL AND uf != '' AND length(uf) = 2 ORDER BY uf ASC") {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for u in rows.flatten() {
-                if !ufs_disponiveis.contains(&u) {
-                    ufs_disponiveis.push(u);
-                }
-            }
-        }
-    }
-    ufs_disponiveis.sort();
+    // Listas distintas para preenchimento dos filtros no frontend (com cache em memória)
+    let filtros_globais = obter_filtros_globais(&conn);
+    let partidos_disponiveis = filtros_globais.partidos;
+    let ufs_disponiveis = filtros_globais.ufs;
+    let anos_disponiveis = filtros_globais.anos;
+    let cargos_disponiveis = filtros_globais.cargos;
 
     let mut municipios_disponiveis = Vec::new();
     if !filtro_uf.is_empty() {
@@ -1156,55 +1252,6 @@ pub async fn listar_politicos_handler(
             }
         }
         municipios_disponiveis.sort();
-    }
-
-    let mut anos_disponiveis = Vec::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT ano_eleicao FROM candidaturas WHERE ano_eleicao IS NOT NULL AND ano_eleicao > 1900 ORDER BY ano_eleicao DESC") {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, i32>(0)) {
-            for a in rows.flatten() {
-                anos_disponiveis.push(a);
-            }
-        }
-    }
-    if anos_disponiveis.is_empty() {
-        anos_disponiveis = vec![2024, 2022, 2020, 2018];
-    }
-
-    let mut cargos_disponiveis = vec![
-        "MINISTRO DO STF".to_string(),
-        "MINISTRO DO TCU".to_string(),
-        "PROCURADOR-GERAL DA REPÚBLICA".to_string(),
-        "EMBAIXADOR".to_string(),
-        "SECRETÁRIO DE ESTADO".to_string(),
-        "PRESIDENTE".to_string(),
-        "VICE-PRESIDENTE".to_string(),
-        "GOVERNADOR".to_string(),
-        "VICE-GOVERNADOR".to_string(),
-        "SENADOR".to_string(),
-        "DEPUTADO FEDERAL".to_string(),
-        "DEPUTADO ESTADUAL".to_string(),
-        "DEPUTADO DISTRITAL".to_string(),
-        "PREFEITO".to_string(),
-        "VICE-PREFEITO".to_string(),
-        "VEREADOR".to_string(),
-    ];
-    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT cargo FROM candidaturas WHERE cargo IS NOT NULL AND cargo != '' AND cargo NOT IN ('1','2','3','4','5','6','7','8','11','12','13','CARGO','INDEFINIDO') ORDER BY cargo ASC") {
-        if let Ok(cargos_iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for c in cargos_iter.flatten() {
-                if !cargos_disponiveis.contains(&c) {
-                    cargos_disponiveis.push(c);
-                }
-            }
-        }
-    }
-    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT cargo FROM cargos_autoridades WHERE cargo IS NOT NULL AND cargo != '' ORDER BY cargo ASC") {
-        if let Ok(cargos_iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for c in cargos_iter.flatten() {
-                if !cargos_disponiveis.contains(&c) {
-                    cargos_disponiveis.push(c);
-                }
-            }
-        }
     }
 
     // Construção dinâmica da query
