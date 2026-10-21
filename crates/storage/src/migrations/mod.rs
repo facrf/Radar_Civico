@@ -638,6 +638,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version:28, name:"qualidade_e_retificacoes", sql:include_str!("028_qualidade_e_retificacoes.sql") },
     Migration { version:29, name:"projecao_incremental", sql:include_str!("029_projecao_incremental.sql") },
     Migration { version:30, name:"restaurar_indices_essenciais", sql:include_str!("030_restaurar_indices_essenciais.sql") },
+    Migration { version:31, name:"deduplicar_candidaturas", sql:include_str!("031_deduplicar_candidaturas.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1493,6 +1494,59 @@ mod quality_upgrade_regressions {
         assert!(has_index(&conn, "idx_receitas_candidatura"));
         assert!(has_index(&conn, "idx_despesas_candidatura"));
         assert!(has_index(&conn, "idx_candidaturas_eleicao"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_deduplicar_candidaturas() -> Result<()> {
+        let pool = crate::DbPool::open_in_memory()?;
+        let conn = pool.get()?;
+
+        // Aplica até a versão 30 manualmente
+        for migration in MIGRATIONS.iter().take(30) {
+            conn.execute_batch(migration.sql)?;
+        }
+
+        // Insere dados de teste com candidaturas canônicas e fantasmas
+        conn.execute_batch("
+            INSERT INTO politicos (id, nome_completo, nome_urna) VALUES (100, 'TESTE DEDUP', 'DEDUP');
+            INSERT INTO candidaturas (id, politico_id, ano_eleicao, cargo, sigla_partido, uf)
+                VALUES (1, 100, 2024, 'VEREADOR', 'PART1', 'SP');
+            INSERT INTO candidaturas (id, politico_id, ano_eleicao, cargo, sigla_partido, uf)
+                VALUES (2, 100, 2024, '13', 'PART1', 'SP');
+            INSERT INTO candidaturas (id, politico_id, ano_eleicao, cargo, sigla_partido, uf)
+                VALUES (3, 100, 2024, 'CARGO', 'PARTIDO', 'SP');
+
+            INSERT INTO bens_candidato (id, candidatura_id, tipo_bem, descricao, valor_declarado)
+                VALUES (10, 2, 'VEICULO', 'Carro', 50000.0);
+            INSERT INTO receitas_campanha (id, candidatura_id, doador_cpf_cnpj, doador_nome, valor)
+                VALUES (20, 2, '11122233344', 'DOADOR TESTE', 1000.0);
+            INSERT INTO despesas_campanha (id, candidatura_id, fornecedor_cpf_cnpj, fornecedor_nome, valor)
+                VALUES (30, 3, '55566677788', 'FORNECEDOR TESTE', 2000.0);
+        ")?;
+
+        // Executa a migração 31
+        let m31 = MIGRATIONS.iter().find(|m| m.version == 31).unwrap();
+        conn.execute_batch(m31.sql)?;
+
+        // Verifica que bens, receitas e despesas foram repontados para a candidatura canônica (id 1)
+        let c_bens: i64 = conn.query_row("SELECT candidatura_id FROM bens_candidato WHERE id = 10", [], |r| r.get(0))?;
+        let c_receitas: i64 = conn.query_row("SELECT candidatura_id FROM receitas_campanha WHERE id = 20", [], |r| r.get(0))?;
+        let c_despesas: i64 = conn.query_row("SELECT candidatura_id FROM despesas_campanha WHERE id = 30", [], |r| r.get(0))?;
+
+        assert_eq!(c_bens, 1);
+        assert_eq!(c_receitas, 1);
+        assert_eq!(c_despesas, 1);
+
+        // Verifica que as candidaturas fantasmas 2 e 3 foram excluídas e a 1 foi mantida
+        let count_13: i64 = conn.query_row("SELECT count(*) FROM candidaturas WHERE id = 2", [], |r| r.get(0))?;
+        let count_cargo: i64 = conn.query_row("SELECT count(*) FROM candidaturas WHERE id = 3", [], |r| r.get(0))?;
+        let count_canonica: i64 = conn.query_row("SELECT count(*) FROM candidaturas WHERE id = 1", [], |r| r.get(0))?;
+
+        assert_eq!(count_13, 0);
+        assert_eq!(count_cargo, 0);
+        assert_eq!(count_canonica, 1);
 
         Ok(())
     }

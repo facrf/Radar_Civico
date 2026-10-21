@@ -143,3 +143,9 @@ Validação local em 13/10/2026 (America/Sao_Paulo):
 
 ### 5. Complexidade Linear em Fornecedores Fantasmas
 - Em `crates/auditor/src/fornecedores_fantasmas.rs`, o cruzamento de pagamentos contra o cadastro da Receita Federal foi otimizado com `HashMap`, reduzindo a complexidade de $O(N \times M)$ para $O(N + M)$.
+
+### 6. Migração 31: Saneamento e Deduplicação de Candidaturas
+- Remoção de ~685.700 registros duplicados/fantasmas na tabela `candidaturas` gerados por código numérico de cargo TSE (`11`, `12`, `13`) e cabeçalho de CSV (`CARGO`), cujas versões canônicas (`PREFEITO`, `VICE-PREFEITO`, `VEREADOR`) já existem para o mesmo político e ano eleitoral.
+- Repontamento automático e seguro de 16 registros de bens e 4 registros de despesas para as candidaturas canônicas antes da exclusão.
+- Normalização preventiva em `crates/ingestion/src/tse_streaming.rs` utilizando `normalizar_cargo` para garantir que novas ingestões de streaming não reintroduzam códigos numéricos ou cargos indefinidos.
+- Redução de ~58% no volume da tabela `candidaturas` (de 1,18M para ~493k linhas), acelerando índices e agregações eleitorais.

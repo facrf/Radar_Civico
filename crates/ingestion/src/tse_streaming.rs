@@ -96,11 +96,14 @@ pub async fn processar_stream_consulta_cand<R: AsyncRead + Unpin + Send>(
             .trim()
             .to_string();
 
-        let cargo = col_cargo
+        let raw_cargo = col_cargo
             .and_then(|idx| record.get(idx))
             .unwrap_or("")
-            .trim()
-            .to_string();
+            .trim();
+        let cargo = crate::tse_ckan::normalizar_cargo(raw_cargo);
+        if cargo == "INDEFINIDO" {
+            continue;
+        }
 
         let numero_urna = col_nr
             .and_then(|idx| record.get(idx))
