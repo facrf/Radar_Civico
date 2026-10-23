@@ -266,23 +266,87 @@ pub async fn ingerir_receitas_tse_em_lotes<R: AsyncRead + Unpin + Send>(
     candidatura_id: Option<i64>,
     batch_size: usize,
 ) -> Result<usize> {
-    let receitas = processar_stream_receitas(reader).await?;
+    let mut csv_reader = AsyncReaderBuilder::new()
+        .delimiter(b';')
+        .has_headers(true)
+        .flexible(true)
+        .create_reader(reader);
+
+    let headers = csv_reader
+        .headers()
+        .await
+        .map_err(IngestionError::Csv)?
+        .clone();
+
+    let col_doc = headers
+        .iter()
+        .position(|h| h.trim() == "NR_CPF_CNPJ_DOADOR" || h.trim() == "NR_CPF_DOADOR");
+    let col_nome = headers.iter().position(|h| h.trim() == "NM_DOADOR");
+    let col_valor = headers.iter().position(|h| h.trim() == "VR_RECEITA");
+    let col_data = headers.iter().position(|h| h.trim() == "DT_RECEITA");
+    let col_origem = headers.iter().position(|h| h.trim() == "DS_ORIGEM_RECEITA");
+    let col_desc = headers.iter().position(|h| h.trim() == "DS_RECEITA");
+
+    let effective_batch = batch_size.clamp(1, 50_000);
+    let mut batch: Vec<NovaReceita> = Vec::with_capacity(effective_batch);
     let mut total_inserido = 0;
+    let mut records_stream = csv_reader.into_records();
 
-    for chunk in receitas.chunks(batch_size) {
-        let batch: Vec<NovaReceita> = chunk
-            .iter()
-            .map(|r| NovaReceita {
-                candidatura_id,
-                doador_cpf_cnpj: r.doador_cpf_cnpj.clone(),
-                doador_nome: r.doador_nome.clone(),
-                valor: r.valor,
-                data_receita: r.data_receita.clone(),
-                tipo_origem: r.tipo_origem.clone(),
-                descricao: r.descricao.clone(),
-            })
-            .collect();
+    while let Some(record_res) = records_stream.next().await {
+        let record = record_res.map_err(IngestionError::Csv)?;
 
+        let doador_nome = col_nome
+            .and_then(|idx| record.get(idx))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let doador_cpf_cnpj = col_doc
+            .and_then(|idx| record.get(idx))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let valor_str = col_valor.and_then(|idx| record.get(idx)).unwrap_or("");
+        let valor = crate::validation::money_field(
+            Some(valor_str),
+            record.position().map(|p| p.line()).unwrap_or(0),
+            "valor",
+        )?;
+
+        let data_receita = col_data
+            .and_then(|idx| record.get(idx))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let tipo_origem = col_origem
+            .and_then(|idx| record.get(idx))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let descricao = col_desc
+            .and_then(|idx| record.get(idx))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        batch.push(NovaReceita {
+            candidatura_id,
+            doador_cpf_cnpj,
+            doador_nome,
+            valor,
+            data_receita,
+            tipo_origem,
+            descricao,
+        });
+
+        if batch.len() >= effective_batch {
+            let inseridos = batch_insert_receitas(conn, &batch)?;
+            total_inserido += inseridos;
+            batch.clear();
+        }
+    }
+
+    if !batch.is_empty() {
         let inseridos = batch_insert_receitas(conn, &batch)?;
         total_inserido += inseridos;
     }
