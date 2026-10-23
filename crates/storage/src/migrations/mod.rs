@@ -639,6 +639,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version:29, name:"projecao_incremental", sql:include_str!("029_projecao_incremental.sql") },
     Migration { version:30, name:"restaurar_indices_essenciais", sql:include_str!("030_restaurar_indices_essenciais.sql") },
     Migration { version:31, name:"deduplicar_candidaturas", sql:include_str!("031_deduplicar_candidaturas.sql") },
+    Migration { version:32, name:"indice_doador_situacao_cadastral", sql:include_str!("032_indice_doador_situacao_cadastral.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1547,6 +1548,36 @@ mod quality_upgrade_regressions {
         assert_eq!(count_13, 0);
         assert_eq!(count_cargo, 0);
         assert_eq!(count_canonica, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_indice_doador_situacao_cadastral() -> Result<()> {
+        let pool = crate::DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        // Verifica que o índice idx_receitas_campanha_doador_nome existe
+        let has_index: bool = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_receitas_campanha_doador_nome'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+        assert!(has_index);
+
+        // Verifica que a coluna situacao_cadastral existe em empresas_qsa
+        conn.execute(
+            "INSERT INTO empresas_qsa (cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, situacao_cadastral)
+             VALUES ('88889999', '0001', '10', 'EMPRESA INAPTA LTDA', '***.111.222-**', 'SOCIO', 'INAPTA')",
+            [],
+        )?;
+        let sit: String = conn.query_row(
+            "SELECT situacao_cadastral FROM empresas_qsa WHERE cnpj_basico = '88889999'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(sit, "INAPTA");
 
         Ok(())
     }
