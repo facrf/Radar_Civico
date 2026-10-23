@@ -154,6 +154,38 @@
 		});
 	}
 
+	let ultimoRaizId: string | null = null;
+
+	function atualizarElementos() {
+		if (!cyInstance || !dados) return;
+		const elements = [
+			...dados.cytoscape.nodes.map((n) => ({
+				group: 'nodes' as const,
+				data: {
+					...n.data,
+					isRoot: n.data.id === dados.raiz_id
+				}
+			})),
+			...dados.cytoscape.edges.map((e) => ({
+				group: 'edges' as const,
+				data: e.data
+			}))
+		];
+		cyInstance.elements().remove();
+		cyInstance.add(elements);
+		cyInstance.layout({
+			name: 'cose',
+			animate: false,
+			nodeDimensionsIncludeLabels: true,
+			padding: 30
+		}).run();
+	}
+
+	$: if (cyInstance && dados && dados.raiz_id !== ultimoRaizId) {
+		ultimoRaizId = dados.raiz_id;
+		atualizarElementos();
+	}
+
 	function resetarZoom() {
 		if (cyInstance) cyInstance.fit();
 	}
