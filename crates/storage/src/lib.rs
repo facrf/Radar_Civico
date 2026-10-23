@@ -30,7 +30,7 @@ pub use integrity::{
     listar_arquivos_ingeridos, registrar_arquivo_ingerido, verificar_retificacao,
     NovoArquivoIngerido, RegistroArquivoIngerido,
 };
-pub use quality::{avaliacao_politico, AvaliacaoPolitico};
+pub use quality::{avaliacao_politico, avaliacao_politicos_lote, AvaliacaoPolitico};
 
 pub mod ceap;
 pub use ceap::{identificador_ceap, upsert_despesa_parlamentar};
