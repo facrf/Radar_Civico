@@ -13,6 +13,23 @@ pub fn avaliar(conn: &Connection, id: i64) -> Result<AvaliacaoPolitico> {
     Ok(evaluation)
 }
 
+pub fn avaliar_lote(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<std::collections::HashMap<i64, AvaliacaoPolitico>> {
+    let mut evaluations = storage::avaliacao_politicos_lote(conn, ids)?;
+    for evaluation in evaluations.values_mut() {
+        if evaluation.situacao == "ANALISADO_BASE_LOCAL" {
+            let [critical, high, medium, low] = evaluation.alertas_por_severidade;
+            let score = auditor::calcular_score_integridade(critical, high, medium, low, &[]);
+            evaluation.score = Some(score.score);
+            evaluation.nivel_risco = score.nivel_risco;
+            evaluation.cor_hex = score.cor_hex;
+        }
+    }
+    Ok(evaluations)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

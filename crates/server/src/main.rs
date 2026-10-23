@@ -89,10 +89,11 @@ async fn main() -> Result<()> {
     if !eh_auditoria {
         let graph_pool = pool.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            let mut delay = std::time::Duration::from_secs(2);
+            let mut previous_relations: Option<usize> = None;
             let mut announced = false;
             loop {
-                interval.tick().await;
+                tokio::time::sleep(delay).await;
                 match graph_pool
                     .run_blocking(|conn| server::projection::refresh_if_needed(conn))
                     .await
@@ -102,9 +103,16 @@ async fn main() -> Result<()> {
                             info!("Rede de relacionamentos pronta: {relations} relações");
                             announced = true;
                         }
+                        if previous_relations == Some(relations) {
+                            delay = (delay * 2).min(std::time::Duration::from_secs(20));
+                        } else {
+                            previous_relations = Some(relations);
+                            delay = std::time::Duration::from_secs(2);
+                        }
                     }
                     Err(error) => {
-                        tracing::error!("Projeção pendente; nova tentativa automática: {error}")
+                        tracing::error!("Projeção pendente; nova tentativa automática: {error}");
+                        delay = std::time::Duration::from_secs(2);
                     }
                 }
             }

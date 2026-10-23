@@ -1047,6 +1047,45 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         }
     }
 
+    // 11. Sincroniza fornecedores hub (concentração de repasses e centralidade de intermediação)
+    if parametros.concentracao_fornecedor_percentual > 0.0 {
+        if let Ok(grafo) = graph::GrafoSincronizado::carregar_do_sqlite(conn) {
+            if let Ok(alertas_hub) = grafo.detectar_fornecedores_hub_com_limite(parametros.concentracao_fornecedor_percentual) {
+                for a in alertas_hub {
+                    let detalhes = serde_json::json!({
+                        "fornecedor_id": a.fornecedor_id,
+                        "fornecedor_uuid": a.fornecedor_uuid,
+                        "total_faturamento": a.total_faturamento,
+                        "maior_coligacao_grupo": a.maior_coligacao_grupo,
+                        "faturamento_grupo": a.faturamento_grupo,
+                        "percentual_concentracao": a.percentual_concentracao,
+                        "betweenness_score": a.betweenness_score,
+                        "quantidade_agentes_conectados": a.quantidade_agentes_conectados,
+                        "regra": "Fornecedor canaliza recursos expressivos com alta dependência e centralidade em um único grupo político"
+                    });
+
+                    registrar_alerta(
+                        conn,
+                        &NovoAlerta {
+                            tipo: "FORNECEDOR_HUB".to_string(),
+                            severidade: "ALTA".to_string(),
+                            titulo: format!("Fornecedor Hub Concentrado ({:.0}%) - {}", a.percentual_concentracao, a.fornecedor_nome),
+                            descricao: a.motivo,
+                            alvo_nome: a.fornecedor_nome,
+                            alvo_documento: None,
+                            municipio: None,
+                            uf: None,
+                            ano: None,
+                            valor_envolvido: Some(a.total_faturamento),
+                            fonte_dado: "GRAFO_RELACIONAMENTOS".to_string(),
+                            detalhes_json: Some(detalhes.to_string()),
+                        },
+                    )?;
+                }
+            }
+        }
+    }
+
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM alertas_auditoria WHERE id > ?1",
         [ids_antes],

@@ -1065,6 +1065,7 @@ struct FiltrosPoliticosCache {
     ufs: Vec<String>,
     anos: Vec<i32>,
     cargos: Vec<String>,
+    municipios_padrao: Vec<String>,
 }
 
 static FILTROS_POLITICOS_CACHE: std::sync::Mutex<
@@ -1172,11 +1173,31 @@ fn obter_filtros_globais(conn: &storage::rusqlite::Connection) -> FiltrosPolitic
         }
     }
 
+    let mut municipios_padrao = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT municipio FROM candidaturas WHERE municipio IS NOT NULL AND municipio != '' ORDER BY municipio ASC LIMIT 300") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for m in rows.flatten() {
+                municipios_padrao.push(m);
+            }
+        }
+    }
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT nome FROM municipios_ibge ORDER BY is_capital DESC, nome ASC LIMIT 500") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for m in rows.flatten() {
+                if !municipios_padrao.contains(&m) {
+                    municipios_padrao.push(m);
+                }
+            }
+        }
+    }
+    municipios_padrao.sort();
+
     let cache_obj = FiltrosPoliticosCache {
         partidos,
         ufs,
         anos,
         cargos,
+        municipios_padrao,
     };
 
     if let Ok(mut lock) = FILTROS_POLITICOS_CACHE.lock() {
@@ -1233,25 +1254,8 @@ pub async fn listar_politicos_handler(
             }
         }
         municipios_disponiveis.sort();
-    }
-    if municipios_disponiveis.is_empty() {
-        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT municipio FROM candidaturas WHERE municipio IS NOT NULL AND municipio != '' ORDER BY municipio ASC LIMIT 300") {
-            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-                for m in rows.flatten() {
-                    municipios_disponiveis.push(m);
-                }
-            }
-        }
-        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT nome FROM municipios_ibge ORDER BY is_capital DESC, nome ASC LIMIT 500") {
-            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-                for m in rows.flatten() {
-                    if !municipios_disponiveis.contains(&m) {
-                        municipios_disponiveis.push(m);
-                    }
-                }
-            }
-        }
-        municipios_disponiveis.sort();
+    } else {
+        municipios_disponiveis = filtros_globais.municipios_padrao;
     }
 
     // Construção dinâmica da query
@@ -1510,28 +1514,60 @@ pub async fn listar_politicos_handler(
         .filter_map(|r| r.ok())
         .collect::<Vec<_>>();
 
-    // Preenche despesas CEAP de forma indexada e instantânea para os itens paginados
-    for pol in &mut politicos {
-        let ceap_res: Option<(f64, i64)> = conn
-            .query_row(
-                "SELECT COALESCE((SUM(valor_liquido_centavos)/100.0), 0.0), COUNT(id)
-                  FROM despesas_parlamentares
-                  WHERE parlamentar_nome = ?1 OR parlamentar_nome = ?2",
-                [&pol.nome_urna, &pol.nome_completo],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .ok();
+    // Preenche despesas CEAP de forma indexada e em lote para os itens paginados
+    let mut nomes = std::collections::HashSet::new();
+    for pol in &politicos {
+        nomes.insert(pol.nome_urna.clone());
+        nomes.insert(pol.nome_completo.clone());
+    }
 
-        if let Some((tot, qtd)) = ceap_res {
-            pol.total_despesas_ceap = tot;
-            pol.total_itens_ceap = qtd;
-
+    let mut ceap_map = std::collections::HashMap::<String, (f64, i64)>::new();
+    if !nomes.is_empty() {
+        let placeholders = nomes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql_ceap = format!(
+            "SELECT parlamentar_nome, COALESCE((SUM(valor_liquido_centavos)/100.0), 0.0), COUNT(id)
+             FROM despesas_parlamentares
+             WHERE parlamentar_nome IN ({placeholders})
+             GROUP BY parlamentar_nome"
+        );
+        let params_ceap: Vec<&dyn storage::rusqlite::ToSql> = nomes.iter().map(|s| s as &dyn storage::rusqlite::ToSql).collect();
+        if let Ok(mut stmt_ceap) = conn.prepare(&sql_ceap) {
+            if let Ok(rows) = stmt_ceap.query_map(params_ceap.as_slice(), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, i64>(2)?))
+            }) {
+                for r in rows.flatten() {
+                    ceap_map.insert(r.0, (r.1, r.2));
+                }
+            }
         }
-        let evaluation=crate::score::avaliar(&conn,pol.id).map_err(|e|(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?;
-        pol.score_integridade=evaluation.score;
-        pol.nivel_risco=evaluation.nivel_risco.clone();
-        pol.tem_alertas=evaluation.alertas_por_severidade.iter().sum::<usize>()>0;
-        pol.avaliacao_integridade=Some(evaluation);
+    }
+
+    let ids: Vec<i64> = politicos.iter().map(|p| p.id).collect();
+    let mut avaliacoes = crate::score::avaliar_lote(&conn, &ids)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    for pol in &mut politicos {
+        let mut tot = 0.0;
+        let mut qtd = 0;
+        if let Some(&(t, q)) = ceap_map.get(&pol.nome_urna) {
+            tot += t;
+            qtd += q;
+        }
+        if pol.nome_completo != pol.nome_urna {
+            if let Some(&(t, q)) = ceap_map.get(&pol.nome_completo) {
+                tot += t;
+                qtd += q;
+            }
+        }
+        pol.total_despesas_ceap = tot;
+        pol.total_itens_ceap = qtd;
+
+        if let Some(evaluation) = avaliacoes.remove(&pol.id) {
+            pol.score_integridade = evaluation.score;
+            pol.nivel_risco = evaluation.nivel_risco.clone();
+            pol.tem_alertas = evaluation.alertas_por_severidade.iter().sum::<usize>() > 0;
+            pol.avaliacao_integridade = Some(evaluation);
+        }
     }
 
     if apenas_gastos {
