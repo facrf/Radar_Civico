@@ -952,6 +952,69 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                 )?;
             }
         }
+
+        // Sincroniza fornecedores com situação cadastral irregular (inapta/baixada/suspensa)
+        if let Ok(mut stmt_inaptas) = conn.prepare(
+            "SELECT d.id, d.fornecedor_cnpj_cpf, d.fornecedor_nome,
+                    COALESCE(q.situacao_cadastral, 'ATIVA'),
+                    d.data_emissao,
+                    d.valor_liquido,
+                    COALESCE(d.parlamentar_nome, 'PARLAMENTAR')
+             FROM despesas_parlamentares d
+             JOIN empresas_qsa q ON q.cnpj_basico = SUBSTR(REPLACE(REPLACE(REPLACE(d.fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', ''), 1, 8)
+             WHERE d.fornecedor_cnpj_cpf IS NOT NULL
+               AND length(d.fornecedor_cnpj_cpf) >= 14
+               AND UPPER(COALESCE(q.situacao_cadastral, 'ATIVA')) IN ('INAPTA', 'BAIXADA', 'SUSPENSA', 'NULA')
+               AND d.valor_liquido >= 1000.0
+             ORDER BY d.valor_liquido DESC
+             LIMIT 300",
+        ) {
+            if let Ok(alertas_inaptas) = stmt_inaptas.query_map([], |row| {
+                let desp_id: i64 = row.get(0)?;
+                let cnpj: String = row.get(1)?;
+                let nome: String = row.get(2)?;
+                let situacao: String = row.get(3)?;
+                let dt_emissao: String = row.get(4)?;
+                let valor: f64 = row.get(5)?;
+                let parlamentar: String = row.get(6)?;
+                Ok((desp_id, cnpj, nome, situacao, dt_emissao, valor, parlamentar))
+            }) {
+                for r in alertas_inaptas.flatten() {
+                    let (desp_id, cnpj, nome, situacao, dt_emissao, valor, parlamentar) = r;
+                    let detalhes = serde_json::json!({
+                        "despesa_id": desp_id,
+                        "cnpj": cnpj,
+                        "fornecedor": nome,
+                        "situacao_cadastral": situacao,
+                        "data_emissao": dt_emissao,
+                        "valor": valor,
+                        "parlamentar": parlamentar,
+                        "regra": "Pagamento público destinado a pessoa jurídica em situação irregular na Receita Federal"
+                    });
+
+                    let _ = registrar_alerta(
+                        conn,
+                        &NovoAlerta {
+                            tipo: "FORNECEDOR_FANTASMA".to_string(),
+                            severidade: "CRITICA".to_string(),
+                            titulo: format!("Pagamento a Empresa {} - {}", situacao, nome),
+                            descricao: format!(
+                                "Pagamento de R$ {:.2} emitido pelo parlamentar {} em {} para empresa com situação cadastral '{}' na Receita Federal.",
+                                valor, parlamentar, dt_emissao, situacao
+                            ),
+                            alvo_nome: nome,
+                            alvo_documento: Some(cnpj),
+                            municipio: None,
+                            uf: None,
+                            ano: None,
+                            valor_envolvido: Some(valor),
+                            fonte_dado: "CÂMARA/RECEITA_FEDERAL".to_string(),
+                            detalhes_json: Some(detalhes.to_string()),
+                        },
+                    );
+                }
+            }
+        }
     }
 
     // 10. Sincroniza detecção de Possível Parentesco / Nepotismo Cruzado (Sobrenomes Raros em Fornecedores CEAP e Doadores)
