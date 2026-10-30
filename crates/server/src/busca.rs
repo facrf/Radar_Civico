@@ -243,14 +243,14 @@ pub fn executar_busca(pool: &DbPool, termo: &str, limite: usize) -> Result<Vec<I
     if resultados.len() < limite {
         let rem_limite = limite - resultados.len();
         if !digits.is_empty() && digits.len() >= 8 {
-            // Busca exata/indexada por CPF ou CNPJ de doador
+            // Busca exata/indexada por CPF ou CNPJ de doador (aceita formatado ou apenas dígitos)
             if let Ok(mut stmt) = conn.prepare(
                 "SELECT DISTINCT doador_cpf_cnpj, doador_nome
                  FROM receitas_campanha
-                 WHERE doador_cpf_cnpj = ?1
-                 LIMIT ?2",
+                 WHERE doador_cpf_cnpj = ?1 OR doador_cpf_cnpj = ?2
+                 LIMIT ?3",
             ) {
-                if let Ok(rows) = stmt.query_map(storage::rusqlite::params![termo_trim, rem_limite], |row| {
+                if let Ok(rows) = stmt.query_map(storage::rusqlite::params![termo_trim, digits, rem_limite], |row| {
                     let doc: String = row.get(0)?;
                     let nome: String = row.get(1)?;
 

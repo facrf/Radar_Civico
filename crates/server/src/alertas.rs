@@ -645,8 +645,12 @@ pub fn sincronizar_alertas_sistema_com_parametros(
              JOIN candidaturas c ON r.candidatura_id = c.id
              JOIN politicos p ON c.politico_id = p.id
              JOIN beneficios_emergenciais b ON (
-                 b.cpf_mascarado = r.doador_cpf_cnpj
-                 AND UPPER(b.nome_beneficiario) = UPPER(r.doador_nome)
+                 (b.cpf_mascarado = r.doador_cpf_cnpj
+                  OR REPLACE(REPLACE(REPLACE(b.cpf_mascarado, '*', ''), '.', ''), '-', '') = REPLACE(REPLACE(REPLACE(r.doador_cpf_cnpj, '*', ''), '.', ''), '-', '')
+                  OR (LENGTH(REPLACE(REPLACE(REPLACE(r.doador_cpf_cnpj, '*', ''), '.', ''), '-', '')) = 11
+                      AND REPLACE(REPLACE(REPLACE(b.cpf_mascarado, '*', ''), '.', ''), '-', '') = SUBSTR(REPLACE(REPLACE(REPLACE(r.doador_cpf_cnpj, '*', ''), '.', ''), '-', ''), 4, 6))
+                 )
+                 AND UPPER(TRIM(b.nome_beneficiario)) = UPPER(TRIM(r.doador_nome))
              )
              WHERE r.valor >= 1000.0",
         )?;
@@ -1042,9 +1046,9 @@ pub fn sincronizar_alertas_sistema_com_parametros(
 
                     // 1. Sócios de fornecedores CEAP deste parlamentar
                     if let Ok(mut stmt_socios) = conn.prepare(
-                        "SELECT DISTINCT q.socio_nome, q.cnpj, COALESCE(q.uf, ?2)
+                        "SELECT DISTINCT q.socio_nome, dp.fornecedor_cnpj_cpf, COALESCE(dp.uf_emissao, ?2)
                          FROM empresas_qsa q
-                         JOIN despesas_parlamentares dp ON dp.fornecedor_cnpj_cpf = q.cnpj
+                         JOIN despesas_parlamentares dp ON q.cnpj_basico = SUBSTR(REPLACE(REPLACE(REPLACE(dp.fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', ''), 1, 8)
                          WHERE (dp.parlamentar_nome = ?1 OR dp.parlamentar_nome = ?3)
                            AND q.socio_nome IS NOT NULL AND length(q.socio_nome) > 4
                          LIMIT 50",
@@ -1758,6 +1762,78 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_parentesco_socio_fornecedor_ceap_e_doador_incompativel_normalizado() {
+        let pool = DbPool::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        storage::run_migrations(&mut conn).unwrap();
+
+        // 1. Político com sobrenome raro
+        conn.execute(
+            "INSERT INTO politicos (nome_completo, nome_urna) VALUES ('FERNANDO ANASTASIA SOBRINHO', 'FERNANDO ANASTASIA')",
+            [],
+        ).unwrap();
+        let pol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
+             VALUES (?1, 2024, 'DEPUTADO FEDERAL', 'PARTIDO', 'MG')",
+            [pol_id],
+        ).unwrap();
+        let cand_id = conn.last_insert_rowid();
+
+        // 2. Empresa fornecedora contratada pelo deputado via CEAP
+        conn.execute(
+            "INSERT INTO empresas_qsa (cnpj_basico, cnpj_ordem, cnpj_dv, razao_social, socio_cpf_cnpj_mascarado, socio_nome, data_inicio_atividade, capital_social)
+             VALUES ('33445566', '0001', '77', 'CONSULTORIA MINEIRA LTDA', '***.999.888-**', 'MARCIO ANASTASIA', '2020-01-01', 100000.0)",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO despesas_parlamentares (
+                casa_legislativa, parlamentar_nome, fornecedor_nome, fornecedor_cnpj_cpf,
+                data_emissao, categoria_despesa, valor_liquido
+             ) VALUES (
+                'CAMARA', 'FERNANDO ANASTASIA', 'CONSULTORIA MINEIRA LTDA', '33.445.566/0001-77',
+                '2024-03-10', 'CONSULTORIA', 15000.0
+             )",
+            [],
+        ).unwrap();
+
+        // 3. Doador incompatível que tem CPF armazenado como dígitos puros no TSE
+        conn.execute(
+            "INSERT INTO beneficios_emergenciais (cpf_mascarado, nome_beneficiario, municipio, uf, mes_disponibilizacao, parcela, valor)
+             VALUES ('***.444.333-**', 'CARLOS BENEFICIARIO', 'BELO HORIZONTE', 'MG', '202004', '1', 600.0)",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO receitas_campanha (candidatura_id, doador_nome, doador_cpf_cnpj, valor, data_receita)
+             VALUES (?1, 'CARLOS BENEFICIARIO', '12344433300', 3000.0, '2024-09-01')",
+            [cand_id],
+        ).unwrap();
+
+        let params = crate::routes::config::ParametrosAuditoria::default();
+        let novos = sincronizar_alertas_sistema_com_parametros(&conn, &params).unwrap();
+        assert!(novos >= 2);
+
+        let alertas = carregar_alertas(
+            &conn,
+            &AlertasQueryParams {
+                municipio: None,
+                ano: None,
+                severidade: None,
+                tipo: None,
+                limit: Some(100),
+                offset: None,
+            },
+        ).unwrap();
+
+        let tipos: Vec<String> = alertas.alertas.iter().map(|a| a.tipo.clone()).collect();
+        assert!(tipos.contains(&"POSSIVEL_PARENTESCO".to_string()), "Deve detectar parentesco com sócio de fornecedor CEAP");
+        assert!(tipos.contains(&"DOADOR_INCOMPATIVEL".to_string()), "Deve detectar doador com CPF desmascarado/dígitos");
     }
 }
 

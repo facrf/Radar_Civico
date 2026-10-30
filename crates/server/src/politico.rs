@@ -809,9 +809,9 @@ pub fn carregar_dossie(
 
         // 1. Sócios das empresas fornecedoras que receberam CEAP deste parlamentar
         if let Ok(mut stmt_socios) = conn.prepare(
-            "SELECT DISTINCT q.socio_nome, q.cnpj, COALESCE(q.uf, ?2)
+            "SELECT DISTINCT q.socio_nome, dp.fornecedor_cnpj_cpf, COALESCE(dp.uf_emissao, ?2)
              FROM empresas_qsa q
-             JOIN despesas_parlamentares dp ON dp.fornecedor_cnpj_cpf = q.cnpj
+             JOIN despesas_parlamentares dp ON q.cnpj_basico = SUBSTR(REPLACE(REPLACE(REPLACE(dp.fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', ''), 1, 8)
              WHERE (dp.parlamentar_nome = ?1 OR dp.parlamentar_nome = ?3)
                AND q.socio_nome IS NOT NULL AND length(q.socio_nome) > 4
              LIMIT 100",
