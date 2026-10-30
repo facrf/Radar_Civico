@@ -640,6 +640,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version:30, name:"restaurar_indices_essenciais", sql:include_str!("030_restaurar_indices_essenciais.sql") },
     Migration { version:31, name:"deduplicar_candidaturas", sql:include_str!("031_deduplicar_candidaturas.sql") },
     Migration { version:32, name:"indice_doador_situacao_cadastral", sql:include_str!("032_indice_doador_situacao_cadastral.sql") },
+    Migration { version:33, name:"dedup_alertas_chave_origem_completa", sql:include_str!("033_dedup_alertas_chave_origem_completa.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1578,6 +1579,51 @@ mod quality_upgrade_regressions {
             |r| r.get(0),
         )?;
         assert_eq!(sit, "INAPTA");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrations_dedup_alertas_chave_origem_completa() -> Result<()> {
+        let pool = crate::DbPool::open_in_memory()?;
+        let mut conn = pool.get()?;
+        run_migrations(&mut conn)?;
+
+        // Testa inserção de alerta com FORNECEDOR_FANTASMA
+        conn.execute(
+            "INSERT INTO alertas_auditoria (
+                tipo, severidade, titulo, descricao, alvo_nome, fonte_dado, detalhes_json
+             ) VALUES (
+                'FORNECEDOR_FANTASMA', 'CRITICA', 'Fantasma', 'Desc', 'Empresa', 'CEAP',
+                json_object('despesa_id', 9999, 'cnpj', '12345678000199')
+             )",
+            [],
+        )?;
+
+        let chave: Option<String> = conn.query_row(
+            "SELECT chave_origem FROM alertas_auditoria WHERE tipo = 'FORNECEDOR_FANTASMA'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(chave, Some("[9999]".to_string()));
+
+        // Testa inserção de alerta com FORNECEDOR_HUB
+        conn.execute(
+            "INSERT INTO alertas_auditoria (
+                tipo, severidade, titulo, descricao, alvo_nome, fonte_dado, detalhes_json
+             ) VALUES (
+                'FORNECEDOR_HUB', 'ALTA', 'Hub', 'Desc', 'Fornecedor', 'GRAFO',
+                json_object('fornecedor_id', 42, 'percentual', 85)
+             )",
+            [],
+        )?;
+
+        let chave_hub: Option<String> = conn.query_row(
+            "SELECT chave_origem FROM alertas_auditoria WHERE tipo = 'FORNECEDOR_HUB'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(chave_hub, Some("[42]".to_string()));
 
         Ok(())
     }
