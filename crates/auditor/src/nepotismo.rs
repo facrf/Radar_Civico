@@ -11,9 +11,28 @@ const SOBRENOMES_COMUNS_STOPLIST: &[&str] = &[
     "REIS", "BATISTA", "CORREIA", "CORREA", "TAVARES", "MIRANDA",
 ];
 
+fn normalizar_nome_simples(s: &str) -> String {
+    s.to_uppercase()
+        .chars()
+        .map(|c| match c {
+            'Á' | 'À' | 'Ã' | 'Â' | 'Ä' => 'A',
+            'É' | 'È' | 'Ê' | 'Ë' => 'E',
+            'Í' | 'Ì' | 'Î' | 'Ï' => 'I',
+            'Ó' | 'Ò' | 'Õ' | 'Ô' | 'Ö' => 'O',
+            'Ú' | 'Ù' | 'Û' | 'Ü' => 'U',
+            'Ç' => 'C',
+            other => other,
+        })
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Extrai sobrenomes raros e incomuns (mínimo de 5 caracteres, fora da stop-list)
 pub fn extrair_sobrenomes_raros(nome_completo: &str) -> Vec<String> {
-    let limpo = nome_completo.to_uppercase();
+    let limpo = normalizar_nome_simples(nome_completo);
     let tokens: Vec<&str> = limpo
         .split_whitespace()
         .filter(|t| t.len() >= 5)
@@ -60,9 +79,15 @@ pub fn auditar_possivel_parentesco(
         return Vec::new();
     }
 
+    let pol_norm = normalizar_nome_simples(politico_nome);
     let mut alertas = Vec::new();
 
     for alvo in alvos {
+        // Ignora se o alvo for o próprio político (ex.: autodoação / recursos próprios de campanha ou sócio da própria empresa)
+        if normalizar_nome_simples(&alvo.nome) == pol_norm {
+            continue;
+        }
+
         // Exige compatibilidade geográfica da UF (ou BR nacional)
         if !politico_uf.is_empty() && !alvo.uf.is_empty() && politico_uf != "BR" && alvo.uf != "BR" && politico_uf != alvo.uf {
             continue;
@@ -72,16 +97,17 @@ pub fn auditar_possivel_parentesco(
 
         for sob in &sobrenomes_pol {
             if sobrenomes_alvo.contains(sob) {
+                let uf_alerta = if !politico_uf.is_empty() { politico_uf.to_string() } else { alvo.uf.clone() };
                 alertas.push(AlertaPossivelParentesco {
                     politico_nome: politico_nome.to_string(),
                     alvo_nome: alvo.nome.clone(),
                     sobrenome_compartilhado: sob.clone(),
                     tipo_vinculo: alvo.tipo_vinculo.clone(),
                     cnpj_cpf_alvo: alvo.cnpj_cpf.clone(),
-                    uf: if !politico_uf.is_empty() { politico_uf.to_string() } else { alvo.uf.clone() },
+                    uf: uf_alerta.clone(),
                     explicacao: format!(
                         "Coincidência do sobrenome raro '{}' entre o agente público e '{}' ({}) na UF '{}'.",
-                        sob, alvo.nome, alvo.tipo_vinculo, politico_uf
+                        sob, alvo.nome, alvo.tipo_vinculo, uf_alerta
                     ),
                 });
                 break;
@@ -144,5 +170,20 @@ mod tests {
 
         let alertas = auditar_possivel_parentesco("ANTONIO AUGUSTO ANASTASIA", "MG", &alvos);
         assert!(alertas.is_empty(), "Deve ignorar alvos com UF divergente");
+    }
+
+    #[test]
+    fn test_auditar_ignora_autodoacao_ou_proprio_politico() {
+        let alvos = vec![
+            AlvoAuditoriaParentesco {
+                nome: "ANTONIO AUGUSTO ANASTASIA".to_string(), // O próprio político como doador de campanha
+                cnpj_cpf: "11122233344".to_string(),
+                uf: "MG".to_string(),
+                tipo_vinculo: "DOADOR_CAMPANHA".to_string(),
+            },
+        ];
+
+        let alertas = auditar_possivel_parentesco("ANTONIO AUGUSTO ANASTASIA", "MG", &alvos);
+        assert!(alertas.is_empty(), "Não deve emitir alerta de parentesco para o próprio político");
     }
 }

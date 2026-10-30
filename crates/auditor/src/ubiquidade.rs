@@ -72,7 +72,7 @@ pub fn auditar_ubiquidade(despesas: &[DespesaPresencial]) -> Vec<AlertaUbiquidad
                     parlamentar_nome: d1.parlamentar_nome.clone(),
                     distancia_km: (distancia * 100.0).round() / 100.0,
                     tempo_horas: 0.0,
-                    velocidade_kmh: f64::INFINITY,
+                    velocidade_kmh: 0.0,
                     motivo: format!(
                         "Despesas simultâneas emitidas em locais distantes ({:.1} km) no mesmo instante",
                         distancia

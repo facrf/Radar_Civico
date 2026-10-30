@@ -44,6 +44,11 @@ pub fn auditar_evolucao_patrimonial(
         let anterior = &janela[0];
         let recente = &janela[1];
 
+        // Ignora declarações do mesmo ano eleitoral para evitar comparações duplicadas
+        if anterior.ano >= recente.ano {
+            continue;
+        }
+
         let incremento = recente.valor_total - anterior.valor_total;
         if incremento < limite_absoluto {
             continue;

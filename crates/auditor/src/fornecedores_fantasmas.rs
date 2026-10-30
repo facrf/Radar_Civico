@@ -75,10 +75,10 @@ pub fn auditar_fornecedores_fantasmas(
                 continue;
             }
 
-            // 2. Fornecedor recém-criado (< 30 dias de existência)
+            // 2. Fornecedor recém-criado (< 30 dias de existência e não anterior à fundação)
             let dias_existencia = (pag.data_pagamento - forn.data_abertura).num_days();
 
-            if dias_existencia < DIAS_LIMITE_RECEM_CRIADA {
+            if (0..DIAS_LIMITE_RECEM_CRIADA).contains(&dias_existencia) {
                 alertas.push(AlertaFornecedorFantasma {
                     pagamento_id: pag.id,
                     fornecedor_cnpj: forn.cnpj.clone(),
