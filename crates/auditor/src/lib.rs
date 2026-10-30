@@ -3,10 +3,13 @@ pub mod capital_social_desproporcional;
 pub mod cartel_licitacao;
 pub mod combustivel;
 pub mod conflito_oab;
+pub mod doacao_circular;
 pub mod doador_incompativel;
 pub mod error;
 pub mod evolucao_patrimonial;
+pub mod fornecedor_exclusivo;
 pub mod fornecedores_fantasmas;
+pub mod fracionamento;
 pub mod nepotismo;
 pub mod score;
 pub mod triangulacao;
@@ -34,6 +37,9 @@ pub use conflito_oab::{
     auditar_conflito_oab, auditar_lote_conflitos_oab, is_cargo_incompativel, AlertaConflitoOab,
     OcupanteCargo, RegistroOab,
 };
+pub use doacao_circular::{
+    auditar_doacoes_circulares, AlertaDoacaoCircular, VinculoCeapDoacao,
+};
 pub use doador_incompativel::{
     auditar_doador_incompativel, AlertaDoadorIncompativel, BeneficiarioSocialAnalise,
     DoadorCampanhaAnalise, LIMITE_DOACAO_SUSPEITA_BENEFICIARIO,
@@ -43,9 +49,17 @@ pub use evolucao_patrimonial::{
     auditar_evolucao_patrimonial, AlertaEvolucaoPatrimonial, DeclaracaoPatrimonioAno,
     LIMITE_INCREMENTO_ABSOLUTO_PADRAO, LIMITE_VARIACAO_PERCENTUAL_PADRAO,
 };
+pub use fornecedor_exclusivo::{
+    auditar_fornecedores_exclusivos, AlertaFornecedorExclusivo, FornecedorParlamentarFaturamento,
+    PERCENTUAL_DEPENDENCIA_CRITICA, PISO_FATURAMENTO_EXCLUSIVIDADE,
+};
 pub use fornecedores_fantasmas::{
     auditar_fornecedores_fantasmas, AlertaFornecedorFantasma, FornecedorReceita, PagamentoFornecedor,
     TipoIrregularidadeFornecedor, DIAS_LIMITE_RECEM_CRIADA,
+};
+pub use fracionamento::{
+    auditar_fracionamento_despesas, AlertaFracionamentoDespesas, DespesaFracionamentoInput,
+    JANELA_DIAS_FRACIONAMENTO, MIN_DESPESAS_FRACIONAMENTO, PISO_VALOR_FRACIONAMENTO,
 };
 pub use nepotismo::{
     auditar_possivel_parentesco, extrair_sobrenomes_raros, AlertaPossivelParentesco,
