@@ -5,7 +5,7 @@ use storage::{batch_insert_receitas, NovaReceita};
 use tokio::io::AsyncRead;
 
 use crate::error::{IngestionError, Result};
-use crate::normalizer::mascarar_cpf;
+use crate::normalizer::{mascarar_cpf, normalizar_documento_eleitoral};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidatoCsvRecord {
@@ -213,11 +213,11 @@ pub async fn processar_stream_receitas<R: AsyncRead + Unpin + Send>(
             .trim()
             .to_string();
 
-        let doador_cpf_cnpj = col_doc
+        let doador_raw = col_doc
             .and_then(|idx| record.get(idx))
             .unwrap_or("")
-            .trim()
-            .to_string();
+            .trim();
+        let doador_cpf_cnpj = normalizar_documento_eleitoral(doador_raw);
 
         let valor_str = col_valor.and_then(|idx| record.get(idx)).unwrap_or("");
         let valor = crate::validation::money_field(
@@ -301,11 +301,11 @@ pub async fn ingerir_receitas_tse_em_lotes<R: AsyncRead + Unpin + Send>(
             .trim()
             .to_string();
 
-        let doador_cpf_cnpj = col_doc
+        let doador_raw = col_doc
             .and_then(|idx| record.get(idx))
             .unwrap_or("")
-            .trim()
-            .to_string();
+            .trim();
+        let doador_cpf_cnpj = normalizar_documento_eleitoral(doador_raw);
 
         let valor_str = col_valor.and_then(|idx| record.get(idx)).unwrap_or("");
         let valor = crate::validation::money_field(

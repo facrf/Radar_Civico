@@ -11,7 +11,7 @@ use storage::{
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{IngestionError, Result};
-use crate::normalizer::{limpar_cnpj, mascarar_cpf};
+use crate::normalizer::{limpar_cnpj, mascarar_cpf, normalizar_documento_eleitoral};
 
 pub const LOTE_BATCH_SIZE: usize = 25_000;
 
@@ -416,7 +416,7 @@ pub fn processar_csv_tse_reader_com_progresso<R: Read, F: FnMut(usize)>(
                 .and_then(|i| record.get(i))
                 .unwrap_or("00000000000")
                 .trim();
-            let doc = limpar_cnpj(doc_raw);
+            let doc = normalizar_documento_eleitoral(doc_raw);
             let nome = col_nome
                 .and_then(|i| record.get(i))
                 .unwrap_or("DOADOR")

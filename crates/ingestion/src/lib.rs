@@ -48,6 +48,7 @@ pub use despesas_tse::{
 pub use error::{IngestionError, Result};
 pub use normalizer::{
     converter_latin1_para_utf8, extrair_cnpj_raiz, limpar_apenas_digitos, limpar_cnpj, mascarar_cpf,
+    normalizar_documento_eleitoral,
 };
 pub use oab::{CnaItemPayload, OabConsultaResult, OabScraperClient};
 pub use pncp::{PncpClient, PncpConsultaResponse, PncpContratoItem, PncpOrgao};

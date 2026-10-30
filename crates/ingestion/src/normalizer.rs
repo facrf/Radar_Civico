@@ -37,6 +37,27 @@ pub fn mascarar_cpf(cpf: &str) -> String {
     }
 }
 
+/// Normaliza documentos de prestação de contas eleitorais (TSE).
+/// CNPJs são armazenados sem pontuação (14 dígitos).
+/// CPFs (completos, pré-mascarados ou miolos) são padronizados no formato LGPD (***.DDD.DDD-**).
+pub fn normalizar_documento_eleitoral(doc: &str) -> String {
+    let trimmed = doc.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains('*') {
+        return mascarar_cpf(trimmed);
+    }
+    let digits = limpar_apenas_digitos(trimmed);
+    if digits.len() == 14 {
+        digits
+    } else if digits.len() == 11 || digits.len() == 6 {
+        mascarar_cpf(&digits)
+    } else {
+        trimmed.to_string()
+    }
+}
+
 pub fn converter_latin1_para_utf8(bytes: &[u8]) -> String {
     let (cow, _encoding, _had_errors) = WINDOWS_1252.decode(bytes);
     cow.into_owned()
@@ -86,5 +107,26 @@ mod tests {
 
         let utf8_str = converter_latin1_para_utf8(&bytes_iso);
         assert_eq!(utf8_str, "ELEIÇÃO MUNICIPAL");
+    }
+
+    #[test]
+    fn test_normalizar_documento_eleitoral() {
+        assert_eq!(
+            normalizar_documento_eleitoral("12.345.678/0001-90"),
+            "12345678000190"
+        );
+        assert_eq!(
+            normalizar_documento_eleitoral("123.456.789-01"),
+            "***.456.789-**"
+        );
+        assert_eq!(
+            normalizar_documento_eleitoral("***456789**"),
+            "***.456.789-**"
+        );
+        assert_eq!(
+            normalizar_documento_eleitoral("456789"),
+            "***.456.789-**"
+        );
+        assert_eq!(normalizar_documento_eleitoral(""), "");
     }
 }
