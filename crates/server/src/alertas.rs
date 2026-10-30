@@ -1,6 +1,7 @@
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
+use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use storage::rusqlite::{params, Connection, ToSql};
 use storage::DbPool;
@@ -1148,6 +1149,228 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                             detalhes_json: Some(detalhes.to_string()),
                         },
                     )?;
+                }
+            }
+        }
+    }
+
+    // 12. Sincroniza fracionamento de despesas da cota parlamentar (CEAP)
+    {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT id, parlamentar_nome, fornecedor_cnpj_cpf, fornecedor_nome,
+                    data_emissao, valor_liquido, categoria_despesa, numero_documento
+             FROM despesas_parlamentares
+             WHERE valor_liquido > 0 AND length(fornecedor_cnpj_cpf) >= 11 AND data_emissao IS NOT NULL
+             ORDER BY data_emissao ASC LIMIT 10000",
+        ) {
+            let rows = stmt.query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                let parl: String = r.get(1)?;
+                let doc: String = r.get(2)?;
+                let nome: String = r.get(3)?;
+                let dt_str: String = r.get(4)?;
+                let val: f64 = r.get(5)?;
+                let cat: String = r.get(6)?;
+                let num_doc: Option<String> = r.get(7)?;
+
+                let dt = chrono::NaiveDate::parse_from_str(&dt_str, "%Y-%m-%d")
+                    .unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+
+                Ok(auditor::DespesaFracionamentoInput {
+                    despesa_id: id,
+                    parlamentar_nome: parl,
+                    fornecedor_cnpj_cpf: doc,
+                    fornecedor_nome: nome,
+                    data_emissao: dt,
+                    valor: val,
+                    categoria_despesa: cat,
+                    numero_documento: num_doc,
+                })
+            });
+
+            if let Ok(despesas_iter) = rows {
+                let despesas: Vec<auditor::DespesaFracionamentoInput> = despesas_iter.flatten().collect();
+                let alertas_frac = auditor::auditar_fracionamento_despesas(&despesas);
+                for a in alertas_frac {
+                    let detalhes = serde_json::json!({
+                        "parlamentar": a.parlamentar_nome,
+                        "fornecedor_doc": a.fornecedor_cnpj_cpf,
+                        "fornecedor_nome": a.fornecedor_nome,
+                        "data_inicio": a.data_inicio.to_string(),
+                        "data_fim": a.data_fim.to_string(),
+                        "quantidade_despesas": a.quantidade_despesas,
+                        "valor_total": a.valor_total,
+                        "despesas_ids": a.despesas_ids,
+                        "regra": "Emissão de despesas sucessivas ou no mesmo dia para o mesmo fornecedor em valor expressivo"
+                    });
+
+                    let _ = registrar_alerta(
+                        conn,
+                        &NovoAlerta {
+                            tipo: "FRACIONAMENTO_DESPESAS".to_string(),
+                            severidade: a.gravidade,
+                            titulo: format!("Fracionamento de Despesas - {}", a.fornecedor_nome),
+                            descricao: a.motivo,
+                            alvo_nome: a.parlamentar_nome,
+                            alvo_documento: Some(a.fornecedor_cnpj_cpf),
+                            municipio: None,
+                            uf: None,
+                            ano: Some(a.data_inicio.year()),
+                            valor_envolvido: Some(a.valor_total),
+                            fonte_dado: "CÂMARA/CEAP".to_string(),
+                            detalhes_json: Some(detalhes.to_string()),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    // 13. Sincroniza fornecedores com dependência exclusiva de gabinete (> 85% de faturamento)
+    {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT d.fornecedor_cnpj_cpf, d.fornecedor_nome, d.parlamentar_nome,
+                    SUM(d.valor_liquido) as faturamento_parl,
+                    tot.total as faturamento_tot,
+                    COUNT(*) as qtd
+             FROM despesas_parlamentares d
+             JOIN (
+                 SELECT fornecedor_cnpj_cpf, SUM(valor_liquido) as total
+                 FROM despesas_parlamentares
+                 WHERE length(fornecedor_cnpj_cpf) >= 11
+                 GROUP BY fornecedor_cnpj_cpf
+                 HAVING total >= 40000.0
+             ) tot ON tot.fornecedor_cnpj_cpf = d.fornecedor_cnpj_cpf
+             WHERE d.valor_liquido > 0
+             GROUP BY d.fornecedor_cnpj_cpf, d.parlamentar_nome
+             HAVING faturamento_parl >= 40000.0",
+        ) {
+            let rows = stmt.query_map([], |r| {
+                Ok(auditor::FornecedorParlamentarFaturamento {
+                    fornecedor_cnpj_cpf: r.get(0)?,
+                    fornecedor_nome: r.get(1)?,
+                    parlamentar_nome: r.get(2)?,
+                    faturamento_parlamentar: r.get(3)?,
+                    faturamento_total_publico: r.get(4)?,
+                    quantidade_despesas: r.get(5)?,
+                })
+            });
+
+            if let Ok(itens) = rows {
+                let dados: Vec<auditor::FornecedorParlamentarFaturamento> = itens.flatten().collect();
+                let alertas_exclusivos = auditor::auditar_fornecedores_exclusivos(
+                    &dados,
+                    auditor::PISO_FATURAMENTO_EXCLUSIVIDADE,
+                    auditor::PERCENTUAL_DEPENDENCIA_CRITICA,
+                );
+
+                for a in alertas_exclusivos {
+                    let detalhes = serde_json::json!({
+                        "fornecedor_doc": a.fornecedor_cnpj_cpf,
+                        "fornecedor_nome": a.fornecedor_nome,
+                        "parlamentar": a.parlamentar_nome,
+                        "faturamento_parlamentar": a.faturamento_parlamentar,
+                        "faturamento_total": a.faturamento_total,
+                        "percentual_dependencia": a.percentual_dependencia,
+                        "quantidade_despesas": a.quantidade_despesas,
+                        "regra": "Fornecedor da cota parlamentar tem faturamento concentrado em um único parlamentar"
+                    });
+
+                    let _ = registrar_alerta(
+                        conn,
+                        &NovoAlerta {
+                            tipo: "FORNECEDOR_EXCLUSIVO".to_string(),
+                            severidade: a.gravidade,
+                            titulo: format!("Dependência de Gabinete ({:.0}%) - {}", a.percentual_dependencia, a.fornecedor_nome),
+                            descricao: a.motivo,
+                            alvo_nome: a.fornecedor_nome,
+                            alvo_documento: Some(a.fornecedor_cnpj_cpf),
+                            municipio: None,
+                            uf: None,
+                            ano: None,
+                            valor_envolvido: Some(a.faturamento_parlamentar),
+                            fonte_dado: "CÂMARA/CEAP".to_string(),
+                            detalhes_json: Some(detalhes.to_string()),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    // 14. Sincroniza doações circulares (fornecedor CEAP que doou para a campanha do parlamentar)
+    {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT p.id, p.nome_completo, d.fornecedor_cnpj_cpf, d.fornecedor_nome,
+                    r.doador_cpf_cnpj, r.doador_nome,
+                    SUM(d.valor_liquido) as valor_ceap,
+                    SUM(r.valor) as valor_doacao,
+                    c.ano_eleicao,
+                    MIN(d.data_emissao) as dt_desp,
+                    MIN(COALESCE(r.data_receita, '')) as dt_doac
+             FROM despesas_parlamentares d
+             JOIN politicos p ON p.nome_completo = d.parlamentar_nome OR p.nome_urna = d.parlamentar_nome
+             JOIN candidaturas c ON c.politico_id = p.id
+             JOIN receitas_campanha r ON r.candidatura_id = c.id
+                  AND (
+                      r.doador_cpf_cnpj = d.fornecedor_cnpj_cpf
+                      OR (length(r.doador_cpf_cnpj) = 14 AND length(d.fornecedor_cnpj_cpf) = 14 AND substr(r.doador_cpf_cnpj, 1, 8) = substr(d.fornecedor_cnpj_cpf, 1, 8))
+                  )
+             WHERE d.valor_liquido > 0 AND r.valor > 0
+             GROUP BY p.id, d.fornecedor_cnpj_cpf, c.ano_eleicao
+             HAVING valor_ceap >= 10000.0 AND valor_doacao >= 1000.0",
+        ) {
+            let rows = stmt.query_map([], |r| {
+                Ok(auditor::VinculoCeapDoacao {
+                    politico_id: r.get(0)?,
+                    politico_nome: r.get(1)?,
+                    fornecedor_cnpj_cpf: r.get(2)?,
+                    fornecedor_nome: r.get(3)?,
+                    doador_cpf_cnpj: r.get(4)?,
+                    doador_nome: r.get(5)?,
+                    valor_ceap_total: r.get(6)?,
+                    valor_doacao_total: r.get(7)?,
+                    ano_eleicao: r.get(8)?,
+                    data_despesa: r.get(9)?,
+                    data_doacao: r.get(10)?,
+                })
+            });
+
+            if let Ok(itens) = rows {
+                let dados: Vec<auditor::VinculoCeapDoacao> = itens.flatten().collect();
+                let alertas_circulares = auditor::auditar_doacoes_circulares(&dados, 10_000.0, 1_000.0);
+
+                for a in alertas_circulares {
+                    let detalhes = serde_json::json!({
+                        "politico_id": a.politico_id,
+                        "politico_nome": a.politico_nome,
+                        "fornecedor_doc": a.fornecedor_cnpj_cpf,
+                        "fornecedor_nome": a.fornecedor_nome,
+                        "doador_doc": a.doador_cpf_cnpj,
+                        "doador_nome": a.doador_nome,
+                        "valor_ceap_total": a.valor_ceap_total,
+                        "valor_doacao_total": a.valor_doacao_total,
+                        "ano_eleicao": a.ano_eleicao,
+                        "regra": "Fornecedor contratado com cota parlamentar realizou doação de campanha para o parlamentar"
+                    });
+
+                    let _ = registrar_alerta(
+                        conn,
+                        &NovoAlerta {
+                            tipo: "DOACAO_CIRCULAR".to_string(),
+                            severidade: a.gravidade,
+                            titulo: format!("Doação Circular de Fornecedor - {}", a.fornecedor_nome),
+                            descricao: a.motivo,
+                            alvo_nome: a.politico_nome,
+                            alvo_documento: Some(a.fornecedor_cnpj_cpf),
+                            municipio: None,
+                            uf: None,
+                            ano: Some(a.ano_eleicao),
+                            valor_envolvido: Some(a.valor_ceap_total),
+                            fonte_dado: "TSE/CÂMARA".to_string(),
+                            detalhes_json: Some(detalhes.to_string()),
+                        },
+                    );
                 }
             }
         }

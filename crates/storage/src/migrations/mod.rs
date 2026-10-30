@@ -641,6 +641,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version:31, name:"deduplicar_candidaturas", sql:include_str!("031_deduplicar_candidaturas.sql") },
     Migration { version:32, name:"indice_doador_situacao_cadastral", sql:include_str!("032_indice_doador_situacao_cadastral.sql") },
     Migration { version:33, name:"dedup_alertas_chave_origem_completa", sql:include_str!("033_dedup_alertas_chave_origem_completa.sql") },
+    Migration { version:34, name:"alertas_fracionamento_exclusivo_circular", sql:include_str!("034_alertas_fracionamento_exclusivo_circular.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
