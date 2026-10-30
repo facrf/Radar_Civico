@@ -10,6 +10,7 @@ pub mod oab;
 pub mod pncp;
 pub mod progress;
 pub mod querido_diario;
+pub mod senado;
 pub mod tse_ckan;
 pub mod tse_streaming;
 
@@ -53,6 +54,10 @@ pub use normalizer::{
 pub use oab::{CnaItemPayload, OabConsultaResult, OabScraperClient};
 pub use pncp::{PncpClient, PncpConsultaResponse, PncpContratoItem, PncpOrgao};
 pub use querido_diario::{ExcerptDiario, QueridoDiarioApiResponse, QueridoDiarioClient};
+pub use senado::{
+    converter_senado_para_despesas, ingerir_senado_ceaps_em_lotes, processar_stream_senado_ceaps,
+    SenadoDespesaRecord,
+};
 pub use tse_streaming::{
     ingerir_receitas_tse_em_lotes, processar_stream_consulta_cand, processar_stream_receitas,
     CandidatoCsvRecord, ReceitaCsvRecord,
