@@ -6,6 +6,7 @@ pub mod tse;
 
 pub use connectors::{
     CamaraCeapImporter, CnaOabImporter, PncpImporter, QueridoDiarioImporter, ReceitaFederalImporter,
+    SenadoCeapsImporter,
 };
 pub use manager::{ImporterManager, ImporterSummary};
 pub use sink::{BatchSink, DEFAULT_SINK_BATCH_SIZE};

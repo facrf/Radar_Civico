@@ -4,7 +4,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use ingestion::importers::{
     BatchSink, CamaraCeapImporter, CnaOabImporter, ImporterManager, ImporterSummary, PncpImporter,
-    QueridoDiarioImporter, ReceitaFederalImporter, TseImporter,
+    QueridoDiarioImporter, ReceitaFederalImporter, SenadoCeapsImporter, TseImporter,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
@@ -45,6 +45,7 @@ pub fn get_or_init_importer_manager(pool: &DbPool) -> Arc<ImporterManager> {
     )));
     manager.register(Arc::new(ReceitaFederalImporter::new()));
     manager.register(Arc::new(CamaraCeapImporter::new(2024)));
+    manager.register(Arc::new(SenadoCeapsImporter::new(2024)));
     manager.register(Arc::new(PncpImporter::new(2024)));
     manager.register(Arc::new(QueridoDiarioImporter::new("", "")));
     manager.register(Arc::new(CnaOabImporter::new()));

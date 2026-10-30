@@ -208,6 +208,100 @@ impl SourceImporter for CamaraCeapImporter {
 }
 
 // -------------------------------------------------------------------------------------------------
+// Senado Federal (CEAPS)
+// -------------------------------------------------------------------------------------------------
+#[derive(Clone)]
+pub struct SenadoCeapsImporter {
+    pub ano: u32,
+    pub mock_csv: Option<String>,
+}
+
+impl SenadoCeapsImporter {
+    pub fn new(ano: u32) -> Self {
+        Self {
+            ano,
+            mock_csv: None,
+        }
+    }
+
+    pub fn with_mock_csv(ano: u32, csv: impl Into<String>) -> Self {
+        Self {
+            ano,
+            mock_csv: Some(csv.into()),
+        }
+    }
+}
+
+#[async_trait]
+impl SourceImporter for SenadoCeapsImporter {
+    fn id(&self) -> &str {
+        "senado_ceaps"
+    }
+
+    fn name(&self) -> &str {
+        "Senado Federal (CEAPS)"
+    }
+
+    fn description(&self) -> &str {
+        "Ingestão de despesas da Cota para o Exercício da Atividade Parlamentar dos Senadores"
+    }
+
+    async fn run(&self, ctx: Arc<ImportContext>, sink: Arc<BatchSink>) -> Result<()> {
+        let ano = if self.ano == 0 { 2024 } else { self.ano };
+        ctx.set_stage(
+            ImportStage::Baixando,
+            format!("Obtendo dados de despesas do Senado Federal ({ano})..."),
+        );
+
+        let csv_data = if let Some(ref mock) = self.mock_csv {
+            mock.clone()
+        } else {
+            let client = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .user_agent("RadarCivico/1.0")
+                .build()?;
+            let url = format!("https://www.senado.leg.br/transparencia/LAI/verba/{ano}.csv");
+            tokio::select! {
+                res = client.get(&url).send() => {
+                    let response = res.map_err(|e| IngestionError::Custom(format!("Falha na requisição ao Senado: {e}")))?;
+                    if !response.status().is_success() {
+                        return Err(IngestionError::Custom(format!("Senado retornou status HTTP {}", response.status())));
+                    }
+                    let bytes = response.bytes().await.map_err(|e| IngestionError::Custom(e.to_string()))?;
+                    let (cow, _, _) = encoding_rs::WINDOWS_1252.decode(&bytes);
+                    cow.into_owned()
+                }
+                _ = ctx.cancellation_token.cancelled() => {
+                    ctx.set_stage(ImportStage::Cancelado, "Cancelado durante download CEAPS Senado");
+                    return Ok(());
+                }
+            }
+        };
+
+        if ctx.is_cancelled() {
+            ctx.set_stage(ImportStage::Cancelado, "Cancelado pelo usuário");
+            return Ok(());
+        }
+
+        ctx.set_stage(ImportStage::Processando, "Processando despesas do Senado...");
+        let itens = crate::senado::processar_stream_senado_ceaps(csv_data.as_bytes(), b';').await?;
+        let total_lidos = itens.len();
+
+        let pool = sink.pool().clone();
+        let inseridos = spawn_blocking(move || -> Result<usize> {
+            let mut conn = pool.get().map_err(IngestionError::Storage)?;
+            crate::senado::ingerir_senado_ceaps_em_lotes(&mut conn, &itens)
+        })
+        .await
+        .map_err(|e| IngestionError::TokioJoin(e.to_string()))??;
+
+        ctx.update_progress(format!("senado_{ano}.csv"), 1, 1, inseridos as u64);
+        ctx.finish(format!("Senado CEAPS: {inseridos} despesas gravadas de {total_lidos} lidas"));
+        Ok(())
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
 // 3. Portal Nacional de Contratações Públicas (PNCP)
 // -------------------------------------------------------------------------------------------------
 #[derive(Clone, Default)]
@@ -612,5 +706,32 @@ pub mod tests {
 
         importer.run(Arc::clone(&ctx), sink).await.unwrap();
         assert_eq!(ctx.get_progress().stage, ImportStage::Concluido);
+    }
+
+    #[tokio::test]
+    async fn test_senado_ceaps_importer() {
+        let pool = DbPool::open_in_memory().unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            run_migrations(&mut conn).unwrap();
+        }
+        let sink = Arc::new(BatchSink::new(pool.clone()));
+        let csv_data = "ANO;MES;SENADOR;TIPO_DESPESA;CNPJ_CPF;FORNECEDOR;DOCUMENTO;DATA;VALOR_REEMBOLSADO\n\
+                        2024;1;RODRIGO PACHECO;ALUGUEL DE IMOVEIS;12.345.678/0001-90;IMOBILIARIA CENTRAL;DOC-123;15/01/2024;5000,00\n";
+        let importer = SenadoCeapsImporter::with_mock_csv(2024, csv_data);
+        let ctx = Arc::new(ImportContext::new("senado_ceaps"));
+
+        importer.run(Arc::clone(&ctx), sink).await.unwrap();
+        assert_eq!(ctx.get_progress().stage, ImportStage::Concluido);
+
+        let conn = pool.get().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM despesas_parlamentares WHERE casa_legislativa = 'SENADO'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
