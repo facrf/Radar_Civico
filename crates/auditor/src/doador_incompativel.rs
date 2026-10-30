@@ -52,6 +52,11 @@ fn extrair_seis_digitos_centrais(cpf_ou_mascara: &str) -> Option<String> {
     }
 }
 
+fn filtrar_preposicoes<'a>(tokens: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+    const PREPOSICOES: &[&str] = &["DE", "DA", "DO", "DAS", "DOS", "E"];
+    tokens.filter(|t| !PREPOSICOES.contains(t)).collect()
+}
+
 fn nomes_compativeis(nome_doador: &str, nome_beneficiario: &str) -> bool {
     let d = normalizar_texto(nome_doador);
     let b = normalizar_texto(nome_beneficiario);
@@ -60,15 +65,46 @@ fn nomes_compativeis(nome_doador: &str, nome_beneficiario: &str) -> bool {
         return true;
     }
 
-    let tokens_d: Vec<&str> = d.split_whitespace().collect();
-    let tokens_b: Vec<&str> = b.split_whitespace().collect();
+    let tokens_d: Vec<&str> = filtrar_preposicoes(d.split_whitespace());
+    let tokens_b: Vec<&str> = filtrar_preposicoes(b.split_whitespace());
+
+    if tokens_d == tokens_b {
+        return true;
+    }
 
     if tokens_d.len() >= 2 && tokens_b.len() >= 2 {
         let primeiro_igual = tokens_d[0] == tokens_b[0];
         let ultimo_igual = tokens_d.last() == tokens_b.last();
-        if primeiro_igual && ultimo_igual {
+        if !primeiro_igual || !ultimo_igual {
+            return false;
+        }
+
+        // Se ambos têm nomes do meio explícitos, verificar se não são conflitantes
+        let mid_d = &tokens_d[1..tokens_d.len() - 1];
+        let mid_b = &tokens_b[1..tokens_b.len() - 1];
+
+        // Se um deles não tem nome do meio (ex: "JOSE SILVA" vs "JOSE CARLOS SILVA"), é compatível
+        if mid_d.is_empty() || mid_b.is_empty() {
             return true;
         }
+
+        // Se ambos têm nomes do meio, verifica se há colisão explícita (ex: "CARLOS" vs "EDUARDO")
+        // Permite abreviações (ex: "C" e "CARLOS")
+        let compativel = mid_d.iter().all(|td| {
+            mid_b.iter().any(|tb| {
+                td == tb
+                    || (td.len() == 1 && tb.starts_with(td))
+                    || (tb.len() == 1 && td.starts_with(tb))
+            })
+        }) || mid_b.iter().all(|tb| {
+            mid_d.iter().any(|td| {
+                tb == td
+                    || (tb.len() == 1 && td.starts_with(tb))
+                    || (td.len() == 1 && tb.starts_with(td))
+            })
+        });
+
+        return compativel;
     }
 
     false
@@ -197,5 +233,51 @@ mod tests {
 
         let alerta = auditar_doador_incompativel(&doador, &benef, LIMITE_DOACAO_SUSPEITA_BENEFICIARIO);
         assert!(alerta.is_none());
+    }
+
+    #[test]
+    fn test_doador_incompativel_rejeita_nomes_do_meio_conflitantes() {
+        let doador = DoadorCampanhaAnalise {
+            candidatura_id: Some(10),
+            doador_cpf_cnpj: "12345678900".to_string(),
+            doador_nome: "JOSE CARLOS SILVA".to_string(),
+            valor: 3_000.0,
+            data_receita: Some("2024-08-20".to_string()),
+        };
+
+        let benef = BeneficiarioSocialAnalise {
+            cpf_mascarado: "***.456.789-**".to_string(),
+            nome_beneficiario: "JOSE EDUARDO SILVA".to_string(), // Mesmo primeiro e último nome, mas nome do meio conflitante
+            valor_total_beneficio: 1_800.0,
+            parcelas: 3,
+            municipio: Some("SAO PAULO".to_string()),
+            uf: Some("SP".to_string()),
+        };
+
+        let alerta = auditar_doador_incompativel(&doador, &benef, LIMITE_DOACAO_SUSPEITA_BENEFICIARIO);
+        assert!(alerta.is_none(), "Nomes do meio conflitantes não devem ser considerados a mesma pessoa");
+    }
+
+    #[test]
+    fn test_doador_incompativel_aceita_abreviacao_e_preposicao() {
+        let doador = DoadorCampanhaAnalise {
+            candidatura_id: Some(10),
+            doador_cpf_cnpj: "12345678900".to_string(),
+            doador_nome: "JOSE C DA SILVA".to_string(),
+            valor: 3_000.0,
+            data_receita: Some("2024-08-20".to_string()),
+        };
+
+        let benef = BeneficiarioSocialAnalise {
+            cpf_mascarado: "***.456.789-**".to_string(),
+            nome_beneficiario: "JOSE CARLOS SILVA".to_string(),
+            valor_total_beneficio: 1_800.0,
+            parcelas: 3,
+            municipio: Some("SAO PAULO".to_string()),
+            uf: Some("SP".to_string()),
+        };
+
+        let alerta = auditar_doador_incompativel(&doador, &benef, LIMITE_DOACAO_SUSPEITA_BENEFICIARIO);
+        assert!(alerta.is_some(), "Abreviação 'C' e omissão de 'DA' são compatíveis com 'CARLOS'");
     }
 }

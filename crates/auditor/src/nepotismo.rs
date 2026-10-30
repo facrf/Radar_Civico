@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// Stop-list de sobrenomes brasileiros de alta dispersão demográfica
+/// Stop-list de sobrenomes brasileiros de alta dispersão demográfica e agnonímicos
 const SOBRENOMES_COMUNS_STOPLIST: &[&str] = &[
+    // Sobrenomes de altíssima frequência no Brasil
     "SILVA", "SANTOS", "OLIVEIRA", "SOUZA", "SOUSA", "RODRIGUES", "FERREIRA",
     "ALVES", "PEREIRA", "LIMA", "GOMES", "COSTA", "RIBEIRO", "MARTINS",
     "CARVALHO", "ALMEIDA", "LOPES", "SOARES", "FERNANDES", "VIEIRA", "BARBOSA",
@@ -9,6 +10,11 @@ const SOBRENOMES_COMUNS_STOPLIST: &[&str] = &[
     "MACHADO", "MENDES", "RAMOS", "SANTANA", "TEIXEIRA", "CARDOSO", "PINTO",
     "CASTRO", "AZEVEDO", "FREITAS", "CAMPOS", "COELHO", "BARROS", "MORAES",
     "REIS", "BATISTA", "CORREIA", "CORREA", "TAVARES", "MIRANDA",
+    "ARAUJO", "MONTEIRO", "FONSECA", "BORGES", "GUIMARAES", "MENDONCA",
+    "VASCONCELOS", "DUARTE", "BRITO", "PINHEIRO", "PAULA", "CUNHA", "MOURA",
+    "LEITE", "PIRES", "CARNEIRO", "MEDEIROS",
+    // Agnonímicos / sufixos geracionais (não caracterizam sobrenomes familiares)
+    "JUNIOR", "FILHO", "NETO", "SOBRINHO", "SEGUNDO", "TERCEIRO",
 ];
 
 fn normalizar_nome_simples(s: &str) -> String {
@@ -185,5 +191,21 @@ mod tests {
 
         let alertas = auditar_possivel_parentesco("ANTONIO AUGUSTO ANASTASIA", "MG", &alvos);
         assert!(alertas.is_empty(), "Não deve emitir alerta de parentesco para o próprio político");
+    }
+
+    #[test]
+    fn test_auditar_ignora_agnonimicos_como_sobrenome_raro() {
+        let alvos = vec![
+            AlvoAuditoriaParentesco {
+                nome: "CARLOS DA SILVA JUNIOR".to_string(),
+                cnpj_cpf: "12345678000199".to_string(),
+                uf: "SP".to_string(),
+                tipo_vinculo: "SOCIO_FORNECEDOR_CEAP".to_string(),
+            },
+        ];
+
+        // "JUNIOR" é agnonímico e "SILVA" é sobrenome comum; não há sobrenome raro compartilhado.
+        let alertas = auditar_possivel_parentesco("MARCELO SILVA JUNIOR", "SP", &alvos);
+        assert!(alertas.is_empty(), "Não deve emitir alerta de parentesco baseado em sufixo geracional JUNIOR");
     }
 }
