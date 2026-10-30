@@ -75,6 +75,12 @@
 					</svg>
 					<span>Políticos</span>
 				</a>
+				<a href="/comparar" class="px-3 py-2 text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-800/60 rounded-md transition-colors flex items-center gap-1.5">
+					<svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+					</svg>
+					<span>Comparar</span>
+				</a>
 				<a href="/alertas" class="px-3 py-2 text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-800/60 rounded-md transition-colors flex items-center gap-1.5">
 					{#if totalAlertas > 0}
 						<span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse" title={`${totalAlertas} anomalias detectadas`}></span>

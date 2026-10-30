@@ -1,5 +1,6 @@
 <script lang="ts">
 	import AvaliacaoIntegridade from "#lib/components/AvaliacaoIntegridade.svelte";
+	import TimelineDossie from '#lib/components/TimelineDossie.svelte';
 	import { page } from '#lib/page';
 	import { onMount } from 'svelte';
 	import MapaDespesas from '#lib/components/MapaDespesas.svelte';
@@ -11,7 +12,7 @@
 	let erro: string | null = null;
 	let politico: PoliticoDetalheResponse | null = null;
 	let geoData: PoliticoDespesasGeoResponse | null = null;
-	let abaAtiva: 'mapa' | 'categorias' | 'despesas' | 'eleitoral' | 'evolucao' | 'emendas' = 'mapa';
+	let abaAtiva: 'mapa' | 'categorias' | 'despesas' | 'eleitoral' | 'evolucao' | 'emendas' | 'linha_tempo' = 'mapa';
 
 	$: totalEmendasEmpenhado = politico?.emendas ? politico.emendas.reduce((acc, e) => acc + (e.valor_empenhado || 0), 0) : 0;
 	$: totalEmendasPago = politico?.emendas ? politico.emendas.reduce((acc, e) => acc + (e.valor_pago || 0), 0) : 0;
@@ -276,6 +277,17 @@
 				</svg>
 				<span>Imprimir / Exportar Dossiê</span>
 			</button>
+
+			<a
+				href="/comparar?p1={id}"
+				class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-cyan-600/20 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-600/30 transition-colors flex items-center gap-1.5 shadow-sm"
+				title="Comparar este parlamentar lado a lado com outro"
+			>
+				<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+				</svg>
+				<span>Comparar</span>
+			</a>
 
 			{#if politico?.cpf_mascarado}
 				<a
@@ -722,6 +734,15 @@
 			>
 				<span class="text-sm">💰</span>
 				<span>Emendas Parlamentares ({politico.emendas?.length || 0})</span>
+			</button>
+
+			<button
+				type="button"
+				on:click={() => (abaAtiva = 'linha_tempo')}
+				class="pb-3 px-3 transition-colors flex items-center gap-2 border-b-2 font-bold whitespace-nowrap {abaAtiva === 'linha_tempo' ? 'border-amber-400 text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}"
+			>
+				<span class="text-sm">⏳</span>
+				<span>Linha do Tempo</span>
 			</button>
 		</div>
 
@@ -1246,6 +1267,11 @@
 						</p>
 					</div>
 				{/if}
+			</section>
+		{:else if abaAtiva === 'linha_tempo'}
+			<!-- Módulo de Linha do Tempo Cronológica Unificada -->
+			<section class="space-y-4">
+				<TimelineDossie {politico} />
 			</section>
 		{/if}
 	{/if}
