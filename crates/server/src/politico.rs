@@ -1079,6 +1079,7 @@ pub fn invalidar_cache_filtros_politicos() {
 }
 
 fn obter_filtros_globais(conn: &storage::rusqlite::Connection) -> FiltrosPoliticosCache {
+    #[cfg(not(test))]
     if let Ok(lock) = FILTROS_POLITICOS_CACHE.lock() {
         if let Some((instant, ref dados)) = *lock {
             if instant.elapsed() < std::time::Duration::from_secs(300) {
