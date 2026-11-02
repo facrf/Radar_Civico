@@ -1,7 +1,9 @@
 pub mod prompts;
+pub mod resources;
 pub mod tools;
 pub mod utils;
 
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,11 +15,13 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use prompts::PromptRegistry;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use resources::ResourceRegistry;
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResponse, GetPromptRequestParams, GetPromptResponse,
         Implementation, InitializeRequestParams, InitializeResult, ListPromptsResult,
-        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
+        ReadResourceResponse, ServerCapabilities, ServerConfig, Tool,
     },
     service::{serve_directly, RequestContext},
     ErrorData as McpError, RoleServer, ServerHandler,
@@ -25,7 +29,7 @@ use rmcp::{
 use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncRead, ReadBuf};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, RwLock};
 use tools::{sanitizar_parametro_log, sanitizar_rota_log, ToolRegistry};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -33,7 +37,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 /// URL padrão da instância local do Radar Cívico.
 pub const DEFAULT_RADAR_URL: &str = "http://127.0.0.1:28080";
 
-/// Filtro de log padrão quando `RUST_LOG` não está definida no ambiente.
+/// Filtro de log padrão quando `RUST_LOG` não está definida definida no ambiente.
 pub const DEFAULT_RUST_LOG: &str = "radar_mcp=info,warn";
 
 /// Timeout padrão do cliente HTTP (8 segundos).
@@ -41,6 +45,12 @@ pub const HTTP_TIMEOUT_SECS: u64 = 8;
 
 /// Timeout máximo de desligamento gracioso para cancelamento de tarefas em voo (2 segundos).
 pub const SHUTDOWN_TIMEOUT_SECS: u64 = 2;
+
+/// Tempo de vida (TTL) padrão do cache em memória do `RadarHttpClient` (45 segundos).
+pub const CACHE_TTL_SECS: u64 = 45;
+
+/// Capacidade máxima de entradas no cache em memória do `RadarHttpClient`.
+pub const CACHE_MAX_ENTRIES: usize = 128;
 
 /// Argumentos e variáveis de ambiente de configuração do servidor MCP.
 #[derive(Debug, Clone, Parser)]
@@ -128,13 +138,22 @@ pub enum RadarHttpError {
     },
 }
 
-/// Cliente HTTP configurado para comunicação com o backend do Radar Cívico.
+#[derive(Clone, Debug)]
+struct CacheEntry {
+    inserted_at: Instant,
+    value: Value,
+}
+
+/// Cliente HTTP configurado para comunicação com o backend do Radar Cívico,
+/// equipado com cache TTL em memória de curta duração (45s) para leituras repetidas.
 #[derive(Clone, Debug)]
 pub struct RadarHttpClient {
     client: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
     timeout: Duration,
+    cache_ttl: Duration,
+    cache: Arc<RwLock<HashMap<String, CacheEntry>>>,
 }
 
 impl RadarHttpClient {
@@ -163,6 +182,8 @@ impl RadarHttpClient {
             base_url: config.radar_url.trim_end_matches('/').to_string(),
             api_key: config.radar_api_key.clone(),
             timeout,
+            cache_ttl: Duration::from_secs(CACHE_TTL_SECS),
+            cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -192,7 +213,33 @@ impl RadarHttpClient {
         format!("{}/{}", self.base_url, clean_path)
     }
 
+    /// Retorna a quantidade atual de entradas válidas no cache em memória.
+    pub async fn cache_len(&self) -> usize {
+        let guard = self.cache.read().await;
+        let ttl = self.cache_ttl;
+        guard
+            .values()
+            .filter(|e| e.inserted_at.elapsed() < ttl)
+            .count()
+    }
+
+    /// Limpa todas as entradas do cache em memória.
+    pub async fn clear_cache(&self) {
+        self.cache.write().await.clear();
+    }
+
+    fn build_cache_key(&self, url: &str, query: &[(&str, String)]) -> String {
+        if query.is_empty() {
+            url.to_string()
+        } else {
+            let mut pairs: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            pairs.sort();
+            format!("{url}?{}", pairs.join("&"))
+        }
+    }
+
     /// Executa uma requisição GET com cabeçalho de API key (quando configurado) e desserializa a resposta JSON.
+    /// Utiliza cache em memória com TTL de 45s para respostas `HTTP 200 OK`.
     #[tracing::instrument(
         name = "radar_http.get_json",
         skip(self, path, query),
@@ -209,6 +256,30 @@ impl RadarHttpClient {
     ) -> Result<Value, RadarHttpError> {
         let inicio = Instant::now();
         let rota_segura = sanitizar_rota_log(path);
+        let url = self.endpoint_url(path);
+        let cache_key = self.build_cache_key(&url, query);
+
+        if self.cache_ttl > Duration::ZERO {
+            let guard = self.cache.read().await;
+            if let Some(entry) = guard.get(&cache_key) {
+                if entry.inserted_at.elapsed() < self.cache_ttl {
+                    let cached_val = entry.value.clone();
+                    drop(guard);
+                    let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                    tracing::Span::current().record("status_http", 200_u16);
+                    tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                    info!(
+                        rota = %rota_segura,
+                        status_http = 200_u16,
+                        elapsed_ms,
+                        cache_hit = true,
+                        "Resposta recuperada do cache em memória do radar-mcp"
+                    );
+                    return Ok(cached_val);
+                }
+            }
+        }
+
         let query_segura: Vec<(&str, String)> = query
             .iter()
             .map(|(k, v)| (*k, sanitizar_parametro_log(v)))
@@ -220,7 +291,6 @@ impl RadarHttpClient {
             "Iniciando chamada HTTP GET à API local"
         );
 
-        let url = self.endpoint_url(path);
         let url_segura = sanitizar_rota_log(&url);
         let mut req = self.client.get(&url);
         if !query.is_empty() {
@@ -303,6 +373,30 @@ impl RadarHttpClient {
             }
         })?;
 
+        if self.cache_ttl > Duration::ZERO {
+            let ttl = self.cache_ttl;
+            let mut guard = self.cache.write().await;
+            if guard.len() >= CACHE_MAX_ENTRIES {
+                guard.retain(|_, v| v.inserted_at.elapsed() < ttl);
+                if guard.len() >= CACHE_MAX_ENTRIES {
+                    if let Some(oldest_key) = guard
+                        .iter()
+                        .min_by_key(|(_, v)| v.inserted_at)
+                        .map(|(k, _)| k.clone())
+                    {
+                        guard.remove(&oldest_key);
+                    }
+                }
+            }
+            guard.insert(
+                cache_key,
+                CacheEntry {
+                    inserted_at: Instant::now(),
+                    value: parsed.clone(),
+                },
+            );
+        }
+
         let elapsed_ms = inicio.elapsed().as_millis() as u64;
         tracing::Span::current().record("elapsed_ms", elapsed_ms);
         info!(
@@ -322,6 +416,7 @@ pub struct RadarMcpServer {
     http_client: RadarHttpClient,
     registry: Arc<ToolRegistry>,
     prompts: Arc<PromptRegistry>,
+    resources: Arc<ResourceRegistry>,
     in_flight: Arc<AtomicUsize>,
     idle_notify: Arc<Notify>,
     cancel_notify: Arc<Notify>,
@@ -359,10 +454,10 @@ fn contem_notificacao_exit(bytes: &[u8]) -> bool {
     false
 }
 
-/// Verifica se um bloco de bytes lido do `stdin` contém chamadas `"tools/call"`.
+/// Verifica se um bloco de bytes lido do `stdin` contém chamadas `"tools/call"` ou `"resources/read"`.
 fn contem_chamada_tool(bytes: &[u8]) -> bool {
     std::str::from_utf8(bytes)
-        .map(|s| s.contains("tools/call"))
+        .map(|s| s.contains("tools/call") || s.contains("resources/read"))
         .unwrap_or(false)
 }
 
@@ -518,6 +613,7 @@ impl RadarMcpServer {
             http_client,
             registry: Arc::new(registry),
             prompts: Arc::new(PromptRegistry::new()),
+            resources: Arc::new(ResourceRegistry::new()),
             in_flight: Arc::new(AtomicUsize::new(0)),
             idle_notify: Arc::new(Notify::new()),
             cancel_notify: Arc::new(Notify::new()),
@@ -538,6 +634,11 @@ impl RadarMcpServer {
     pub fn prompts(&self) -> &PromptRegistry {
         &self.prompts
     }
+
+    /// Retorna referência ao registro de recursos MCP.
+    pub fn resources(&self) -> &ResourceRegistry {
+        &self.resources
+    }
 }
 
 impl ServerHandler for RadarMcpServer {
@@ -545,6 +646,7 @@ impl ServerHandler for RadarMcpServer {
         let capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_prompts()
+            .enable_resources()
             .build();
         ServerConfig::new(capabilities)
             .with_server_info(Implementation::new("radar-mcp", env!("CARGO_PKG_VERSION")))
@@ -614,6 +716,55 @@ impl ServerHandler for RadarMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, McpError> {
         self.prompts.get_prompt(request)
+    }
+
+    #[tracing::instrument(name = "mcp.list_resources", skip(self, _request, _context))]
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        let resources = self.resources.list_resources();
+        debug!(
+            resources_count = resources.len(),
+            "Listando recursos nativos MCP"
+        );
+        Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    #[tracing::instrument(
+        name = "mcp.read_resource",
+        skip(self, request, _context),
+        fields(uri = %request.uri)
+    )]
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        let _guard = InFlightGuard {
+            in_flight: self.in_flight.clone(),
+            idle_notify: self.idle_notify.clone(),
+        };
+
+        let cancel_notified = self.cancel_notify.notified();
+        let uri = request.uri.clone();
+        let resource_fut = self.resources.read_resource(&self.http_client, request);
+
+        tokio::select! {
+            res = resource_fut => res,
+            _ = cancel_notified => {
+                warn!(
+                    uri = %uri,
+                    "Leitura de recurso cancelada durante desligamento do servidor MCP"
+                );
+                Err(McpError::internal_error(
+                    "Servidor MCP em processo de desligamento",
+                    None,
+                ))
+            }
+        }
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -1017,5 +1168,42 @@ mod tests {
         );
         assert_eq!(payload_404["status_http"], 404);
         assert_eq!(payload_404["detalhe"], "CNPJ não localizado na base");
+    }
+
+    #[tokio::test]
+    async fn cliente_http_armazena_em_cache_ttl_apenas_respostas_200_ok() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Servidor aceita apenas UMA conexão TCP: a segunda chamada deve ser servida pelo cache em memória
+        let server_handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 1024];
+            let _ = socket.read(&mut buf).await.unwrap();
+            let body = r#"{"versao":"1.0.0","status":"ok"}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let cfg = RadarMcpConfig {
+            radar_url: format!("http://{addr}"),
+            radar_api_key: None,
+        };
+        let client = RadarHttpClient::new(&cfg).unwrap();
+        assert_eq!(client.cache_len().await, 0);
+
+        let r1 = client.get_json("/api/versao", &[]).await.unwrap();
+        assert_eq!(r1["versao"], "1.0.0");
+        assert_eq!(client.cache_len().await, 1);
+
+        server_handle.await.unwrap();
+
+        // Segunda chamada para a mesma rota (mesmo com o listener TCP já encerrado!) deve vir do cache
+        let r2 = client.get_json("/api/versao", &[]).await.unwrap();
+        assert_eq!(r2["versao"], "1.0.0");
     }
 }

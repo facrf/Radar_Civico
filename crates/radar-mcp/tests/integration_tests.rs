@@ -613,16 +613,17 @@ async fn test_stdio_prompts_list_e_prompts_get_cruzar_campanha_contratos_pncp() 
     let responses = run_mcp_batch(mock_server.uri(), None, requests).await;
     assert_eq!(responses.len(), 3);
 
-    // 1. Handshake initialize declara "prompts": {}
+    // 1. Handshake initialize declara "prompts": {} e "resources": {}
     let init_resp = find_response_by_id(&responses, 1);
     assert_eq!(init_resp["result"]["capabilities"]["prompts"], json!({}));
+    assert!(init_resp["result"]["capabilities"]["resources"].is_object());
 
     // 2. Valida `prompts/list`
     let list_resp = find_response_by_id(&responses, 2);
     let prompts = list_resp["result"]["prompts"]
         .as_array()
         .expect("result.prompts deve ser um array");
-    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts.len(), 3);
     assert_eq!(prompts[0]["name"], "cruzar_campanha_contratos_pncp");
     assert_eq!(
         prompts[0]["description"],
@@ -636,6 +637,9 @@ async fn test_stdio_prompts_list_e_prompts_get_cruzar_campanha_contratos_pncp() 
     assert_eq!(args[0]["required"], true);
     assert_eq!(args[1]["name"], "municipio_uf");
     assert_eq!(args[1]["required"], false);
+
+    assert_eq!(prompts[1]["name"], "auditar_fornecedor_ceap");
+    assert_eq!(prompts[2]["name"], "mapear_rede_societaria");
 
     // 3. Valida `prompts/get`
     let get_resp = find_response_by_id(&responses, 3);
@@ -656,6 +660,89 @@ async fn test_stdio_prompts_list_e_prompts_get_cruzar_campanha_contratos_pncp() 
     assert!(text.contains("Passo 4: Consultar contratos/vínculos e disparar `listar_alertas`"));
     assert!(text
         .contains("Passo 5: Formatar relatório com links/fontes originais e avisos de heurística"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_stdio_resources_list_e_resources_read_metodologia_e_status() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/versao"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "versao": "0.1.0",
+            "motor": "radar-civico"
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let requests = vec![
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "test-resources", "version": "0.1.0" }
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/list",
+            "params": {}
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "resources/read",
+            "params": {
+                "uri": "radar://metodologia/heuristicas"
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "resources/read",
+            "params": {
+                "uri": "radar://status/fontes"
+            }
+        }),
+    ];
+
+    let responses = run_mcp_batch(mock_server.uri(), None, requests).await;
+    assert_eq!(responses.len(), 4);
+
+    let list_resp = find_response_by_id(&responses, 2);
+    let resources = list_resp["result"]["resources"]
+        .as_array()
+        .expect("result.resources deve ser um array");
+    assert_eq!(resources.len(), 2);
+    assert_eq!(resources[0]["uri"], "radar://metodologia/heuristicas");
+    assert_eq!(resources[1]["uri"], "radar://status/fontes");
+
+    let met_resp = find_response_by_id(&responses, 3);
+    let met_text = met_resp["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("deve conter texto JSON da metodologia");
+    let met_json: Value = serde_json::from_str(met_text).unwrap();
+    assert_eq!(
+        met_json["regras_deterministicas"].as_array().unwrap().len(),
+        4
+    );
+
+    let status_resp = find_response_by_id(&responses, 4);
+    let status_text = status_resp["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("deve conter texto JSON do status");
+    let status_json: Value = serde_json::from_str(status_text).unwrap();
+    assert_eq!(status_json["instancia"]["online"], true);
+    assert_eq!(status_json["instancia"]["api_versao"]["versao"], "0.1.0");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
