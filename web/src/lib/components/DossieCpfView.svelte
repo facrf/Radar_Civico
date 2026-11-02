@@ -1,7 +1,29 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import type { DossieCpf } from '#lib/types';
 
 	export let dossie: DossieCpf;
+
+	let copiadoMcp = false;
+	let timeoutCopiaMcp: ReturnType<typeof setTimeout> | null = null;
+
+	async function copiarPromptMcp() {
+		const promptTexto = `Mapeie a rede societária, doações eleitorais e vínculos públicos de ${dossie.nome} (${dossie.cpf_mascarado}) no Radar Cívico usando buscar, dossie_cpf, subgrafo e listar_alertas.`;
+		try {
+			await navigator.clipboard.writeText(promptTexto);
+			copiadoMcp = true;
+			if (timeoutCopiaMcp) clearTimeout(timeoutCopiaMcp);
+			timeoutCopiaMcp = setTimeout(() => {
+				copiadoMcp = false;
+			}, 2500);
+		} catch {
+			copiadoMcp = false;
+		}
+	}
+
+	onDestroy(() => {
+		if (timeoutCopiaMcp) clearTimeout(timeoutCopiaMcp);
+	});
 
 	function formatarMoeda(valor: number): string {
 		return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(valor);
@@ -79,12 +101,24 @@
 				</p>
 			</div>
 
-			<div class="flex items-center gap-2 self-start flex-shrink-0">
+			<div class="flex flex-wrap items-center gap-2 self-start flex-shrink-0">
+				<button
+					type="button"
+					on:click={copiarPromptMcp}
+					aria-label="Copiar prompt investigativo MCP desta pessoa física"
+					title="Copia prompt pronto para colar no cliente MCP (Claude Desktop, Cursor, etc.)"
+					class="px-3.5 py-2 bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 text-xs font-semibold rounded-xl border border-purple-500/40 transition-colors flex items-center gap-2"
+				>
+					<svg aria-hidden="true" class="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+					</svg>
+					<span aria-live="polite">{copiadoMcp ? 'Prompt MCP copiado!' : 'Copiar Prompt MCP'}</span>
+				</button>
 				<a
 					href={`/grafo/socio_${encodeURIComponent(dossie.nome)}?grau=2`}
 					class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold rounded-xl border border-slate-600 transition-colors flex items-center gap-2"
 				>
-					<svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<svg aria-hidden="true" class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
 					</svg>
 					<span>Explorar no Grafo</span>

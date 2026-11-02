@@ -110,6 +110,22 @@
 		}
 	}
 
+	let copiadoMcpPolitico = false;
+	async function copiarPromptPoliticoMcp() {
+		if (!politico) return;
+		const nomeExibicao = politico.nome_urna || politico.nome_completo;
+		const promptTexto = `Cruze os doadores de campanha e contratos públicos no PNCP do político ${nomeExibicao} (ID ${politico.id}, ${politico.partido}/${politico.uf}) usando o prompt cruzar_campanha_contratos_pncp e detalhe_politico.`;
+		try {
+			await navigator.clipboard.writeText(promptTexto);
+			copiadoMcpPolitico = true;
+			setTimeout(() => {
+				copiadoMcpPolitico = false;
+			}, 2500);
+		} catch {
+			copiadoMcpPolitico = false;
+		}
+	}
+
 	async function salvarFotoPorUrl() {
 		if (!fotoUrlInput.trim() || !politico) return;
 		salvandoFoto = true;
@@ -442,10 +458,23 @@
 								class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1.5 transition-colors"
 								title="Inserir foto via link de imagem da web ou upload de arquivo"
 							>
-								<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<svg aria-hidden="true" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
 								</svg>
 								<span>Personalizar Foto</span>
+							</button>
+
+							<button
+								type="button"
+								on:click={copiarPromptPoliticoMcp}
+								aria-label="Copiar prompt investigativo MCP deste político"
+								title="Copia prompt pronto para colar no cliente MCP (Claude Desktop, Cursor, etc.)"
+								class="px-3 py-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-300 text-xs font-medium flex items-center gap-1.5 transition-colors"
+							>
+								<svg aria-hidden="true" class="w-3.5 h-3.5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+								</svg>
+								<span aria-live="polite">{copiadoMcpPolitico ? 'Prompt MCP copiado!' : 'Copiar Prompt MCP'}</span>
 							</button>
 
 							{#if politico.foto_base64 || fotoLocalUrl}
