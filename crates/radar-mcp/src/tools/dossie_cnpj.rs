@@ -11,10 +11,12 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::tools::{format_http_error_json, format_validation_error_json, truncar_texto, McpTool};
+use crate::utils::compact::{ordenar_e_truncar_lista, serializar_json_compacto};
 use crate::RadarHttpClient;
 
 pub const MAX_SOCIOS_CONTEXTO: usize = 10;
 pub const MAX_ALERTAS_CONTEXTO: usize = 10;
+pub const MAX_CONTRATOS_CONTEXTO: usize = 10;
 pub const MAX_DESCRICAO_ALERTA_CHARS: usize = 220;
 
 /// Parâmetros de entrada da ferramenta MCP `dossie_cnpj`.
@@ -77,17 +79,30 @@ pub struct AlertaResumidoCnpj {
     pub fonte: String,
 }
 
+/// Contrato público resumido para contexto de LLM.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContratoResumidoCnpj {
+    pub numero_controle_pncp: Option<String>,
+    pub orgao_nome: Option<String>,
+    pub objeto: Option<String>,
+    pub valor: f64,
+    pub data_assinatura: Option<String>,
+    pub ano: Option<i32>,
+}
+
 /// Dossiê CNPJ limpo e truncado para consumo por modelos de linguagem (LLM).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DossieCnpjFormatado {
     pub nota_metodologica: String,
     pub resumo_cadastral: ResumoCadastralCnpj,
+    pub mais_registros: bool,
     pub total_socios: usize,
     pub socios_truncados: bool,
     pub socios: Vec<SocioResumidoCnpj>,
     pub total_alertas: usize,
     pub alertas_truncados: bool,
     pub alertas: Vec<AlertaResumidoCnpj>,
+    pub contratos: Vec<ContratoResumidoCnpj>,
 }
 
 /// Converte o payload bruto de `/api/v1/dossie/cnpj/{cnpj}` em uma estrutura enxuta e truncada.
@@ -267,15 +282,73 @@ pub fn parse_e_formatar_dossie_cnpj(raw: &Value, fallback_cnpj: &str) -> DossieC
         (Vec::new(), total_alertas_declarado.unwrap_or(0), false)
     };
 
+    // Extração e truncamento dos 10 contratos mais recentes do PNCP
+    let raw_contratos = pncp
+        .and_then(|p| p.get("contratos"))
+        .and_then(Value::as_array)
+        .or_else(|| raw.get("contratos").and_then(Value::as_array));
+
+    let (contratos, contratos_truncados) = if let Some(lista) = raw_contratos {
+        let (recentes, truncou) = ordenar_e_truncar_lista(lista, MAX_CONTRATOS_CONTEXTO);
+        let truncado = truncou || total_contratos_pncp > MAX_CONTRATOS_CONTEXTO;
+        let itens = recentes
+            .into_iter()
+            .map(|c| {
+                let obj_bruto = c
+                    .get("objeto")
+                    .or_else(|| c.get("descricao"))
+                    .and_then(Value::as_str)
+                    .map(|s| truncar_texto(s, MAX_DESCRICAO_ALERTA_CHARS));
+                ContratoResumidoCnpj {
+                    numero_controle_pncp: c
+                        .get("numero_controle_pncp")
+                        .or_else(|| c.get("id"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    orgao_nome: c
+                        .get("orgao_nome")
+                        .or_else(|| c.get("orgao"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    objeto: obj_bruto,
+                    valor: c
+                        .get("valor")
+                        .or_else(|| c.get("valor_global"))
+                        .or_else(|| c.get("valor_inicial"))
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0),
+                    data_assinatura: c
+                        .get("data_assinatura")
+                        .or_else(|| c.get("data_publicacao"))
+                        .or_else(|| c.get("data"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    ano: c
+                        .get("ano")
+                        .or_else(|| c.get("ano_contrato"))
+                        .and_then(Value::as_i64)
+                        .map(|n| n as i32),
+                }
+            })
+            .collect();
+        (itens, truncado)
+    } else {
+        (Vec::new(), total_contratos_pncp > MAX_CONTRATOS_CONTEXTO)
+    };
+
+    let mais_registros = socios_truncados || alertas_truncados || contratos_truncados;
+
     DossieCnpjFormatado {
         nota_metodologica: "Alertas detectados por heurística sobre dados públicos; não constituem acusações formais.".to_string(),
         resumo_cadastral,
+        mais_registros,
         total_socios,
         socios_truncados,
         socios,
         total_alertas,
         alertas_truncados,
         alertas,
+        contratos,
     }
 }
 
@@ -366,8 +439,7 @@ impl McpTool for DossieCnpjTool {
                     elapsed_ms,
                     "Dossiê CNPJ formatado com sucesso"
                 );
-                let texto =
-                    serde_json::to_string_pretty(&formatado).unwrap_or_else(|_| "{}".to_string());
+                let texto = serializar_json_compacto(&formatado);
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -487,5 +559,36 @@ mod tests {
         assert_eq!(dossie.alertas.len(), 1);
         assert!(dossie.alertas[0].descricao.ends_with("..."));
         assert!(dossie.alertas[0].descricao.chars().count() <= MAX_DESCRICAO_ALERTA_CHARS + 3);
+        assert!(dossie.mais_registros);
+
+        // Valida que contratos excedentes (> 10) trazem apenas os 10 mais recentes e sinalizam mais_registros
+        let mut contratos_mock = Vec::new();
+        for i in 1..=14 {
+            contratos_mock.push(json!({
+                "numero_controle_pncp": format!("PNCP-{i:02}"),
+                "orgao_nome": "PREFEITURA MUNICIPAL",
+                "objeto": format!("Contrato {i}"),
+                "valor": (i as f64) * 10000.0,
+                "data_assinatura": format!("2024-03-{i:02}")
+            }));
+        }
+        let mut payload_com_contratos = payload_api.clone();
+        payload_com_contratos["qsa"]["socios"] = json!([]);
+        payload_com_contratos["qsa"]["total_socios"] = json!(0);
+        payload_com_contratos["pncp"]["total_contratos"] = json!(14);
+        payload_com_contratos["pncp"]["contratos"] = Value::Array(contratos_mock);
+
+        let dossie_contratos =
+            parse_e_formatar_dossie_cnpj(&payload_com_contratos, "12345678000190");
+        assert_eq!(dossie_contratos.contratos.len(), MAX_CONTRATOS_CONTEXTO);
+        assert!(dossie_contratos.mais_registros);
+        assert_eq!(
+            dossie_contratos.contratos[0].data_assinatura.as_deref(),
+            Some("2024-03-14")
+        );
+        assert_eq!(
+            dossie_contratos.contratos[9].data_assinatura.as_deref(),
+            Some("2024-03-05")
+        );
     }
 }

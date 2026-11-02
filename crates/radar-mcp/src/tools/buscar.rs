@@ -13,6 +13,7 @@ use tracing::{info, warn};
 use crate::tools::{
     format_http_error_json, format_validation_error_json, sanitizar_parametro_log, McpTool,
 };
+use crate::utils::compact::serializar_json_compacto;
 use crate::RadarHttpClient;
 
 pub const DEFAULT_LIMITE_BUSCA: usize = 10;
@@ -265,8 +266,7 @@ impl McpTool for BuscarTool {
                     elapsed_ms,
                     "Busca concluída com sucesso"
                 );
-                let texto =
-                    serde_json::to_string_pretty(&formatado).unwrap_or_else(|_| "{}".to_string());
+                let texto = serializar_json_compacto(&formatado);
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {

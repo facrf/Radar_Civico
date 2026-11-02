@@ -23,8 +23,8 @@ pub use auditoria::{
 };
 pub use buscar::{BuscarInput, BuscarTool, ItemBuscaFormatado, SaidaBuscaFormatada};
 pub use dossie_cnpj::{
-    sanitizar_cnpj, AlertaResumidoCnpj, DossieCnpjFormatado, DossieCnpjInput, DossieCnpjTool,
-    ResumoCadastralCnpj, SocioResumidoCnpj,
+    sanitizar_cnpj, AlertaResumidoCnpj, ContratoResumidoCnpj, DossieCnpjFormatado, DossieCnpjInput,
+    DossieCnpjTool, ResumoCadastralCnpj, SocioResumidoCnpj,
 };
 pub use politicos::{
     mascarar_cpf_estrito, sanitizar_cpf, DetalhePoliticoFormatado, DetalhePoliticoInput,
@@ -185,7 +185,7 @@ pub fn format_http_error_json(ferramenta: &str, err: &RadarHttpError) -> String 
         }
     };
 
-    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| {
+    serde_json::to_string(&payload).unwrap_or_else(|_| {
         r#"{"erro":true,"mensagem":"Falha ao serializar erro HTTP"}"#.to_string()
     })
 }
@@ -198,7 +198,7 @@ pub fn format_validation_error_json(ferramenta: &str, mensagem: &str) -> String 
         "status_http": 400,
         "mensagem": mensagem
     });
-    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| {
+    serde_json::to_string(&payload).unwrap_or_else(|_| {
         r#"{"erro":true,"mensagem":"Parâmetros de entrada inválidos"}"#.to_string()
     })
 }
@@ -304,8 +304,7 @@ impl McpTool for RadarStatusTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 info!(elapsed_ms, "Status da API consultado com sucesso");
-                let text =
-                    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
+                let text = crate::utils::compact::serializar_json_compacto(&payload);
                 Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
             Err(err) => {

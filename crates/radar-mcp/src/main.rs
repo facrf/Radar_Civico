@@ -1,5 +1,6 @@
 pub mod prompts;
 pub mod tools;
+pub mod utils;
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};

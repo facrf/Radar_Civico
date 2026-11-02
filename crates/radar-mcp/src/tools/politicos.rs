@@ -14,6 +14,7 @@ use crate::tools::{
     format_http_error_json, format_validation_error_json, sanitizar_parametro_log, truncar_texto,
     McpTool,
 };
+use crate::utils::compact::{ordenar_e_truncar_lista, serializar_json_compacto};
 use crate::{RadarHttpClient, RadarHttpError};
 
 pub const DEFAULT_PAGINA_POLITICOS: usize = 1;
@@ -22,6 +23,7 @@ pub const MAX_LIMITE_POLITICOS: usize = 50;
 
 pub const MAX_CANDIDATURAS_RESUMO: usize = 10;
 pub const MAX_DOADORES_RESUMO: usize = 10;
+pub const MAX_EMENDAS_RESUMO: usize = 10;
 pub const MAX_EMPRESAS_CPF_RESUMO: usize = 10;
 pub const MAX_DOACOES_CPF_RESUMO: usize = 10;
 pub const MAX_ALERTAS_CPF_RESUMO: usize = 10;
@@ -374,8 +376,7 @@ impl McpTool for ListarPoliticosTool {
                     elapsed_ms,
                     "Listagem de políticos concluída com sucesso"
                 );
-                let texto =
-                    serde_json::to_string_pretty(&saida).unwrap_or_else(|_| "{}".to_string());
+                let texto = serializar_json_compacto(&saida);
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -443,6 +444,16 @@ pub struct CargoVinculoPolitico {
     pub data_exoneracao: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmendaResumoPolitico {
+    pub codigo: Option<String>,
+    pub ano: Option<i32>,
+    pub tipo: Option<String>,
+    pub localidade: Option<String>,
+    pub valor_empenhado: f64,
+    pub valor_pago: f64,
+}
+
 /// Estrutura resumida do perfil completo de um político, descartando metadados internos de UI.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DetalhePoliticoFormatado {
@@ -463,9 +474,11 @@ pub struct DetalhePoliticoFormatado {
     pub total_notas_ceap: i64,
     pub total_bens_declarados: f64,
     pub total_doacoes_campanha: f64,
+    pub mais_registros: bool,
     pub candidaturas: Vec<CandidaturaResumoPolitico>,
     pub cargos_vinculados: Vec<CargoVinculoPolitico>,
     pub principais_doadores: Vec<DoadorResumoPolitico>,
+    pub emendas: Vec<EmendaResumoPolitico>,
 }
 
 /// Converte a resposta de `/api/v1/politicos/{id}` descartando metadados de UI (fotos base64, cores hex, etc.).
@@ -562,112 +575,151 @@ pub fn parse_e_formatar_detalhe_politico(
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
 
-    let candidaturas = raw
-        .get("candidaturas")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .take(MAX_CANDIDATURAS_RESUMO)
-                .map(|c| CandidaturaResumoPolitico {
-                    ano_eleicao: c.get("ano_eleicao").and_then(Value::as_i64).unwrap_or(0) as i32,
-                    cargo: c
-                        .get("cargo")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    partido: c
-                        .get("sigla_partido")
-                        .or_else(|| c.get("partido"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    uf: c
-                        .get("uf")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    municipio: c
-                        .get("municipio")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string),
-                    situacao_totalizacao: c
-                        .get("situacao_totalizacao")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string),
-                    total_bens_declarados: c
-                        .get("total_bens_declarados")
-                        .and_then(Value::as_f64)
-                        .unwrap_or(0.0),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let raw_candidaturas = raw.get("candidaturas").and_then(Value::as_array);
+    let (candidaturas, cand_truncado) = if let Some(arr) = raw_candidaturas {
+        let (recentes, truncou) = ordenar_e_truncar_lista(arr, MAX_CANDIDATURAS_RESUMO);
+        let itens = recentes
+            .into_iter()
+            .map(|c| CandidaturaResumoPolitico {
+                ano_eleicao: c.get("ano_eleicao").and_then(Value::as_i64).unwrap_or(0) as i32,
+                cargo: c
+                    .get("cargo")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                partido: c
+                    .get("sigla_partido")
+                    .or_else(|| c.get("partido"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                uf: c
+                    .get("uf")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                municipio: c
+                    .get("municipio")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                situacao_totalizacao: c
+                    .get("situacao_totalizacao")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                total_bens_declarados: c
+                    .get("total_bens_declarados")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0),
+            })
+            .collect();
+        (itens, truncou)
+    } else {
+        (Vec::new(), false)
+    };
 
-    let cargos_vinculados = raw
-        .get("cargos_autoridades")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .take(MAX_CANDIDATURAS_RESUMO)
-                .map(|ca| CargoVinculoPolitico {
-                    orgao: ca
-                        .get("orgao")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    cargo: ca
-                        .get("cargo")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    esfera: ca
-                        .get("esfera")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    uf: ca
-                        .get("uf")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string),
-                    data_posse: ca
-                        .get("data_posse")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string),
-                    data_exoneracao: ca
-                        .get("data_exoneracao")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let raw_cargos = raw.get("cargos_autoridades").and_then(Value::as_array);
+    let (cargos_vinculados, cargos_truncado) = if let Some(arr) = raw_cargos {
+        let (recentes, truncou) = ordenar_e_truncar_lista(arr, MAX_CANDIDATURAS_RESUMO);
+        let itens = recentes
+            .into_iter()
+            .map(|ca| CargoVinculoPolitico {
+                orgao: ca
+                    .get("orgao")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                cargo: ca
+                    .get("cargo")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                esfera: ca
+                    .get("esfera")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                uf: ca
+                    .get("uf")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                data_posse: ca
+                    .get("data_posse")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                data_exoneracao: ca
+                    .get("data_exoneracao")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+            })
+            .collect();
+        (itens, truncou)
+    } else {
+        (Vec::new(), false)
+    };
 
-    let principais_doadores = raw
-        .get("doadores")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .take(MAX_DOADORES_RESUMO)
-                .map(|d| {
-                    let doc_bruto = d
-                        .get("doador_cpf_cnpj")
+    let raw_doadores = raw.get("doadores").and_then(Value::as_array);
+    let (principais_doadores, doadores_truncado) = if let Some(arr) = raw_doadores {
+        let truncou = arr.len() > MAX_DOADORES_RESUMO;
+        let itens = arr
+            .iter()
+            .take(MAX_DOADORES_RESUMO)
+            .map(|d| {
+                let doc_bruto = d
+                    .get("doador_cpf_cnpj")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                DoadorResumoPolitico {
+                    doador_nome: d
+                        .get("doador_nome")
                         .and_then(Value::as_str)
-                        .unwrap_or("");
-                    DoadorResumoPolitico {
-                        doador_nome: d
-                            .get("doador_nome")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
-                        doador_documento: mascarar_cpf_estrito(doc_bruto),
-                        valor: d.get("valor").and_then(Value::as_f64).unwrap_or(0.0),
-                        ano_eleicao: d.get("ano_eleicao").and_then(Value::as_i64).unwrap_or(0)
-                            as i32,
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+                        .unwrap_or("")
+                        .to_string(),
+                    doador_documento: mascarar_cpf_estrito(doc_bruto),
+                    valor: d.get("valor").and_then(Value::as_f64).unwrap_or(0.0),
+                    ano_eleicao: d.get("ano_eleicao").and_then(Value::as_i64).unwrap_or(0) as i32,
+                }
+            })
+            .collect();
+        (itens, truncou)
+    } else {
+        (Vec::new(), false)
+    };
+
+    let raw_emendas = raw.get("emendas").and_then(Value::as_array);
+    let (emendas, emendas_truncado) = if let Some(arr) = raw_emendas {
+        let (recentes, truncou) = ordenar_e_truncar_lista(arr, MAX_EMENDAS_RESUMO);
+        let itens = recentes
+            .into_iter()
+            .map(|e| EmendaResumoPolitico {
+                codigo: e
+                    .get("codigo")
+                    .or_else(|| e.get("id"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                ano: e.get("ano").and_then(Value::as_i64).map(|n| n as i32),
+                tipo: e
+                    .get("tipo")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                localidade: e
+                    .get("localidade")
+                    .or_else(|| e.get("municipio"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                valor_empenhado: e
+                    .get("valor_empenhado")
+                    .or_else(|| e.get("valor"))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0),
+                valor_pago: e.get("valor_pago").and_then(Value::as_f64).unwrap_or(0.0),
+            })
+            .collect();
+        (itens, truncou)
+    } else {
+        (Vec::new(), false)
+    };
+
+    let mais_registros = cand_truncado || cargos_truncado || doadores_truncado || emendas_truncado;
 
     DetalhePoliticoFormatado {
         id,
@@ -687,9 +739,11 @@ pub fn parse_e_formatar_detalhe_politico(
         total_notas_ceap,
         total_bens_declarados,
         total_doacoes_campanha,
+        mais_registros,
         candidaturas,
         cargos_vinculados,
         principais_doadores,
+        emendas,
     }
 }
 
@@ -780,8 +834,7 @@ impl McpTool for DetalhePoliticoTool {
                     elapsed_ms,
                     "Detalhe do político formatado com sucesso"
                 );
-                let texto =
-                    serde_json::to_string_pretty(&formatado).unwrap_or_else(|_| "{}".to_string());
+                let texto = serializar_json_compacto(&formatado);
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -855,6 +908,7 @@ pub struct DossieCpfFormatado {
     pub score_risco: String,
     pub total_faturado_empresas_ceap: f64,
     pub total_contratado_empresas_pncp: f64,
+    pub mais_registros: bool,
     pub total_empresas_socio: usize,
     pub sociedades_empresariais: Vec<SociedadeCpfResumo>,
     pub total_doacoes_eleitorais: usize,
@@ -1007,12 +1061,17 @@ pub fn parse_e_formatar_dossie_cpf(raw: &Value, fallback_cpf: &str) -> DossieCpf
         })
         .unwrap_or_default();
 
+    let mais_registros = total_empresas_socio > MAX_EMPRESAS_CPF_RESUMO
+        || total_doacoes_eleitorais > MAX_DOACOES_CPF_RESUMO
+        || total_alertas > MAX_ALERTAS_CPF_RESUMO;
+
     DossieCpfFormatado {
         cpf_mascarado,
         nome,
         score_risco,
         total_faturado_empresas_ceap,
         total_contratado_empresas_pncp,
+        mais_registros,
         total_empresas_socio,
         sociedades_empresariais,
         total_doacoes_eleitorais,
@@ -1110,8 +1169,7 @@ impl McpTool for DossieCpfTool {
                     elapsed_ms,
                     "Dossiê CPF formatado com sucesso"
                 );
-                let texto =
-                    serde_json::to_string_pretty(&formatado).unwrap_or_else(|_| "{}".to_string());
+                let texto = serializar_json_compacto(&formatado);
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -1180,7 +1238,7 @@ fn tratar_erro_rota(ferramenta: &str, err: &RadarHttpError) -> CallToolResult {
             "mensagem": format!("Recurso não encontrado (404) ao consultar '{ferramenta}'."),
             "detalhe": detalhe
         });
-        let texto = serde_json::to_string_pretty(&payload)
+        let texto = serde_json::to_string(&payload)
             .unwrap_or_else(|_| r#"{"encontrado":false,"status_http":404}"#.to_string());
         return CallToolResult::error(vec![ContentBlock::text(texto)]);
     }

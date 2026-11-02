@@ -16,6 +16,7 @@ use crate::tools::{
     format_http_error_json, format_validation_error_json, sanitizar_parametro_log, truncar_texto,
     McpTool,
 };
+use crate::utils::compact::serializar_json_compacto;
 use crate::{RadarHttpClient, RadarHttpError};
 
 pub const DEFAULT_LIMITE_ARESTAS_SUBGRAFO: usize = 30;
@@ -400,8 +401,7 @@ impl McpTool for SubgrafoTool {
                     elapsed_ms,
                     "Subgrafo formatado com sucesso"
                 );
-                let texto =
-                    serde_json::to_string_pretty(&formatado).unwrap_or_else(|_| "{}".to_string());
+                let texto = serializar_json_compacto(&formatado);
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -666,8 +666,7 @@ impl McpTool for ListarAlertasTool {
                     total_retornado = saida.total_retornado,
                     elapsed_ms, "Alertas heurísticos listados com sucesso"
                 );
-                let texto =
-                    serde_json::to_string_pretty(&saida).unwrap_or_else(|_| "{}".to_string());
+                let texto = serializar_json_compacto(&saida);
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -713,7 +712,7 @@ fn tratar_erro_auditoria(ferramenta: &str, err: &RadarHttpError) -> CallToolResu
             "mensagem": format!("Recurso não encontrado (404) ao consultar '{ferramenta}'."),
             "detalhe": detalhe
         });
-        let texto = serde_json::to_string_pretty(&payload)
+        let texto = serde_json::to_string(&payload)
             .unwrap_or_else(|_| r#"{"encontrado":false,"status_http":404}"#.to_string());
         return CallToolResult::error(vec![ContentBlock::text(texto)]);
     }
