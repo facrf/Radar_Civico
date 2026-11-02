@@ -1,3 +1,4 @@
+pub mod auditoria;
 pub mod buscar;
 pub mod dossie_cnpj;
 pub mod politicos;
@@ -14,6 +15,10 @@ use serde_json::{Value, json};
 
 use crate::{RadarHttpClient, RadarHttpError};
 
+pub use auditoria::{
+    ArestaSubgrafoFormatada, ItemAlertaFormatado, ListarAlertasInput, ListarAlertasTool,
+    NoSubgrafoFormatado, SaidaListarAlertas, SaidaSubgrafoFormatada, SubgrafoInput, SubgrafoTool,
+};
 pub use buscar::{BuscarInput, BuscarTool, ItemBuscaFormatado, SaidaBuscaFormatada};
 pub use dossie_cnpj::{
     AlertaResumidoCnpj, DossieCnpjFormatado, DossieCnpjInput, DossieCnpjTool, ResumoCadastralCnpj,
@@ -112,6 +117,8 @@ pub fn register_all(registry: &mut ToolRegistry) {
     registry.register(ListarPoliticosTool);
     registry.register(DetalhePoliticoTool);
     registry.register(DossieCpfTool);
+    registry.register(SubgrafoTool);
+    registry.register(ListarAlertasTool);
     registry.register(RadarStatusTool);
 }
 

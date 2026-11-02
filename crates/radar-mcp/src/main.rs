@@ -531,6 +531,38 @@ mod tests {
                 "Consulta o dossiê consolidado de pessoa física por CPF. Retorna sociedades empresariais, doações e alertas vinculados."
             )
         );
+
+        let subgrafo = server
+            .get_tool("subgrafo")
+            .expect("deve conter 'subgrafo'");
+        assert_eq!(
+            subgrafo.description.as_deref(),
+            Some(
+                "Obtém as conexões imediatas (raio 1) de uma entidade no grafo de relacionamentos. Retorna nós conectados e tipos de aresta."
+            )
+        );
+
+        let listar_alertas = server
+            .get_tool("listar_alertas")
+            .expect("deve conter 'listar_alertas'");
+        assert_eq!(
+            listar_alertas.description.as_deref(),
+            Some(
+                "Lista indícios e incongruências detectadas por rotinas automáticas de auditoria. ATENÇÃO: Os alertas são apontamentos heurísticos para triagem investigativa, não constituem comprovação de irregularidade ou condenação."
+            )
+        );
+
+        // Valida se todos os schemas JSON-RPC gerados são objetos JSON Schema válidos
+        let list_result = ListToolsResult::with_all_items(tools.clone());
+        let list_json = serde_json::to_value(&list_result).expect("deve serializar ListToolsResult");
+        let tools_arr = list_json["tools"].as_array().expect("deve conter array 'tools'");
+        assert_eq!(tools_arr.len(), tools.len());
+        for t in tools_arr {
+            assert!(t["name"].as_str().is_some_and(|s| !s.is_empty()));
+            assert!(t["description"].as_str().is_some_and(|s| !s.is_empty()));
+            assert_eq!(t["inputSchema"]["type"], "object");
+            assert!(t["inputSchema"]["properties"].is_object());
+        }
     }
 
     #[tokio::test]
