@@ -1,5 +1,6 @@
 pub mod buscar;
 pub mod dossie_cnpj;
+pub mod politicos;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,6 +18,11 @@ pub use buscar::{BuscarInput, BuscarTool, ItemBuscaFormatado, SaidaBuscaFormatad
 pub use dossie_cnpj::{
     AlertaResumidoCnpj, DossieCnpjFormatado, DossieCnpjInput, DossieCnpjTool, ResumoCadastralCnpj,
     SocioResumidoCnpj, sanitizar_cnpj,
+};
+pub use politicos::{
+    DetalhePoliticoFormatado, DetalhePoliticoInput, DetalhePoliticoTool, DossieCpfFormatado,
+    DossieCpfInput, DossieCpfTool, ItemPoliticoCompacto, ListarPoliticosInput,
+    ListarPoliticosTool, SaidaListarPoliticos, mascarar_cpf_estrito, sanitizar_cpf,
 };
 
 /// Interface modular para definição e execução de ferramentas MCP do Radar Cívico.
@@ -103,6 +109,9 @@ impl ToolRegistry {
 pub fn register_all(registry: &mut ToolRegistry) {
     registry.register(BuscarTool);
     registry.register(DossieCnpjTool);
+    registry.register(ListarPoliticosTool);
+    registry.register(DetalhePoliticoTool);
+    registry.register(DossieCpfTool);
     registry.register(RadarStatusTool);
 }
 

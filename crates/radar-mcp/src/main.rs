@@ -1,6 +1,9 @@
 pub mod tools;
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -14,10 +17,11 @@ use rmcp::{
         ServerConfig, Tool,
     },
     service::{RequestContext, serve_directly},
-    transport::stdio,
 };
 use serde_json::Value;
 use thiserror::Error;
+use tokio::io::{AsyncRead, ReadBuf};
+use tokio::sync::Notify;
 use tools::ToolRegistry;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -222,15 +226,101 @@ impl RadarHttpClient {
 pub struct RadarMcpServer {
     http_client: RadarHttpClient,
     registry: Arc<ToolRegistry>,
+    in_flight: Arc<AtomicUsize>,
+    idle_notify: Arc<Notify>,
+}
+
+struct InFlightGuard {
+    in_flight: Arc<AtomicUsize>,
+    idle_notify: Arc<Notify>,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if self.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.idle_notify.notify_waiters();
+        }
+    }
+}
+
+/// Wrapper sobre `tokio::io::Stdin` que posterga a sinalização de EOF enquanto houver
+/// chamadas de ferramentas em andamento (até o timeout de 8s do cliente HTTP).
+struct GracefulStdin {
+    inner: tokio::io::Stdin,
+    eof_seen: bool,
+    in_flight: Arc<AtomicUsize>,
+    idle_notify: Arc<Notify>,
+    notified: Option<Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+}
+
+impl GracefulStdin {
+    fn new(
+        inner: tokio::io::Stdin,
+        in_flight: Arc<AtomicUsize>,
+        idle_notify: Arc<Notify>,
+    ) -> Self {
+        Self {
+            inner,
+            eof_seen: false,
+            in_flight,
+            idle_notify,
+            notified: None,
+        }
+    }
+}
+
+impl AsyncRead for GracefulStdin {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.eof_seen {
+            let before = buf.filled().len();
+            match Pin::new(&mut self.inner).poll_read(cx, buf) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => {
+                    if buf.filled().len() > before {
+                        return Poll::Ready(Ok(()));
+                    }
+                    self.eof_seen = true;
+                }
+            }
+        }
+
+        while self.in_flight.load(Ordering::Acquire) > 0 {
+            if self.notified.is_none() {
+                let notify = self.idle_notify.clone();
+                self.notified = Some(Box::pin(async move {
+                    tokio::select! {
+                        _ = notify.notified() => {}
+                        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+                    }
+                }));
+            }
+            if self.in_flight.load(Ordering::Acquire) == 0 {
+                self.notified = None;
+                break;
+            }
+            if let Some(fut) = self.notified.as_mut() {
+                match fut.as_mut().poll(cx) {
+                    Poll::Ready(()) => {
+                        self.notified = None;
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+        }
+
+        Poll::Ready(Ok(()))
+    }
 }
 
 impl RadarMcpServer {
     /// Cria uma nova instância do servidor MCP com o registro padrão de ferramentas.
     pub fn new(http_client: RadarHttpClient) -> Self {
-        Self {
-            http_client,
-            registry: Arc::new(ToolRegistry::with_default_tools()),
-        }
+        Self::with_registry(http_client, ToolRegistry::with_default_tools())
     }
 
     /// Cria uma instância do servidor MCP com um `ToolRegistry` customizado.
@@ -238,6 +328,8 @@ impl RadarMcpServer {
         Self {
             http_client,
             registry: Arc::new(registry),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            idle_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -291,6 +383,11 @@ impl ServerHandler for RadarMcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        let _guard = InFlightGuard {
+            in_flight: self.in_flight.clone(),
+            idle_notify: self.idle_notify.clone(),
+        };
         self.registry
             .call_tool(&self.http_client, &request.name, request.arguments)
             .await
@@ -327,7 +424,12 @@ async fn main() -> Result<()> {
         "Iniciando servidor radar-mcp via transporte stdio"
     );
 
-    let running = serve_directly(server, stdio(), None);
+    let stdin = GracefulStdin::new(
+        tokio::io::stdin(),
+        server.in_flight.clone(),
+        server.idle_notify.clone(),
+    );
+    let running = serve_directly(server, (stdin, tokio::io::stdout()), None);
     running
         .waiting()
         .await
@@ -397,6 +499,36 @@ mod tests {
             dossie.description.as_deref(),
             Some(
                 "Consulta o dossiê consolidado de uma pessoa jurídica pelo CNPJ. Retorna resumo cadastral, sócios e alertas detectados por heurística (não são acusações formais)."
+            )
+        );
+
+        let listar_pol = server
+            .get_tool("listar_politicos")
+            .expect("deve conter 'listar_politicos'");
+        assert_eq!(
+            listar_pol.description.as_deref(),
+            Some(
+                "Lista políticos cadastrados com suporte a filtros por estado (UF) e partido. Retorna identificadores e nomes para cruzamento."
+            )
+        );
+
+        let detalhe_pol = server
+            .get_tool("detalhe_politico")
+            .expect("deve conter 'detalhe_politico'");
+        assert_eq!(
+            detalhe_pol.description.as_deref(),
+            Some(
+                "Consulta o perfil completo de um político por ID, incluindo histórico de candidaturas e vínculos conhecidos."
+            )
+        );
+
+        let dossie_cpf = server
+            .get_tool("dossie_cpf")
+            .expect("deve conter 'dossie_cpf'");
+        assert_eq!(
+            dossie_cpf.description.as_deref(),
+            Some(
+                "Consulta o dossiê consolidado de pessoa física por CPF. Retorna sociedades empresariais, doações e alertas vinculados."
             )
         );
     }
