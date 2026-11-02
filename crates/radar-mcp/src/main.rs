@@ -248,6 +248,22 @@ impl RadarHttpClient {
         let status_code = status.as_u16();
         tracing::Span::current().record("status_http", status_code);
 
+        if status_code == 204 {
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            info!(
+                rota = %rota_segura,
+                status_http = status_code,
+                elapsed_ms,
+                "Resposta HTTP 204 (sem conteúdo) recebida da API local"
+            );
+            return Err(RadarHttpError::HttpStatus {
+                status: 204,
+                url: url_segura,
+                body: String::new(),
+            });
+        }
+
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let elapsed_ms = inicio.elapsed().as_millis() as u64;
@@ -772,11 +788,15 @@ mod tests {
             panic!("esperado CallToolResponse::Complete");
         };
         let serialized = serde_json::to_value(&result).unwrap();
-        assert_eq!(serialized["isError"], true);
+        assert_eq!(serialized["isError"], false);
         let text = serialized["content"][0]["text"].as_str().unwrap();
-        let err_json: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(err_json["erro"], true);
-        assert_eq!(err_json["status_http"], 404);
-        assert_eq!(err_json["detalhe"], "CNPJ não localizado na base");
+        let payload_404: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(payload_404["encontrado"], false);
+        assert_eq!(
+            payload_404["mensagem"],
+            "Nenhum registro localizado para o identificador fornecido."
+        );
+        assert_eq!(payload_404["status_http"], 404);
+        assert_eq!(payload_404["detalhe"], "CNPJ não localizado na base");
     }
 }

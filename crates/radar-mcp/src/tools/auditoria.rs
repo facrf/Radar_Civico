@@ -13,11 +13,11 @@ use tracing::{info, warn};
 
 use crate::tools::politicos::mascarar_cpf_estrito;
 use crate::tools::{
-    format_http_error_json, format_validation_error_json, sanitizar_parametro_log, truncar_texto,
-    McpTool,
+    format_deserialization_error_json, format_validation_error_json, sanitizar_parametro_log,
+    tratar_erro_http_tool, truncar_texto, McpTool,
 };
 use crate::utils::compact::serializar_json_compacto;
-use crate::{RadarHttpClient, RadarHttpError};
+use crate::RadarHttpClient;
 
 pub const DEFAULT_LIMITE_ARESTAS_SUBGRAFO: usize = 30;
 pub const MAX_LIMITE_ARESTAS_SUBGRAFO: usize = 50;
@@ -353,10 +353,7 @@ impl McpTool for SubgrafoTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'subgrafo'");
-                let msg = format_validation_error_json(
-                    "subgrafo",
-                    &format!("Parâmetros inválidos para 'subgrafo': {err}"),
-                );
+                let msg = format_deserialization_error_json("subgrafo", &err);
                 return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
             }
         };
@@ -413,7 +410,7 @@ impl McpTool for SubgrafoTool {
                     erro = %err,
                     "Falha na chamada à API durante 'subgrafo'"
                 );
-                Ok(tratar_erro_auditoria("subgrafo", &err))
+                Ok(tratar_erro_http_tool("subgrafo", client.base_url(), &err))
             }
         }
     }
@@ -618,10 +615,7 @@ impl McpTool for ListarAlertasTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'listar_alertas'");
-                let msg = format_validation_error_json(
-                    "listar_alertas",
-                    &format!("Parâmetros inválidos para 'listar_alertas': {err}"),
-                );
+                let msg = format_deserialization_error_json("listar_alertas", &err);
                 return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
             }
         };
@@ -677,48 +671,14 @@ impl McpTool for ListarAlertasTool {
                     erro = %err,
                     "Falha na chamada à API durante 'listar_alertas'"
                 );
-                Ok(tratar_erro_auditoria("listar_alertas", &err))
+                Ok(tratar_erro_http_tool(
+                    "listar_alertas",
+                    client.base_url(),
+                    &err,
+                ))
             }
         }
     }
-}
-
-fn tratar_erro_auditoria(ferramenta: &str, err: &RadarHttpError) -> CallToolResult {
-    if let RadarHttpError::HttpStatus {
-        status: 404,
-        url,
-        body,
-    } = err
-    {
-        let detalhe = serde_json::from_str::<Value>(body)
-            .ok()
-            .and_then(|v| {
-                v.get("mensagem")
-                    .or_else(|| v.get("error"))
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string)
-            })
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| {
-                "Entidade ou subgrafo não localizado na base de dados do Radar Cívico.".to_string()
-            });
-
-        let payload = json!({
-            "erro": false,
-            "encontrado": false,
-            "status_http": 404,
-            "ferramenta": ferramenta,
-            "url": url,
-            "mensagem": format!("Recurso não encontrado (404) ao consultar '{ferramenta}'."),
-            "detalhe": detalhe
-        });
-        let texto = serde_json::to_string(&payload)
-            .unwrap_or_else(|_| r#"{"encontrado":false,"status_http":404}"#.to_string());
-        return CallToolResult::error(vec![ContentBlock::text(texto)]);
-    }
-
-    let erro_json = format_http_error_json(ferramenta, err);
-    CallToolResult::error(vec![ContentBlock::text(erro_json)])
 }
 
 #[cfg(test)]

@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::tools::{
-    format_http_error_json, format_validation_error_json, sanitizar_parametro_log, McpTool,
+    format_deserialization_error_json, format_validation_error_json, sanitizar_parametro_log,
+    tratar_erro_http_tool, McpTool,
 };
 use crate::utils::compact::serializar_json_compacto;
 use crate::RadarHttpClient;
@@ -222,10 +223,7 @@ impl McpTool for BuscarTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'buscar'");
-                let msg = format_validation_error_json(
-                    "buscar",
-                    &format!("Parâmetros inválidos para 'buscar': {err}"),
-                );
+                let msg = format_deserialization_error_json("buscar", &err);
                 return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
             }
         };
@@ -278,8 +276,7 @@ impl McpTool for BuscarTool {
                     erro = %err,
                     "Falha na chamada à API durante 'buscar'"
                 );
-                let erro_json = format_http_error_json("buscar", &err);
-                Ok(CallToolResult::error(vec![ContentBlock::text(erro_json)]))
+                Ok(tratar_erro_http_tool("buscar", client.base_url(), &err))
             }
         }
     }

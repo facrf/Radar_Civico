@@ -11,11 +11,11 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::tools::{
-    format_http_error_json, format_validation_error_json, sanitizar_parametro_log, truncar_texto,
-    McpTool,
+    format_deserialization_error_json, format_validation_error_json, sanitizar_parametro_log,
+    tratar_erro_http_tool, truncar_texto, McpTool,
 };
 use crate::utils::compact::{ordenar_e_truncar_lista, serializar_json_compacto};
-use crate::{RadarHttpClient, RadarHttpError};
+use crate::RadarHttpClient;
 
 pub const DEFAULT_PAGINA_POLITICOS: usize = 1;
 pub const DEFAULT_LIMITE_POLITICOS: usize = 20;
@@ -313,10 +313,7 @@ impl McpTool for ListarPoliticosTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'listar_politicos'");
-                let msg = format_validation_error_json(
-                    "listar_politicos",
-                    &format!("Parâmetros inválidos para 'listar_politicos': {err}"),
-                );
+                let msg = format_deserialization_error_json("listar_politicos", &err);
                 return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
             }
         };
@@ -383,7 +380,11 @@ impl McpTool for ListarPoliticosTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 warn!(elapsed_ms, erro = %err, "Falha na chamada à API durante 'listar_politicos'");
-                Ok(tratar_erro_rota("listar_politicos", &err))
+                Ok(tratar_erro_http_tool(
+                    "listar_politicos",
+                    client.base_url(),
+                    &err,
+                ))
             }
         }
     }
@@ -797,10 +798,7 @@ impl McpTool for DetalhePoliticoTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'detalhe_politico'");
-                let msg = format_validation_error_json(
-                    "detalhe_politico",
-                    &format!("Parâmetros inválidos para 'detalhe_politico': {err}"),
-                );
+                let msg = format_deserialization_error_json("detalhe_politico", &err);
                 return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
             }
         };
@@ -846,7 +844,11 @@ impl McpTool for DetalhePoliticoTool {
                     erro = %err,
                     "Falha na chamada à API durante 'detalhe_politico'"
                 );
-                Ok(tratar_erro_rota("detalhe_politico", &err))
+                Ok(tratar_erro_http_tool(
+                    "detalhe_politico",
+                    client.base_url(),
+                    &err,
+                ))
             }
         }
     }
@@ -1131,10 +1133,7 @@ impl McpTool for DossieCpfTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'dossie_cpf'");
-                let msg = format_validation_error_json(
-                    "dossie_cpf",
-                    &format!("Parâmetros inválidos para 'dossie_cpf': {err}"),
-                );
+                let msg = format_deserialization_error_json("dossie_cpf", &err);
                 return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
             }
         };
@@ -1181,7 +1180,7 @@ impl McpTool for DossieCpfTool {
                     erro = %err,
                     "Falha na chamada à API durante 'dossie_cpf'"
                 );
-                Ok(tratar_erro_rota("dossie_cpf", &err))
+                Ok(tratar_erro_http_tool("dossie_cpf", client.base_url(), &err))
             }
         }
     }
@@ -1206,45 +1205,6 @@ fn extrair_id_valor(val: Option<&Value>) -> Option<String> {
         }
     }
     None
-}
-
-/// Trata erros HTTP, fornecendo uma mensagem informativa em caso de 404 sem encerrar a sessão stdio.
-fn tratar_erro_rota(ferramenta: &str, err: &RadarHttpError) -> CallToolResult {
-    if let RadarHttpError::HttpStatus {
-        status: 404,
-        url,
-        body,
-    } = err
-    {
-        let detalhe = serde_json::from_str::<Value>(body)
-            .ok()
-            .and_then(|v| {
-                v.get("mensagem")
-                    .or_else(|| v.get("error"))
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string)
-            })
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| {
-                "Registro não localizado na base de dados do Radar Cívico.".to_string()
-            });
-
-        let payload = json!({
-            "erro": false,
-            "encontrado": false,
-            "status_http": 404,
-            "ferramenta": ferramenta,
-            "url": url,
-            "mensagem": format!("Recurso não encontrado (404) ao consultar '{ferramenta}'."),
-            "detalhe": detalhe
-        });
-        let texto = serde_json::to_string(&payload)
-            .unwrap_or_else(|_| r#"{"encontrado":false,"status_http":404}"#.to_string());
-        return CallToolResult::error(vec![ContentBlock::text(texto)]);
-    }
-
-    let erro_json = format_http_error_json(ferramenta, err);
-    CallToolResult::error(vec![ContentBlock::text(erro_json)])
 }
 
 #[cfg(test)]

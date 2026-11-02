@@ -140,67 +140,162 @@ pub fn register_all(registry: &mut ToolRegistry) {
     registry.register(ListarAlertasTool);
 }
 
-/// Formata um erro HTTP (incluindo status não-200) em uma estrutura JSON clara sem causar panic.
-pub fn format_http_error_json(ferramenta: &str, err: &RadarHttpError) -> String {
-    let payload = match err {
-        RadarHttpError::HttpStatus { status, url, body } => {
-            let detalhe_json = serde_json::from_str::<Value>(body).ok();
-            let mensagem_servidor = detalhe_json
-                .as_ref()
-                .and_then(|v| {
-                    v.get("mensagem")
-                        .or_else(|| v.get("error"))
-                        .and_then(Value::as_str)
-                })
-                .map(ToString::to_string)
-                .unwrap_or_else(|| truncar_texto(body.trim(), 300));
+/// Mensagem amigável padrão quando um recurso retorna HTTP 404 ou 204 (vazio/não encontrado).
+pub const MENSAGEM_REGISTRO_NAO_ENCONTRADO: &str =
+    "Nenhum registro localizado para o identificador fornecido.";
 
-            json!({
-                "erro": true,
-                "ferramenta": ferramenta,
-                "status_http": status,
-                "url": url,
-                "mensagem": format!("A API do Radar Cívico retornou status HTTP {} para '{}'", status, ferramenta),
-                "detalhe": mensagem_servidor
-            })
-        }
-        RadarHttpError::Request { url, source } => {
-            json!({
-                "erro": true,
-                "ferramenta": ferramenta,
-                "status_http": null,
-                "url": url,
-                "mensagem": format!("Falha de comunicação com a API do Radar Cívico ao executar '{}'", ferramenta),
-                "detalhe": source.to_string()
-            })
-        }
-        RadarHttpError::ClientBuild(source) => {
-            json!({
-                "erro": true,
-                "ferramenta": ferramenta,
-                "status_http": null,
-                "mensagem": "Falha ao construir cliente HTTP",
-                "detalhe": source.to_string()
-            })
-        }
-    };
+/// Monta a mensagem limpa de falha de infraestrutura para a URL configurada do Radar Cívico.
+pub fn mensagem_falha_infraestrutura(radar_url: &str) -> String {
+    let url_limpa = radar_url.trim().trim_end_matches('/');
+    format!(
+        "Não foi possível conectar à API local do Radar em {url_limpa}. Verifique se o serviço está ativo."
+    )
+}
+
+/// Formata a resposta amigável para resultado vazio ou não encontrado (HTTP 404 / 204).
+pub fn format_not_found_json(ferramenta: &str, status: u16, body: &str) -> String {
+    let detalhe = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("mensagem")
+                .or_else(|| v.get("error"))
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| truncar_texto(&s, 200));
+
+    let mut payload = json!({
+        "encontrado": false,
+        "ferramenta": ferramenta,
+        "status_http": status,
+        "mensagem": MENSAGEM_REGISTRO_NAO_ENCONTRADO
+    });
+
+    if let (Some(det), Some(obj)) = (detalhe, payload.as_object_mut()) {
+        obj.insert("detalhe".to_string(), Value::String(det));
+    }
 
     serde_json::to_string(&payload).unwrap_or_else(|_| {
-        r#"{"erro":true,"mensagem":"Falha ao serializar erro HTTP"}"#.to_string()
+        r#"{"encontrado":false,"mensagem":"Nenhum registro localizado para o identificador fornecido."}"#
+            .to_string()
     })
 }
 
-/// Formata um erro de validação de parâmetros de entrada em JSON.
+/// Formata falhas reais de infraestrutura (Timeout, HTTP 500, Conexão Recusada) em JSON limpo,
+/// sem jamais expor stacktraces brutos ou credenciais de headers.
+pub fn format_infra_error_json(ferramenta: &str, radar_url: &str, err: &RadarHttpError) -> String {
+    let mensagem = mensagem_falha_infraestrutura(radar_url);
+    let payload = match err {
+        RadarHttpError::HttpStatus { status, .. } => json!({
+            "erro": true,
+            "ferramenta": ferramenta,
+            "status_http": status,
+            "mensagem": mensagem
+        }),
+        RadarHttpError::Request { .. } | RadarHttpError::ClientBuild(_) => json!({
+            "erro": true,
+            "ferramenta": ferramenta,
+            "mensagem": mensagem
+        }),
+    };
+
+    serde_json::to_string(&payload).unwrap_or_else(|_| {
+        format!(
+            r#"{{"erro":true,"mensagem":"Não foi possível conectar à API local do Radar em {}. Verifique se o serviço está ativo."}}"#,
+            radar_url.trim().trim_end_matches('/')
+        )
+    })
+}
+
+/// Mantida por compatibilidade: delega para `format_infra_error_json` usando a URL padrão quando omitida.
+pub fn format_http_error_json(ferramenta: &str, err: &RadarHttpError) -> String {
+    format_infra_error_json(ferramenta, crate::DEFAULT_RADAR_URL, err)
+}
+
+/// Diferencia estritamente:
+/// 1. HTTP 404 / 204 -> `CallToolResult::success` (`is_error: false`) com `{"encontrado": false, "mensagem": "Nenhum registro localizado para o identificador fornecido."}`.
+/// 2. Falhas reais de infraestrutura (Timeout, HTTP 500, Conexão Recusada) -> `CallToolResult::error` (`is_error: true`)
+///    com `"Não foi possível conectar à API local do Radar em {RADAR_URL}. Verifique se o serviço está ativo."`,
+///    sem expor stacktraces brutos ou credenciais.
+pub fn tratar_erro_http_tool(
+    ferramenta: &str,
+    radar_url: &str,
+    err: &RadarHttpError,
+) -> CallToolResult {
+    if let RadarHttpError::HttpStatus {
+        status: status @ (404 | 204),
+        body,
+        ..
+    } = err
+    {
+        let texto = format_not_found_json(ferramenta, *status, body);
+        return CallToolResult::success(vec![ContentBlock::text(texto)]);
+    }
+
+    let erro_json = format_infra_error_json(ferramenta, radar_url, err);
+    CallToolResult::error(vec![ContentBlock::text(erro_json)])
+}
+
+/// Retorna a instrução corretiva clara de tipos e parâmetros esperados para cada ferramenta MCP.
+pub fn instrucao_corretiva_ferramenta(ferramenta: &str) -> &'static str {
+    match ferramenta {
+        "buscar" => {
+            "Correção: informe 'q' como string não vazia e 'limite' (opcional) como número inteiro entre 1 e 25 (não envie string em campo numérico). Exemplo: {\"q\": \"Silva\", \"limite\": 10}."
+        }
+        "dossie_cnpj" => {
+            "Correção: informe 'cnpj' como string contendo os 14 caracteres do CNPJ (com ou sem pontuação). Exemplo: {\"cnpj\": \"00.000.000/0001-91\"}."
+        }
+        "listar_politicos" => {
+            "Correção: informe 'uf' (opcional, string de 2 letras), 'partido' (opcional, string), 'pagina' (opcional, número inteiro >= 1) e 'limite' (opcional, número inteiro entre 1 e 50). Não envie strings em 'pagina' ou 'limite'. Exemplo: {\"uf\": \"SP\", \"pagina\": 1, \"limite\": 20}."
+        }
+        "detalhe_politico" => {
+            "Correção: informe 'id' como número inteiro ou string não vazia identificando o político. Exemplo: {\"id\": 42} ou {\"id\": \"280000123456\"}."
+        }
+        "dossie_cpf" => {
+            "Correção: informe 'cpf' como string contendo os dígitos do CPF (com ou sem pontuação). Exemplo: {\"cpf\": \"123.456.789-01\"}."
+        }
+        "subgrafo" => {
+            "Correção: informe 'id' como string não vazia (ex.: 'cnpj:...' ou 'cpf:...') e 'limite_arestas' (opcional) como número inteiro entre 1 e 50 (não envie string em campo numérico). Exemplo: {\"id\": \"cnpj:00000000000191\", \"limite_arestas\": 30}."
+        }
+        "listar_alertas" => {
+            "Correção: informe 'tipo' (opcional, string), 'severidade' (opcional: 'baixa', 'media' ou 'alta') e 'limite' (opcional) como número inteiro entre 1 e 50 (não envie string em campo numérico). Exemplo: {\"severidade\": \"alta\", \"limite\": 15}."
+        }
+        _ => {
+            "Correção: verifique os nomes e tipos dos parâmetros no inputSchema da ferramenta (campos numéricos exigem números inteiros sem aspas e campos textuais exigem strings)."
+        }
+    }
+}
+
+/// Formata um erro de validação de parâmetros de entrada em JSON com instrução corretiva clara.
 pub fn format_validation_error_json(ferramenta: &str, mensagem: &str) -> String {
+    let instrucao = instrucao_corretiva_ferramenta(ferramenta);
+    let mensagem_completa = if mensagem.contains("Correção:") {
+        mensagem.to_string()
+    } else {
+        format!("{mensagem} {instrucao}")
+    };
+
     let payload = json!({
         "erro": true,
         "ferramenta": ferramenta,
         "status_http": 400,
-        "mensagem": mensagem
+        "mensagem": mensagem_completa,
+        "instrucao_corretiva": instrucao
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| {
         r#"{"erro":true,"mensagem":"Parâmetros de entrada inválidos"}"#.to_string()
     })
+}
+
+/// Formata falhas de desserialização de parâmetros de entrada (ex.: string em campo numérico)
+/// em uma instrução corretiva clara sem causar panic.
+pub fn format_deserialization_error_json(ferramenta: &str, err: &serde_json::Error) -> String {
+    let instrucao = instrucao_corretiva_ferramenta(ferramenta);
+    let mensagem = format!(
+        "Parâmetros de entrada com tipo ou formato inválido para '{ferramenta}' ({err}). {instrucao}"
+    );
+    format_validation_error_json(ferramenta, &mensagem)
 }
 
 /// Trunca um texto longo preservando fronteiras de caracteres UTF-8.
@@ -311,9 +406,139 @@ impl McpTool for RadarStatusTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 error!(elapsed_ms, erro = %err, "Falha ao consultar status da API");
-                let erro_json = format_http_error_json("radar_status", &err);
-                Ok(CallToolResult::error(vec![ContentBlock::text(erro_json)]))
+                Ok(tratar_erro_http_tool(
+                    "radar_status",
+                    client.base_url(),
+                    &err,
+                ))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RadarMcpConfig;
+
+    #[test]
+    fn test_tratar_erro_http_404_e_204_retornam_sucesso_com_encontrado_false() {
+        for status in [404u16, 204u16] {
+            let err = RadarHttpError::HttpStatus {
+                status,
+                url: "http://127.0.0.1:28080/api/v1/dossie/cnpj/99999999000199".to_string(),
+                body: r#"{"mensagem":"Registro inexistente"}"#.to_string(),
+            };
+
+            let result = tratar_erro_http_tool("dossie_cnpj", "http://127.0.0.1:28080", &err);
+            let serialized = serde_json::to_value(&result).unwrap();
+
+            assert_eq!(
+                serialized["isError"], false,
+                "HTTP {status} não deve marcar isError=true"
+            );
+            let text = serialized["content"][0]["text"].as_str().unwrap();
+            let payload: Value = serde_json::from_str(text).unwrap();
+            assert_eq!(payload["encontrado"], false);
+            assert_eq!(
+                payload["mensagem"],
+                "Nenhum registro localizado para o identificador fornecido."
+            );
+            assert_eq!(payload["status_http"], status);
+        }
+    }
+
+    #[test]
+    fn test_tratar_erro_infraestrutura_500_usa_is_error_true_e_oculta_stacktrace() {
+        let stacktrace_sensivel = "thread 'tokio-runtime-worker' panicked at crates/server/src/main.rs:102\nAuthorization: Bearer segredo-123";
+        let err = RadarHttpError::HttpStatus {
+            status: 500,
+            url: "http://127.0.0.1:28080/api/v1/busca".to_string(),
+            body: stacktrace_sensivel.to_string(),
+        };
+
+        let result = tratar_erro_http_tool("buscar", "http://127.0.0.1:28080", &err);
+        let serialized = serde_json::to_value(&result).unwrap();
+
+        assert_eq!(serialized["isError"], true);
+        let text = serialized["content"][0]["text"].as_str().unwrap();
+        assert!(
+            !text.contains("panicked at") && !text.contains("segredo-123"),
+            "Nunca deve vazar stacktrace ou credencial: {text}"
+        );
+
+        let payload: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(payload["erro"], true);
+        assert_eq!(
+            payload["mensagem"],
+            "Não foi possível conectar à API local do Radar em http://127.0.0.1:28080. Verifique se o serviço está ativo."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validacao_parametros_tipos_invalidos_retorna_instrucao_corretiva_sem_panic() {
+        let cfg = RadarMcpConfig {
+            radar_url: "http://127.0.0.1:28080".to_string(),
+            radar_api_key: None,
+        };
+        let client = RadarHttpClient::new(&cfg).unwrap();
+        let registry = ToolRegistry::with_default_tools();
+
+        // String em campo numérico `limite` em `buscar`, `listar_politicos`, `listar_alertas` e `limite_arestas` em `subgrafo`
+        let casos = [
+            ("buscar", json!({ "q": "Silva", "limite": "dez" })),
+            (
+                "listar_politicos",
+                json!({ "uf": "SP", "pagina": "primeira", "limite": "vinte" }),
+            ),
+            (
+                "subgrafo",
+                json!({ "id": "cnpj:00000000000191", "limite_arestas": "trinta" }),
+            ),
+            (
+                "listar_alertas",
+                json!({ "severidade": "alta", "limite": "quinze" }),
+            ),
+            ("dossie_cnpj", json!({ "cnpj": 12345678000190u64 })),
+            ("dossie_cpf", json!({ "cpf": 12345678901u64 })),
+            ("detalhe_politico", json!({ "id": ["array_invalido"] })),
+        ];
+
+        for (tool_name, invalid_args) in casos {
+            let args_obj = invalid_args.as_object().cloned();
+            let resp = registry
+                .call_tool(&client, tool_name, args_obj)
+                .await
+                .expect(
+                "validação de tipos inválidos não deve retornar erro de protocolo nem dar panic",
+            );
+
+            let CallToolResponse::Complete(result) = resp else {
+                panic!("esperado CallToolResponse::Complete para {tool_name}");
+            };
+            let serialized = serde_json::to_value(&result).unwrap();
+            assert_eq!(
+                serialized["isError"], true,
+                "Tipo inválido em '{tool_name}' deve retornar isError=true"
+            );
+
+            let text = serialized["content"][0]["text"].as_str().unwrap();
+            let payload: Value = serde_json::from_str(text).unwrap();
+            assert_eq!(payload["erro"], true);
+            assert_eq!(payload["ferramenta"], tool_name);
+            assert!(
+                payload["mensagem"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("Correção:"),
+                "Mensagem de erro de '{tool_name}' deve conter instrução corretiva clara: {payload}"
+            );
+            assert!(
+                payload["instrucao_corretiva"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "Campo 'instrucao_corretiva' deve estar preenchido para '{tool_name}'"
+            );
         }
     }
 }

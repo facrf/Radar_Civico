@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use crate::tools::{format_http_error_json, format_validation_error_json, truncar_texto, McpTool};
+use crate::tools::{
+    format_deserialization_error_json, format_validation_error_json, tratar_erro_http_tool,
+    truncar_texto, McpTool,
+};
 use crate::utils::compact::{ordenar_e_truncar_lista, serializar_json_compacto};
 use crate::RadarHttpClient;
 
@@ -403,10 +406,7 @@ impl McpTool for DossieCnpjTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'dossie_cnpj'");
-                let msg = format_validation_error_json(
-                    "dossie_cnpj",
-                    &format!("Parâmetros inválidos para 'dossie_cnpj': {err}"),
-                );
+                let msg = format_deserialization_error_json("dossie_cnpj", &err);
                 return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
             }
         };
@@ -451,8 +451,11 @@ impl McpTool for DossieCnpjTool {
                     erro = %err,
                     "Falha na chamada à API durante 'dossie_cnpj'"
                 );
-                let erro_json = format_http_error_json("dossie_cnpj", &err);
-                Ok(CallToolResult::error(vec![ContentBlock::text(erro_json)]))
+                Ok(tratar_erro_http_tool(
+                    "dossie_cnpj",
+                    client.base_url(),
+                    &err,
+                ))
             }
         }
     }

@@ -417,14 +417,19 @@ async fn test_stdio_tools_call_erro_404_retorna_erro_controlado_e_mantem_process
         );
 
         assert_eq!(
-            err_resp["result"]["isError"], true,
-            "Retorno 404 deve sinalizar isError=true no CallToolResult"
+            err_resp["result"]["isError"], false,
+            "Retorno 404 deve retornar CallToolResult bem-sucedido (isError=false) com encontrado=false"
         );
         let err_text = err_resp["result"]["content"][0]["text"]
             .as_str()
-            .expect("deve conter mensagem JSON de erro controlado");
+            .expect("deve conter mensagem amigável JSON de não encontrado");
         let err_payload: Value =
-            serde_json::from_str(err_text).expect("erro controlado deve ser JSON estruturado");
+            serde_json::from_str(err_text).expect("resposta de 404 deve ser JSON estruturado");
+        assert_eq!(err_payload["encontrado"], false);
+        assert_eq!(
+            err_payload["mensagem"],
+            "Nenhum registro localizado para o identificador fornecido."
+        );
         assert_eq!(err_payload["status_http"], 404);
         assert_eq!(err_payload["ferramenta"], "dossie_cnpj");
         assert!(err_payload["detalhe"]
@@ -651,4 +656,122 @@ async fn test_stdio_prompts_list_e_prompts_get_cruzar_campanha_contratos_pncp() 
     assert!(text.contains("Passo 4: Consultar contratos/vínculos e disparar `listar_alertas`"));
     assert!(text
         .contains("Passo 5: Formatar relatório com links/fontes originais e avisos de heurística"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_stdio_diferencia_204_vazio_500_infraestrutura_e_erro_validacao_input() {
+    let mock_server = MockServer::start().await;
+
+    // 1. Rota que retorna 204 No Content
+    Mock::given(method("GET"))
+        .and(path("/api/v1/politicos/99999"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    // 2. Rota que retorna 500 Internal Server Error com stacktrace bruto
+    Mock::given(method("GET"))
+        .and(path("/api/v1/busca"))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_string(
+                "thread 'actix-rt' panicked at src/db.rs:88: SQLITE_CORRUPT\nstack backtrace:\n0: std::panicking::begin_panic",
+            ),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let radar_url = mock_server.uri();
+    let requests = vec![
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "test-error-scenarios", "version": "0.1.0" }
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }),
+        // Cenário 1: HTTP 204 -> CallToolResult::success (isError: false)
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "detalhe_politico",
+                "arguments": { "id": 99999 }
+            }
+        }),
+        // Cenário 2: HTTP 500 -> CallToolResult::error (isError: true) com mensagem limpa e sem stacktrace
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "buscar",
+                "arguments": { "q": "teste", "limite": 5 }
+            }
+        }),
+        // Cenário 3: Validação de tipo inválido (string em campo numérico) -> instrução corretiva clara
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "buscar",
+                "arguments": { "q": "teste", "limite": "cinco" }
+            }
+        }),
+    ];
+
+    let responses = run_mcp_batch(
+        radar_url.clone(),
+        Some("credencial-super-secreta-header".to_string()),
+        requests,
+    )
+    .await;
+
+    // Verifica Cenário 1 (HTTP 204)
+    let resp_204 = find_response_by_id(&responses, 2);
+    assert_eq!(resp_204["result"]["isError"], false);
+    let body_204: Value =
+        serde_json::from_str(resp_204["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(body_204["encontrado"], false);
+    assert_eq!(
+        body_204["mensagem"],
+        "Nenhum registro localizado para o identificador fornecido."
+    );
+
+    // Verifica Cenário 2 (HTTP 500 / falha de infraestrutura)
+    let resp_500 = find_response_by_id(&responses, 3);
+    assert_eq!(resp_500["result"]["isError"], true);
+    let text_500 = resp_500["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(!text_500.contains("panicked at"));
+    assert!(!text_500.contains("SQLITE_CORRUPT"));
+    assert!(!text_500.contains("credencial-super-secreta-header"));
+    let body_500: Value = serde_json::from_str(text_500).unwrap();
+    assert_eq!(
+        body_500["mensagem"],
+        format!(
+            "Não foi possível conectar à API local do Radar em {}. Verifique se o serviço está ativo.",
+            radar_url.trim_end_matches('/')
+        )
+    );
+
+    // Verifica Cenário 3 (Validação de parâmetros de entrada)
+    let resp_val = find_response_by_id(&responses, 4);
+    assert_eq!(resp_val["result"]["isError"], true);
+    let body_val: Value =
+        serde_json::from_str(resp_val["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(body_val["erro"], true);
+    assert!(body_val["mensagem"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Correção:"));
 }
