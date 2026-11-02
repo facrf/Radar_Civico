@@ -6,4 +6,5 @@ members = [
     "crates/auditor",
     "crates/graph",
     "crates/server",
+    "crates/radar-mcp",
 ]
