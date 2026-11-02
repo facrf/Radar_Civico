@@ -359,6 +359,13 @@ fn contem_notificacao_exit(bytes: &[u8]) -> bool {
     false
 }
 
+/// Verifica se um bloco de bytes lido do `stdin` contém chamadas `"tools/call"`.
+fn contem_chamada_tool(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes)
+        .map(|s| s.contains("tools/call"))
+        .unwrap_or(false)
+}
+
 /// Wrapper sobre `tokio::io::Stdin` que monitora continuamente o canal de leitura:
 /// - Quando `stdin` atinge EOF (0 bytes lidos) ou recebe `"method": "exit"`, inicia o encerramento gracioso.
 /// - Caso haja chamadas de ferramentas em voo no instante do EOF, aguarda até `SHUTDOWN_TIMEOUT_SECS` (2s)
@@ -366,6 +373,8 @@ fn contem_notificacao_exit(bytes: &[u8]) -> bool {
 struct GracefulStdin {
     inner: tokio::io::Stdin,
     eof_seen: bool,
+    exit_seen: bool,
+    saw_tool_call: bool,
     eof_done_notify: Arc<Notify>,
     in_flight: Arc<AtomicUsize>,
     idle_notify: Arc<Notify>,
@@ -384,6 +393,8 @@ impl GracefulStdin {
         Self {
             inner,
             eof_seen: false,
+            exit_seen: false,
+            saw_tool_call: false,
             eof_done_notify,
             in_flight,
             idle_notify,
@@ -400,43 +411,57 @@ impl AsyncRead for GracefulStdin {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         if !self.eof_seen {
-            let before = buf.filled().len();
-            match Pin::new(&mut self.inner).poll_read(cx, buf) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(e)) => {
-                    self.eof_seen = true;
-                    self.eof_done_notify.notify_waiters();
-                    return Poll::Ready(Err(e));
-                }
-                Poll::Ready(Ok(())) => {
-                    let after = buf.filled().len();
-                    if after > before {
-                        if contem_notificacao_exit(&buf.filled()[before..after]) {
-                            info!("Notificação JSON-RPC 'exit' recebida no stdin; agendando encerramento imediato");
-                            self.eof_seen = true;
-                        }
-                        return Poll::Ready(Ok(()));
+            if self.exit_seen {
+                self.eof_seen = true;
+            } else {
+                let before = buf.filled().len();
+                match Pin::new(&mut self.inner).poll_read(cx, buf) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Err(e)) => {
+                        self.eof_seen = true;
+                        self.eof_done_notify.notify_waiters();
+                        return Poll::Ready(Err(e));
                     }
-                    // Leitura retornou 0 bytes: EOF detectado no pipe stdin
-                    info!("EOF (0 bytes) detectado no stdin; iniciando encerramento gracioso");
-                    self.eof_seen = true;
+                    Poll::Ready(Ok(())) => {
+                        let after = buf.filled().len();
+                        if after > before {
+                            let novos_bytes = &buf.filled()[before..after];
+                            if contem_chamada_tool(novos_bytes) {
+                                self.saw_tool_call = true;
+                            }
+                            if contem_notificacao_exit(novos_bytes) {
+                                info!("Notificação JSON-RPC 'exit' recebida no stdin; agendando encerramento gracioso");
+                                self.exit_seen = true;
+                            }
+                            return Poll::Ready(Ok(()));
+                        }
+                        // Leitura retornou 0 bytes: EOF detectado no pipe stdin
+                        info!("EOF (0 bytes) detectado no stdin; iniciando encerramento gracioso");
+                        self.eof_seen = true;
+                    }
                 }
             }
         }
 
-        // Se não há requisições em voo, encerra imediatamente retornando 0 bytes (EOF)
-        if self.in_flight.load(Ordering::Acquire) == 0 {
+        // Se nenhuma chamada tools/call foi vista no lote e não há tarefas em voo, encerra imediatamente
+        if !self.saw_tool_call && self.in_flight.load(Ordering::Acquire) == 0 {
             self.wait_fut = None;
             self.eof_done_notify.notify_waiters();
             return Poll::Ready(Ok(()));
         }
 
-        // Se há tarefas em voo, aguarda no máximo SHUTDOWN_TIMEOUT_SECS (2s) e cancela o restante
+        // Aguarda tarefas em voo com timeout estrito de SHUTDOWN_TIMEOUT_SECS (2s) e cancela excedentes
         if self.wait_fut.is_none() {
             let in_flight = self.in_flight.clone();
             let idle_notify = self.idle_notify.clone();
             let cancel_notify = self.cancel_notify.clone();
+            let saw_tool_call = self.saw_tool_call;
             self.wait_fut = Some(Box::pin(async move {
+                if saw_tool_call && in_flight.load(Ordering::Acquire) == 0 {
+                    // Cede brevemente ao runtime para que tasks recém-despachadas pelo parser rmcp entrem em call_tool
+                    tokio::time::sleep(Duration::from_millis(15)).await;
+                }
+
                 let aguardar_conclusao = async {
                     while in_flight.load(Ordering::Acquire) > 0 {
                         let notified = idle_notify.notified();
@@ -460,6 +485,9 @@ impl AsyncRead for GracefulStdin {
                         "Timeout de desligamento (2s) atingido após EOF; cancelando requisições em voo"
                     );
                     cancel_notify.notify_waiters();
+                } else {
+                    // Permite que o canal de escrita do rmcp envie a última linha JSON-RPC antes do EOF
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }));
         }
