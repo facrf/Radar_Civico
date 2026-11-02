@@ -1,3 +1,6 @@
+pub mod buscar;
+pub mod dossie_cnpj;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -8,7 +11,13 @@ use rmcp::{
 };
 use serde_json::{Value, json};
 
-use crate::RadarHttpClient;
+use crate::{RadarHttpClient, RadarHttpError};
+
+pub use buscar::{BuscarInput, BuscarTool, ItemBuscaFormatado, SaidaBuscaFormatada};
+pub use dossie_cnpj::{
+    AlertaResumidoCnpj, DossieCnpjFormatado, DossieCnpjInput, DossieCnpjTool, ResumoCadastralCnpj,
+    SocioResumidoCnpj, sanitizar_cnpj,
+};
 
 /// Interface modular para definição e execução de ferramentas MCP do Radar Cívico.
 #[async_trait]
@@ -37,7 +46,7 @@ impl ToolRegistry {
         Self::default()
     }
 
-    /// Cria o registro de ferramentas inicializado com as ferramentas registradas do módulo.
+    /// Cria o registro de ferramentas inicializado com todas as ferramentas padrão do módulo.
     pub fn with_default_tools() -> Self {
         let mut registry = Self::new();
         register_all(&mut registry);
@@ -75,10 +84,13 @@ impl ToolRegistry {
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResponse, McpError> {
         let Some(tool) = self.tools.get(name) else {
-            return Err(McpError::invalid_params(
-                format!("Ferramenta não encontrada: '{name}'"),
-                None,
-            ));
+            let msg = format_validation_error_json(
+                name,
+                &format!("Ferramenta não encontrada no registro MCP: '{name}'"),
+            );
+            return Ok(CallToolResponse::from(CallToolResult::error(vec![
+                ContentBlock::text(msg),
+            ])));
         };
 
         let args = arguments.unwrap_or_default();
@@ -89,7 +101,78 @@ impl ToolRegistry {
 
 /// Registra os módulos de ferramentas disponíveis no `ToolRegistry`.
 pub fn register_all(registry: &mut ToolRegistry) {
+    registry.register(BuscarTool);
+    registry.register(DossieCnpjTool);
     registry.register(RadarStatusTool);
+}
+
+/// Formata um erro HTTP (incluindo status não-200) em uma estrutura JSON clara sem causar panic.
+pub fn format_http_error_json(ferramenta: &str, err: &RadarHttpError) -> String {
+    let payload = match err {
+        RadarHttpError::HttpStatus { status, url, body } => {
+            let detalhe_json = serde_json::from_str::<Value>(body).ok();
+            let mensagem_servidor = detalhe_json
+                .as_ref()
+                .and_then(|v| v.get("mensagem").or_else(|| v.get("error")).and_then(Value::as_str))
+                .map(ToString::to_string)
+                .unwrap_or_else(|| truncar_texto(body.trim(), 300));
+
+            json!({
+                "erro": true,
+                "ferramenta": ferramenta,
+                "status_http": status,
+                "url": url,
+                "mensagem": format!("A API do Radar Cívico retornou status HTTP {} para '{}'", status, ferramenta),
+                "detalhe": mensagem_servidor
+            })
+        }
+        RadarHttpError::Request { url, source } => {
+            json!({
+                "erro": true,
+                "ferramenta": ferramenta,
+                "status_http": null,
+                "url": url,
+                "mensagem": format!("Falha de comunicação com a API do Radar Cívico ao executar '{}'", ferramenta),
+                "detalhe": source.to_string()
+            })
+        }
+        RadarHttpError::ClientBuild(source) => {
+            json!({
+                "erro": true,
+                "ferramenta": ferramenta,
+                "status_http": null,
+                "mensagem": "Falha ao construir cliente HTTP",
+                "detalhe": source.to_string()
+            })
+        }
+    };
+
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| {
+        r#"{"erro":true,"mensagem":"Falha ao serializar erro HTTP"}"#.to_string()
+    })
+}
+
+/// Formata um erro de validação de parâmetros de entrada em JSON.
+pub fn format_validation_error_json(ferramenta: &str, mensagem: &str) -> String {
+    let payload = json!({
+        "erro": true,
+        "ferramenta": ferramenta,
+        "status_http": 400,
+        "mensagem": mensagem
+    });
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| {
+        r#"{"erro":true,"mensagem":"Parâmetros de entrada inválidos"}"#.to_string()
+    })
+}
+
+/// Trunca um texto longo preservando fronteiras de caracteres UTF-8.
+pub fn truncar_texto(texto: &str, max_chars: usize) -> String {
+    let total_chars = texto.chars().count();
+    if total_chars <= max_chars {
+        return texto.to_string();
+    }
+    let prefixo: String = texto.chars().take(max_chars).collect();
+    format!("{prefixo}...")
 }
 
 /// Ferramenta base de verificação de conectividade e status da instância do Radar Cívico.
@@ -125,11 +208,10 @@ impl McpTool for RadarStatusTool {
                     .unwrap_or_else(|_| payload.to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
-            Err(err) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "Falha ao consultar status do Radar Cívico em {}: {}",
-                client.base_url(),
-                err
-            ))])),
+            Err(err) => {
+                let erro_json = format_http_error_json("radar_status", &err);
+                Ok(CallToolResult::error(vec![ContentBlock::text(erro_json)]))
+            }
         }
     }
 }

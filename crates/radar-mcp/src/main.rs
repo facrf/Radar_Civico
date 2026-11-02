@@ -178,7 +178,7 @@ impl RadarHttpClient {
         format!("{}/{}", self.base_url, clean_path)
     }
 
-    /// Executa uma requisição GET e desserializa a resposta JSON.
+    /// Executa uma requisição GET com cabeçalho de API key (quando configurado) e desserializa a resposta JSON.
     pub async fn get_json(
         &self,
         path: &str,
@@ -188,6 +188,11 @@ impl RadarHttpClient {
         let mut req = self.client.get(&url);
         if !query.is_empty() {
             req = req.query(query);
+        }
+        if let Some(ref key) = self.api_key {
+            req = req
+                .header("x-api-key", key)
+                .header(AUTHORIZATION, format!("Bearer {key}"));
         }
 
         let response = req.send().await.map_err(|source| RadarHttpError::Request {
@@ -334,6 +339,9 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn config_usa_valores_padrao_e_normaliza_url() {
@@ -365,15 +373,90 @@ mod tests {
     }
 
     #[test]
-    fn servidor_mcp_registra_ferramentas_modulares() {
+    fn servidor_mcp_registra_ferramentas_buscar_e_dossie_cnpj() {
         let cfg = RadarMcpConfig::from_env();
         let client = RadarHttpClient::new(&cfg).expect("deve criar cliente HTTP");
         let registry = ToolRegistry::with_default_tools();
         let server = RadarMcpServer::with_registry(client, registry);
 
         let tools = server.registry().list_tools();
-        assert!(!tools.is_empty());
-        assert!(server.get_tool("radar_status").is_some());
-        assert!(server.get_tool("ferramenta_inexistente").is_none());
+        assert!(tools.len() >= 2);
+
+        let buscar = server.get_tool("buscar").expect("deve conter 'buscar'");
+        assert_eq!(
+            buscar.description.as_deref(),
+            Some(
+                "Busca entidades (políticos, empresas, contratos) por nome, termo ou documento. Retorna identificadores e tipos encontrados."
+            )
+        );
+
+        let dossie = server
+            .get_tool("dossie_cnpj")
+            .expect("deve conter 'dossie_cnpj'");
+        assert_eq!(
+            dossie.description.as_deref(),
+            Some(
+                "Consulta o dossiê consolidado de uma pessoa jurídica pelo CNPJ. Retorna resumo cadastral, sócios e alertas detectados por heurística (não são acusações formais)."
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn ferramentas_tratam_http_nao_200_e_enviam_radar_api_key_sem_panic() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Servidor HTTP mockado: valida o header x-api-key e devolve HTTP 404 com JSON de erro
+        let server_handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 2048];
+            let n = socket.read(&mut buf).await.unwrap();
+            let req_str = String::from_utf8_lossy(&buf[..n]).to_string();
+
+            assert!(
+                req_str.to_ascii_lowercase().contains("x-api-key: segredo-mcp-123"),
+                "Requisição deve incluir o header x-api-key: {req_str}"
+            );
+            assert!(
+                req_str.contains("GET /api/v1/dossie/cnpj/12345678000190 "),
+                "CNPJ deve chegar sanitizado na rota: {req_str}"
+            );
+
+            let body = r#"{"status":"erro","mensagem":"CNPJ não localizado na base"}"#;
+            let resp = format!(
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let cfg = RadarMcpConfig {
+            radar_url: format!("http://{addr}"),
+            radar_api_key: Some("segredo-mcp-123".to_string()),
+        };
+        let client = RadarHttpClient::new(&cfg).unwrap();
+        let registry = ToolRegistry::with_default_tools();
+
+        let args = json!({ "cnpj": "12.345.678/0001-90" })
+            .as_object()
+            .cloned();
+        let response = registry
+            .call_tool(&client, "dossie_cnpj", args)
+            .await
+            .expect("não deve retornar erro de protocolo nem dar panic");
+
+        server_handle.await.unwrap();
+
+        let CallToolResponse::Complete(result) = response else {
+            panic!("esperado CallToolResponse::Complete");
+        };
+        let serialized = serde_json::to_value(&result).unwrap();
+        assert_eq!(serialized["isError"], true);
+        let text = serialized["content"][0]["text"].as_str().unwrap();
+        let err_json: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(err_json["erro"], true);
+        assert_eq!(err_json["status_http"], 404);
+        assert_eq!(err_json["detalhe"], "CNPJ não localizado na base");
     }
 }
