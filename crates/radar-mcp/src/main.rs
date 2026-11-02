@@ -1,3 +1,4 @@
+pub mod prompts;
 pub mod tools;
 
 use std::pin::Pin;
@@ -8,13 +9,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use prompts::PromptRegistry;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResponse, Implementation, InitializeRequestParams,
-        InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
-        ServerConfig, Tool,
+        CallToolRequestParams, CallToolResponse, GetPromptRequestParams, GetPromptResponse,
+        Implementation, InitializeRequestParams, InitializeResult, ListPromptsResult,
+        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
     },
     service::{RequestContext, serve_directly},
 };
@@ -298,6 +300,7 @@ impl RadarHttpClient {
 pub struct RadarMcpServer {
     http_client: RadarHttpClient,
     registry: Arc<ToolRegistry>,
+    prompts: Arc<PromptRegistry>,
     in_flight: Arc<AtomicUsize>,
     idle_notify: Arc<Notify>,
 }
@@ -400,6 +403,7 @@ impl RadarMcpServer {
         Self {
             http_client,
             registry: Arc::new(registry),
+            prompts: Arc::new(PromptRegistry::new()),
             in_flight: Arc::new(AtomicUsize::new(0)),
             idle_notify: Arc::new(Notify::new()),
         }
@@ -414,11 +418,19 @@ impl RadarMcpServer {
     pub fn registry(&self) -> &ToolRegistry {
         &self.registry
     }
+
+    /// Retorna referência ao registro de prompts nativos.
+    pub fn prompts(&self) -> &PromptRegistry {
+        &self.prompts
+    }
 }
 
 impl ServerHandler for RadarMcpServer {
     fn get_info(&self) -> ServerConfig {
-        let capabilities = ServerCapabilities::builder().enable_tools().build();
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_prompts()
+            .build();
         ServerConfig::new(capabilities)
             .with_server_info(Implementation::new("radar-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
@@ -457,6 +469,30 @@ impl ServerHandler for RadarMcpServer {
         let tools = self.registry.list_tools();
         debug!(tools_count = tools.len(), "Listando ferramentas MCP registradas");
         Ok(ListToolsResult::with_all_items(tools))
+    }
+
+    #[tracing::instrument(name = "mcp.list_prompts", skip(self, _request, _context))]
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        let prompts = self.prompts.list_prompts();
+        debug!(prompts_count = prompts.len(), "Listando prompts nativos MCP");
+        Ok(ListPromptsResult::with_all_items(prompts))
+    }
+
+    #[tracing::instrument(
+        name = "mcp.get_prompt",
+        skip(self, request, _context),
+        fields(prompt_name = %request.name)
+    )]
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, McpError> {
+        self.prompts.get_prompt(request)
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {

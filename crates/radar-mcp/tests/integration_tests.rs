@@ -99,6 +99,7 @@ async fn test_stdio_initialize_e_tools_list_7_ferramentas_com_schemas() {
     assert_eq!(init_resp["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(init_resp["result"]["serverInfo"]["name"], "radar-mcp");
     assert!(init_resp["result"]["capabilities"]["tools"].is_object());
+    assert_eq!(init_resp["result"]["capabilities"]["prompts"], json!({}));
 
     // 2. Valida `tools/list` contendo exatamente as 7 ferramentas e seus schemas
     let list_resp = find_response_by_id(&responses, 2);
@@ -566,4 +567,91 @@ async fn test_logs_isolados_no_stderr_e_cpf_mascarado_nos_logs() {
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_stdio_prompts_list_e_prompts_get_cruzar_campanha_contratos_pncp() {
+    let mock_server = MockServer::start().await;
+
+    let requests = vec![
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "test-prompts", "version": "0.1.0" }
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "prompts/list",
+            "params": {}
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "prompts/get",
+            "params": {
+                "name": "cruzar_campanha_contratos_pncp",
+                "arguments": {
+                    "nome_ou_id_politico": "Maria da Silva",
+                    "municipio_uf": "Campinas/SP"
+                }
+            }
+        }),
+    ];
+
+    let responses = run_mcp_batch(mock_server.uri(), None, requests).await;
+    assert_eq!(responses.len(), 3);
+
+    // 1. Handshake initialize declara "prompts": {}
+    let init_resp = find_response_by_id(&responses, 1);
+    assert_eq!(init_resp["result"]["capabilities"]["prompts"], json!({}));
+
+    // 2. Valida `prompts/list`
+    let list_resp = find_response_by_id(&responses, 2);
+    let prompts = list_resp["result"]["prompts"]
+        .as_array()
+        .expect("result.prompts deve ser um array");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["name"], "cruzar_campanha_contratos_pncp");
+    assert_eq!(
+        prompts[0]["description"],
+        "Roteiro investigativo para verificar se doadores de campanha de um político possuem contratos vigentes no PNCP com a prefeitura/órgão vinculado."
+    );
+    let args = prompts[0]["arguments"]
+        .as_array()
+        .expect("arguments deve ser um array");
+    assert_eq!(args.len(), 2);
+    assert_eq!(args[0]["name"], "nome_ou_id_politico");
+    assert_eq!(args[0]["required"], true);
+    assert_eq!(args[1]["name"], "municipio_uf");
+    assert_eq!(args[1]["required"], false);
+
+    // 3. Valida `prompts/get`
+    let get_resp = find_response_by_id(&responses, 3);
+    let messages = get_resp["result"]["messages"]
+        .as_array()
+        .expect("result.messages deve ser um array");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    let text = messages[0]["content"]["text"]
+        .as_str()
+        .expect("mensagem do prompt deve conter texto");
+
+    assert!(text.contains("Maria da Silva"));
+    assert!(text.contains("Campinas/SP"));
+    assert!(text.contains("Passo 1: Chamar `buscar` ou `detalhe_politico`"));
+    assert!(text.contains("Passo 2: Extrair a lista de doadores de campanha"));
+    assert!(text.contains("Passo 3: Mapear os CNPJs dessas empresas via `dossie_cnpj`"));
+    assert!(text.contains("Passo 4: Consultar contratos/vínculos e disparar `listar_alertas`"));
+    assert!(text.contains("Passo 5: Formatar relatório com links/fontes originais e avisos de heurística"));
+}
+
 
