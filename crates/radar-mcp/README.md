@@ -97,6 +97,21 @@ Crie ou edite `.cursor/mcp.json` na raiz do projeto (ou em `~/.cursor/mcp.json`)
 }
 ```
 
+### Opção Alternativa (Sem Rust Local): Execução Direta via Docker
+
+A imagem oficial do contêiner `radar_civico` já inclui o binário `/app/radar-mcp` pré-compilado e configurado para falar internamente com `http://127.0.0.1:8080`:
+
+```json
+{
+  "mcpServers": {
+    "radar-civico": {
+      "command": "docker",
+      "args": ["exec", "-i", "radar_civico", "/app/radar-mcp"]
+    }
+  }
+}
+```
+
 ---
 
 ## 5. Ferramentas Disponíveis (Escopo Somente-Leitura)
@@ -115,7 +130,23 @@ Todas as ferramentas expostas pelo `radar-mcp` operam em regime **100% somente-l
 
 ---
 
-## 6. Execução dos Testes
+## 6. Prompts Investigativos e Recursos Nativos (`prompts/*` e `resources/*`)
+
+### Prompts Investigativos (`prompts/list` e `prompts/get`)
+- **`cruzar_campanha_contratos_pncp`** (`nome_ou_id_politico` obrigatório, `municipio_uf` opcional): roteiro em 5 passos para verificar se doadores de campanha de um político possuem contratos vigentes no PNCP com o órgão vinculado.
+- **`auditar_fornecedor_ceap`** (`cnpj` obrigatório, `uf` opcional): roteiro para auditar fornecedor de cota parlamentar (situação cadastral, data de abertura, QSA, concentração `FORNECEDOR_HUB` e abastecimentos `> 80L`).
+- **`mapear_rede_societaria`** (`identificador` obrigatório): roteiro para expansão de rede societária em até 2 saltos cruzando empresas-irmãs, contratos e alertas.
+
+### Recursos MCP (`resources/list` e `resources/read`)
+- **`radar://metodologia/heuristicas`**: documentação técnica e fundamentação legal das regras determinísticas do motor de auditoria (`auditor`).
+- **`radar://status/fontes`**: status dinâmico da instância local, versão do motor e relação de fontes públicas primárias integradas.
+
+### Cache em Memória de Curta Duração
+- O `RadarHttpClient` mantém um cache em memória thread-safe (`TTL = 45s`, até `128` entradas) para respostas `HTTP 200 OK`, evitando leituras repetidas ao banco SQLite durante cadeias multi-etapas de raciocínio da LLM.
+
+---
+
+## 7. Execução dos Testes
 
 Para validar os testes unitários e a suíte de testes de integração `stdio` (com mocks HTTP determinísticos via `wiremock`):
 

@@ -49,7 +49,9 @@ RUN --mount=type=cache,id=radar-cargo-registry,target=/usr/local/cargo/registry,
     --mount=type=cache,id=radar-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=radar-cargo-target-${TARGETARCH:-amd64},target=/app/target,sharing=locked \
     find crates tests -type f -exec touch {} + && touch Cargo.toml Cargo.lock && \
-    cargo build --locked --release -p server && cp target/release/server /app/server-binary
+    cargo build --locked --release -p server -p radar-mcp && \
+    cp target/release/server /app/server-binary && \
+    cp target/release/radar-mcp /app/radar-mcp-binary
 
 # Stage 3: Runner de produção
 FROM debian:bookworm-slim AS runner
@@ -67,6 +69,7 @@ RUN groupadd -g 10001 radar && useradd -u 10001 -g radar -s /bin/sh -d /app rada
 WORKDIR /app
 
 COPY --from=builder /app/server-binary /app/server
+COPY --from=builder /app/radar-mcp-binary /app/radar-mcp
 COPY --from=web-builder /app/web/build /app/web/build
 COPY scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /app/data && chown -R radar:radar /app
@@ -74,6 +77,7 @@ RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /app/data && chown -R radar:r
 ENV DATA_DIR=/app/data
 ENV PORT=8080
 ENV HOST=0.0.0.0
+ENV RADAR_URL=http://127.0.0.1:8080
 ENV WEB_DIR=/app/web/build
 ENV RUST_LOG=info
 
