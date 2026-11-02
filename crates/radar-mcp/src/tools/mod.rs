@@ -119,7 +119,6 @@ pub fn register_all(registry: &mut ToolRegistry) {
     registry.register(DossieCpfTool);
     registry.register(SubgrafoTool);
     registry.register(ListarAlertasTool);
-    registry.register(RadarStatusTool);
 }
 
 /// Formata um erro HTTP (incluindo status não-200) em uma estrutura JSON clara sem causar panic.
