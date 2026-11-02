@@ -2,6 +2,7 @@ pub mod prompts;
 pub mod tools;
 pub mod utils;
 
+use std::io::Write as _;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -37,6 +38,9 @@ pub const DEFAULT_RUST_LOG: &str = "radar_mcp=info,warn";
 
 /// Timeout padrão do cliente HTTP (8 segundos).
 pub const HTTP_TIMEOUT_SECS: u64 = 8;
+
+/// Timeout máximo de desligamento gracioso para cancelamento de tarefas em voo (2 segundos).
+pub const SHUTDOWN_TIMEOUT_SECS: u64 = 2;
 
 /// Argumentos e variáveis de ambiente de configuração do servidor MCP.
 #[derive(Debug, Clone, Parser)]
@@ -320,6 +324,7 @@ pub struct RadarMcpServer {
     prompts: Arc<PromptRegistry>,
     in_flight: Arc<AtomicUsize>,
     idle_notify: Arc<Notify>,
+    cancel_notify: Arc<Notify>,
 }
 
 struct InFlightGuard {
@@ -335,24 +340,55 @@ impl Drop for InFlightGuard {
     }
 }
 
-/// Wrapper sobre `tokio::io::Stdin` que posterga a sinalização de EOF enquanto houver
-/// chamadas de ferramentas em andamento (até o timeout de 8s do cliente HTTP).
+/// Verifica se um bloco de bytes lido do `stdin` contém uma notificação JSON-RPC `"method": "exit"`.
+fn contem_notificacao_exit(bytes: &[u8]) -> bool {
+    let Ok(texto) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    for linha in texto.lines() {
+        let trimmed = linha.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+            if val.get("method").and_then(Value::as_str) == Some("exit") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Wrapper sobre `tokio::io::Stdin` que monitora continuamente o canal de leitura:
+/// - Quando `stdin` atinge EOF (0 bytes lidos) ou recebe `"method": "exit"`, inicia o encerramento gracioso.
+/// - Caso haja chamadas de ferramentas em voo no instante do EOF, aguarda até `SHUTDOWN_TIMEOUT_SECS` (2s)
+///   e cancela tarefas pendentes se o limite expirar, garantindo ausência de loops infinitos.
 struct GracefulStdin {
     inner: tokio::io::Stdin,
     eof_seen: bool,
+    eof_done_notify: Arc<Notify>,
     in_flight: Arc<AtomicUsize>,
     idle_notify: Arc<Notify>,
-    notified: Option<Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    cancel_notify: Arc<Notify>,
+    wait_fut: Option<Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 }
 
 impl GracefulStdin {
-    fn new(inner: tokio::io::Stdin, in_flight: Arc<AtomicUsize>, idle_notify: Arc<Notify>) -> Self {
+    fn new(
+        inner: tokio::io::Stdin,
+        eof_done_notify: Arc<Notify>,
+        in_flight: Arc<AtomicUsize>,
+        idle_notify: Arc<Notify>,
+        cancel_notify: Arc<Notify>,
+    ) -> Self {
         Self {
             inner,
             eof_seen: false,
+            eof_done_notify,
             in_flight,
             idle_notify,
-            notified: None,
+            cancel_notify,
+            wait_fut: None,
         }
     }
 }
@@ -367,40 +403,77 @@ impl AsyncRead for GracefulStdin {
             let before = buf.filled().len();
             match Pin::new(&mut self.inner).poll_read(cx, buf) {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Err(e)) => {
+                    self.eof_seen = true;
+                    self.eof_done_notify.notify_waiters();
+                    return Poll::Ready(Err(e));
+                }
                 Poll::Ready(Ok(())) => {
-                    if buf.filled().len() > before {
+                    let after = buf.filled().len();
+                    if after > before {
+                        if contem_notificacao_exit(&buf.filled()[before..after]) {
+                            info!("Notificação JSON-RPC 'exit' recebida no stdin; agendando encerramento imediato");
+                            self.eof_seen = true;
+                        }
                         return Poll::Ready(Ok(()));
                     }
+                    // Leitura retornou 0 bytes: EOF detectado no pipe stdin
+                    info!("EOF (0 bytes) detectado no stdin; iniciando encerramento gracioso");
                     self.eof_seen = true;
                 }
             }
         }
 
-        while self.in_flight.load(Ordering::Acquire) > 0 {
-            if self.notified.is_none() {
-                let notify = self.idle_notify.clone();
-                self.notified = Some(Box::pin(async move {
-                    tokio::select! {
-                        _ = notify.notified() => {}
-                        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        // Se não há requisições em voo, encerra imediatamente retornando 0 bytes (EOF)
+        if self.in_flight.load(Ordering::Acquire) == 0 {
+            self.wait_fut = None;
+            self.eof_done_notify.notify_waiters();
+            return Poll::Ready(Ok(()));
+        }
+
+        // Se há tarefas em voo, aguarda no máximo SHUTDOWN_TIMEOUT_SECS (2s) e cancela o restante
+        if self.wait_fut.is_none() {
+            let in_flight = self.in_flight.clone();
+            let idle_notify = self.idle_notify.clone();
+            let cancel_notify = self.cancel_notify.clone();
+            self.wait_fut = Some(Box::pin(async move {
+                let aguardar_conclusao = async {
+                    while in_flight.load(Ordering::Acquire) > 0 {
+                        let notified = idle_notify.notified();
+                        if in_flight.load(Ordering::Acquire) == 0 {
+                            break;
+                        }
+                        notified.await;
                     }
-                }));
-            }
-            if self.in_flight.load(Ordering::Acquire) == 0 {
-                self.notified = None;
-                break;
-            }
-            if let Some(fut) = self.notified.as_mut() {
-                match fut.as_mut().poll(cx) {
-                    Poll::Ready(()) => {
-                        self.notified = None;
-                    }
-                    Poll::Pending => return Poll::Pending,
+                };
+
+                if tokio::time::timeout(
+                    Duration::from_secs(SHUTDOWN_TIMEOUT_SECS),
+                    aguardar_conclusao,
+                )
+                .await
+                .is_err()
+                {
+                    warn!(
+                        timeout_secs = SHUTDOWN_TIMEOUT_SECS,
+                        tarefas_ativas = in_flight.load(Ordering::Acquire),
+                        "Timeout de desligamento (2s) atingido após EOF; cancelando requisições em voo"
+                    );
+                    cancel_notify.notify_waiters();
+                }
+            }));
+        }
+
+        if let Some(fut) = self.wait_fut.as_mut() {
+            match fut.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(()) => {
+                    self.wait_fut = None;
                 }
             }
         }
 
+        self.eof_done_notify.notify_waiters();
         Poll::Ready(Ok(()))
     }
 }
@@ -419,6 +492,7 @@ impl RadarMcpServer {
             prompts: Arc::new(PromptRegistry::new()),
             in_flight: Arc::new(AtomicUsize::new(0)),
             idle_notify: Arc::new(Notify::new()),
+            cancel_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -533,10 +607,96 @@ impl ServerHandler for RadarMcpServer {
             in_flight: self.in_flight.clone(),
             idle_notify: self.idle_notify.clone(),
         };
-        self.registry
-            .call_tool(&self.http_client, &request.name, request.arguments)
-            .await
+
+        let cancel_notified = self.cancel_notify.notified();
+        let tool_name = request.name.to_string();
+        let tool_fut = self
+            .registry
+            .call_tool(&self.http_client, &tool_name, request.arguments);
+
+        tokio::select! {
+            res = tool_fut => res,
+            _ = cancel_notified => {
+                warn!(
+                    ferramenta = %tool_name,
+                    "Tarefa assíncrona de ferramenta cancelada durante desligamento do servidor MCP"
+                );
+                Err(McpError::internal_error(
+                    "Servidor MCP em processo de desligamento",
+                    None,
+                ))
+            }
+        }
     }
+}
+
+/// Aguarda sinais de encerramento do sistema operacional (`SIGINT` via `ctrl_c` ou `SIGTERM` no Unix).
+async fn aguardar_sinal_sistema() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => "SIGINT",
+                    _ = sigterm.recv() => "SIGTERM",
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                "SIGINT"
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "SIGINT"
+    }
+}
+
+/// Cancela tarefas assíncronas ativas com timeout de desligamento de 2 segundos,
+/// força o flush de `stdout` e `stderr` e encerra o processo com código 0.
+async fn encerrar_com_limpeza(
+    in_flight: &AtomicUsize,
+    idle_notify: &Notify,
+    cancel_notify: &Notify,
+) -> ! {
+    let ativas = in_flight.load(Ordering::Acquire);
+    if ativas > 0 {
+        info!(
+            tarefas_ativas = ativas,
+            timeout_secs = SHUTDOWN_TIMEOUT_SECS,
+            "Aguardando conclusão ou cancelamento de tarefas assíncronas em voo"
+        );
+        let aguardar_ativas = async {
+            while in_flight.load(Ordering::Acquire) > 0 {
+                let notified = idle_notify.notified();
+                if in_flight.load(Ordering::Acquire) == 0 {
+                    break;
+                }
+                notified.await;
+            }
+        };
+
+        if tokio::time::timeout(Duration::from_secs(SHUTDOWN_TIMEOUT_SECS), aguardar_ativas)
+            .await
+            .is_err()
+        {
+            warn!(
+                timeout_secs = SHUTDOWN_TIMEOUT_SECS,
+                tarefas_restantes = in_flight.load(Ordering::Acquire),
+                "Timeout de 2s esgotado; cancelando tarefas em voo"
+            );
+            cancel_notify.notify_waiters();
+        }
+    } else {
+        cancel_notify.notify_waiters();
+    }
+
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    std::process::exit(0);
 }
 
 /// Inicializa o subsistema `tracing-subscriber` redirecionando 100% dos logs para `std::io::stderr`
@@ -575,18 +735,49 @@ async fn main() -> Result<()> {
         "Iniciando servidor radar-mcp via transporte stdio"
     );
 
+    let eof_done_notify = Arc::new(Notify::new());
+    let in_flight = server.in_flight.clone();
+    let idle_notify = server.idle_notify.clone();
+    let cancel_notify = server.cancel_notify.clone();
+
     let stdin = GracefulStdin::new(
         tokio::io::stdin(),
-        server.in_flight.clone(),
-        server.idle_notify.clone(),
+        eof_done_notify.clone(),
+        in_flight.clone(),
+        idle_notify.clone(),
+        cancel_notify.clone(),
     );
     let running = serve_directly(server, (stdin, tokio::io::stdout()), None);
-    running
-        .waiting()
-        .await
-        .context("Erro no loop de eventos stdio do servidor MCP")?;
+    let waiting_fut = running.waiting();
+    tokio::pin!(waiting_fut);
 
-    Ok(())
+    let eof_failsafe = async {
+        eof_done_notify.notified().await;
+        // Concede uma breve janela para o loop de escrita do rmcp fazer flush das respostas finais no stdout
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    tokio::pin!(eof_failsafe);
+
+    tokio::select! {
+        res = &mut waiting_fut => {
+            match res {
+                Ok(_reason) => {
+                    info!("Loop stdio concluído após EOF; encerrando processo");
+                }
+                Err(err) => {
+                    warn!(erro = %err, "Loop stdio finalizado com condição de transporte; encerrando processo");
+                }
+            }
+        }
+        _ = &mut eof_failsafe => {
+            info!("Canal stdin atingiu EOF; finalizando loop principal");
+        }
+        sinal = aguardar_sinal_sistema() => {
+            info!(sinal, "Sinal de sistema recebido; iniciando desligamento gracioso");
+        }
+    }
+
+    encerrar_com_limpeza(&in_flight, &idle_notify, &cancel_notify).await;
 }
 
 #[cfg(test)]

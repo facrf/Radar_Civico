@@ -775,3 +775,99 @@ async fn test_stdio_diferencia_204_vazio_500_infraestrutura_e_erro_validacao_inp
         .unwrap_or_default()
         .contains("Correção:"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_stdio_ciclo_de_vida_eof_exit_e_timeout_cancelamento_2s() {
+    // 1. Valida `{"jsonrpc":"2.0","method":"exit"}` encerrando com código 0
+    tokio::task::spawn_blocking(|| {
+        let mut cmd = Command::cargo_bin("radar-mcp").unwrap();
+        let output = cmd
+            .write_stdin("{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}\n")
+            .output()
+            .expect("deve executar radar-mcp com method=exit");
+        assert!(
+            output.status.success(),
+            "radar-mcp deve encerrar com código 0 em method=exit (status: {:?})",
+            output.status
+        );
+    })
+    .await
+    .unwrap();
+
+    // 2. Valida EOF imediato (0 bytes no stdin) encerrando com código 0 sem loop infinito
+    tokio::task::spawn_blocking(|| {
+        let mut cmd = Command::cargo_bin("radar-mcp").unwrap();
+        let output = cmd
+            .write_stdin("")
+            .output()
+            .expect("deve executar radar-mcp com stdin vazio");
+        assert!(
+            output.status.success(),
+            "radar-mcp deve encerrar com código 0 em EOF imediato"
+        );
+    })
+    .await
+    .unwrap();
+
+    // 3. Valida cancelamento de requisição HTTP lenta em voo após timeout de desligamento de 2s
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/busca"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(6))
+                .set_body_json(json!({ "resultados": [] })),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let radar_url = mock_server.uri();
+    tokio::task::spawn_blocking(move || {
+        let inicio = std::time::Instant::now();
+        let input = format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "test-shutdown-timeout", "version": "0.1.0" }
+                }
+            }))
+            .unwrap(),
+            serde_json::to_string(&json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }))
+            .unwrap(),
+            serde_json::to_string(&json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "buscar",
+                    "arguments": { "q": "demorado" }
+                }
+            }))
+            .unwrap()
+        );
+
+        let mut cmd = Command::cargo_bin("radar-mcp").unwrap();
+        cmd.env("RADAR_URL", &radar_url);
+        let output = cmd.write_stdin(input).output().unwrap();
+        let elapsed = inicio.elapsed();
+
+        assert!(
+            output.status.success(),
+            "radar-mcp deve encerrar com código 0 após cancelar tarefa em voo no timeout de 2s"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "Desligamento deve respeitar o timeout de ~2s sem esperar os 6s da rota lenta (levou {elapsed:?})"
+        );
+    })
+    .await
+    .unwrap();
+}
