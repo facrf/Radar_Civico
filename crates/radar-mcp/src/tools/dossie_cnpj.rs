@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use rmcp::{
@@ -7,6 +8,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tracing::{info, warn};
 
 use crate::RadarHttpClient;
 use crate::tools::{McpTool, format_http_error_json, format_validation_error_json, truncar_texto};
@@ -307,14 +309,27 @@ impl McpTool for DossieCnpjTool {
         )
     }
 
+    #[tracing::instrument(
+        name = "tool.dossie_cnpj",
+        skip(self, client, arguments),
+        fields(
+            ferramenta = "dossie_cnpj",
+            cnpj = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty
+        )
+    )]
     async fn call(
         &self,
         client: &RadarHttpClient,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let inicio = Instant::now();
         let input: DossieCnpjInput = match serde_json::from_value(Value::Object(arguments)) {
             Ok(val) => val,
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'dossie_cnpj'");
                 let msg = format_validation_error_json(
                     "dossie_cnpj",
                     &format!("Parâmetros inválidos para 'dossie_cnpj': {err}"),
@@ -325,6 +340,9 @@ impl McpTool for DossieCnpjTool {
 
         let cnpj_limpo = input.cnpj_sanitizado();
         if cnpj_limpo.is_empty() {
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            warn!(elapsed_ms, "Parâmetro 'cnpj' vazio em 'dossie_cnpj'");
             let msg = format_validation_error_json(
                 "dossie_cnpj",
                 "O parâmetro obrigatório 'cnpj' não contém caracteres válidos.",
@@ -332,15 +350,35 @@ impl McpTool for DossieCnpjTool {
             return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
         }
 
+        tracing::Span::current().record("cnpj", cnpj_limpo.as_str());
+        info!(cnpj = %cnpj_limpo, "Consultando dossiê CNPJ na API local");
+
         let path = format!("/api/v1/dossie/cnpj/{cnpj_limpo}");
         match client.get_json(&path, &[]).await {
             Ok(raw_json) => {
                 let formatado = parse_e_formatar_dossie_cnpj(&raw_json, &cnpj_limpo);
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                info!(
+                    cnpj = %cnpj_limpo,
+                    total_socios = formatado.total_socios,
+                    total_alertas = formatado.total_alertas,
+                    elapsed_ms,
+                    "Dossiê CNPJ formatado com sucesso"
+                );
                 let texto = serde_json::to_string_pretty(&formatado)
                     .unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(
+                    cnpj = %cnpj_limpo,
+                    elapsed_ms,
+                    erro = %err,
+                    "Falha na chamada à API durante 'dossie_cnpj'"
+                );
                 let erro_json = format_http_error_json("dossie_cnpj", &err);
                 Ok(CallToolResult::error(vec![ContentBlock::text(erro_json)]))
             }

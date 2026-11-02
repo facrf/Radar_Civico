@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use rmcp::{
@@ -8,9 +9,13 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tracing::{info, warn};
 
 use crate::tools::politicos::mascarar_cpf_estrito;
-use crate::tools::{McpTool, format_http_error_json, format_validation_error_json, truncar_texto};
+use crate::tools::{
+    McpTool, format_http_error_json, format_validation_error_json, sanitizar_parametro_log,
+    truncar_texto,
+};
 use crate::{RadarHttpClient, RadarHttpError};
 
 pub const DEFAULT_LIMITE_ARESTAS_SUBGRAFO: usize = 30;
@@ -324,14 +329,28 @@ impl McpTool for SubgrafoTool {
         Tool::new("subgrafo", DESCRICAO_SUBGRAFO, Arc::new(schema_obj))
     }
 
+    #[tracing::instrument(
+        name = "tool.subgrafo",
+        skip(self, client, arguments),
+        fields(
+            ferramenta = "subgrafo",
+            id = tracing::field::Empty,
+            limite_arestas = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty
+        )
+    )]
     async fn call(
         &self,
         client: &RadarHttpClient,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let inicio = Instant::now();
         let input: SubgrafoInput = match serde_json::from_value(Value::Object(arguments)) {
             Ok(val) => val,
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'subgrafo'");
                 let msg = format_validation_error_json(
                     "subgrafo",
                     &format!("Parâmetros inválidos para 'subgrafo': {err}"),
@@ -342,6 +361,9 @@ impl McpTool for SubgrafoTool {
 
         let id_clean = input.id.trim();
         if id_clean.is_empty() {
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            warn!(elapsed_ms, "Parâmetro 'id' vazio em 'subgrafo'");
             let msg = format_validation_error_json(
                 "subgrafo",
                 "O parâmetro obrigatório 'id' não pode ser vazio.",
@@ -349,7 +371,17 @@ impl McpTool for SubgrafoTool {
             return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
         }
 
+        let id_seguro = sanitizar_parametro_log(id_clean);
         let limite = input.limite_efetivo();
+        tracing::Span::current().record("id", id_seguro.as_str());
+        tracing::Span::current().record("limite_arestas", limite);
+
+        info!(
+            id = %id_seguro,
+            limite_arestas = limite,
+            "Consultando subgrafo de relacionamentos na API local"
+        );
+
         let encoded_id = urlencoding::encode(id_clean);
         let path = format!("/api/v1/grafo/{encoded_id}");
         let query_params = [("grau", "1".to_string())];
@@ -357,11 +389,31 @@ impl McpTool for SubgrafoTool {
         match client.get_json(&path, &query_params).await {
             Ok(raw_json) => {
                 let formatado = parse_e_formatar_subgrafo(&raw_json, id_clean, limite);
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                info!(
+                    id = %id_seguro,
+                    nos = formatado.nos.len(),
+                    arestas = formatado.arestas.len(),
+                    truncado = formatado.truncado,
+                    elapsed_ms,
+                    "Subgrafo formatado com sucesso"
+                );
                 let texto = serde_json::to_string_pretty(&formatado)
                     .unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
-            Err(err) => Ok(tratar_erro_auditoria("subgrafo", &err)),
+            Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(
+                    id = %id_seguro,
+                    elapsed_ms,
+                    erro = %err,
+                    "Falha na chamada à API durante 'subgrafo'"
+                );
+                Ok(tratar_erro_auditoria("subgrafo", &err))
+            }
         }
     }
 }
@@ -542,14 +594,29 @@ impl McpTool for ListarAlertasTool {
         )
     }
 
+    #[tracing::instrument(
+        name = "tool.listar_alertas",
+        skip(self, client, arguments),
+        fields(
+            ferramenta = "listar_alertas",
+            tipo = tracing::field::Empty,
+            severidade = tracing::field::Empty,
+            limite = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty
+        )
+    )]
     async fn call(
         &self,
         client: &RadarHttpClient,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let inicio = Instant::now();
         let input: ListarAlertasInput = match serde_json::from_value(Value::Object(arguments)) {
             Ok(val) => val,
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'listar_alertas'");
                 let msg = format_validation_error_json(
                     "listar_alertas",
                     &format!("Parâmetros inválidos para 'listar_alertas': {err}"),
@@ -559,12 +626,30 @@ impl McpTool for ListarAlertasTool {
         };
 
         let limite = input.limite_efetivo();
+        let tipo_norm = input.tipo_normalizado();
+        let sev_norm = input.severidade_normalizada();
+
+        tracing::Span::current().record("limite", limite);
+        if let Some(ref t) = tipo_norm {
+            tracing::Span::current().record("tipo", t.as_str());
+        }
+        if let Some(ref s) = sev_norm {
+            tracing::Span::current().record("severidade", s.as_str());
+        }
+
+        info!(
+            tipo = tipo_norm.as_deref().unwrap_or("*"),
+            severidade = sev_norm.as_deref().unwrap_or("*"),
+            limite,
+            "Consultando alertas heurísticos na API local"
+        );
+
         let mut query_params: Vec<(&str, String)> = vec![("limit", limite.to_string())];
 
-        if let Some(tipo) = input.tipo_normalizado() {
+        if let Some(tipo) = tipo_norm {
             query_params.push(("tipo", tipo));
         }
-        if let Some(sev) = input.severidade_normalizada() {
+        if let Some(sev) = sev_norm {
             query_params.push(("severidade", sev));
         }
 
@@ -574,11 +659,27 @@ impl McpTool for ListarAlertasTool {
         {
             Ok(raw_json) => {
                 let saida = parse_e_formatar_alertas(&raw_json, limite);
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                info!(
+                    total_retornado = saida.total_retornado,
+                    elapsed_ms,
+                    "Alertas heurísticos listados com sucesso"
+                );
                 let texto = serde_json::to_string_pretty(&saida)
                     .unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
-            Err(err) => Ok(tratar_erro_auditoria("listar_alertas", &err)),
+            Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(
+                    elapsed_ms,
+                    erro = %err,
+                    "Falha na chamada à API durante 'listar_alertas'"
+                );
+                Ok(tratar_erro_auditoria("listar_alertas", &err))
+            }
         }
     }
 }

@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context as TaskContext, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -22,12 +22,15 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::Notify;
-use tools::ToolRegistry;
-use tracing::info;
+use tools::{ToolRegistry, sanitizar_parametro_log, sanitizar_rota_log};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// URL padrão da instância local do Radar Cívico.
 pub const DEFAULT_RADAR_URL: &str = "http://127.0.0.1:28080";
+
+/// Filtro de log padrão quando `RUST_LOG` não está definida no ambiente.
+pub const DEFAULT_RUST_LOG: &str = "radar_mcp=info,warn";
 
 /// Timeout padrão do cliente HTTP (8 segundos).
 pub const HTTP_TIMEOUT_SECS: u64 = 8;
@@ -183,12 +186,35 @@ impl RadarHttpClient {
     }
 
     /// Executa uma requisição GET com cabeçalho de API key (quando configurado) e desserializa a resposta JSON.
+    #[tracing::instrument(
+        name = "radar_http.get_json",
+        skip(self, path, query),
+        fields(
+            rota = %sanitizar_rota_log(path),
+            status_http = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty
+        )
+    )]
     pub async fn get_json(
         &self,
         path: &str,
         query: &[(&str, String)],
     ) -> Result<Value, RadarHttpError> {
+        let inicio = Instant::now();
+        let rota_segura = sanitizar_rota_log(path);
+        let query_segura: Vec<(&str, String)> = query
+            .iter()
+            .map(|(k, v)| (*k, sanitizar_parametro_log(v)))
+            .collect();
+
+        debug!(
+            rota = %rota_segura,
+            ?query_segura,
+            "Iniciando chamada HTTP GET à API local"
+        );
+
         let url = self.endpoint_url(path);
+        let url_segura = sanitizar_rota_log(&url);
         let mut req = self.client.get(&url);
         if !query.is_empty() {
             req = req.query(query);
@@ -199,25 +225,71 @@ impl RadarHttpClient {
                 .header(AUTHORIZATION, format!("Bearer {key}"));
         }
 
-        let response = req.send().await.map_err(|source| RadarHttpError::Request {
-            url: url.clone(),
-            source,
+        let response = req.send().await.map_err(|source| {
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            error!(
+                rota = %rota_segura,
+                url = %url_segura,
+                elapsed_ms,
+                erro = %source,
+                "Erro de conexão ao comunicar com a API local do Radar Cívico"
+            );
+            RadarHttpError::Request {
+                url: url_segura.clone(),
+                source,
+            }
         })?;
 
         let status = response.status();
+        let status_code = status.as_u16();
+        tracing::Span::current().record("status_http", status_code);
+
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            warn!(
+                rota = %rota_segura,
+                url = %url_segura,
+                status_http = status_code,
+                elapsed_ms,
+                "Status HTTP anômalo retornado pela API local do Radar Cívico"
+            );
             return Err(RadarHttpError::HttpStatus {
-                status: status.as_u16(),
-                url,
+                status: status_code,
+                url: url_segura,
                 body,
             });
         }
 
-        response
-            .json::<Value>()
-            .await
-            .map_err(|source| RadarHttpError::Request { url, source })
+        let parsed = response.json::<Value>().await.map_err(|source| {
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            error!(
+                rota = %rota_segura,
+                url = %url_segura,
+                status_http = status_code,
+                elapsed_ms,
+                erro = %source,
+                "Falha ao desserializar payload JSON da API local"
+            );
+            RadarHttpError::Request {
+                url: url_segura.clone(),
+                source,
+            }
+        })?;
+
+        let elapsed_ms = inicio.elapsed().as_millis() as u64;
+        tracing::Span::current().record("elapsed_ms", elapsed_ms);
+        info!(
+            rota = %rota_segura,
+            status_http = status_code,
+            elapsed_ms,
+            "Resposta HTTP recebida com sucesso da API local"
+        );
+
+        Ok(parsed)
     }
 }
 
@@ -354,11 +426,21 @@ impl ServerHandler for RadarMcpServer {
             )
     }
 
+    #[tracing::instrument(
+        name = "mcp.initialize",
+        skip(self, request, context),
+        fields(client_name = %request.client_info.name, protocol_version = %request.protocol_version)
+    )]
     async fn initialize(
         &self,
         request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, McpError> {
+        info!(
+            client_name = %request.client_info.name,
+            protocol_version = %request.protocol_version,
+            "Handshake initialize recebido no servidor MCP"
+        );
         let init_result = self.negotiate_initialize(&request)?;
         let mut peer_info = request;
         peer_info.protocol_version = init_result.protocol_version.clone();
@@ -366,18 +448,26 @@ impl ServerHandler for RadarMcpServer {
         Ok(init_result)
     }
 
+    #[tracing::instrument(name = "mcp.list_tools", skip(self, _request, _context))]
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(self.registry.list_tools()))
+        let tools = self.registry.list_tools();
+        debug!(tools_count = tools.len(), "Listando ferramentas MCP registradas");
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         self.registry.get_tool(name)
     }
 
+    #[tracing::instrument(
+        name = "mcp.call_tool",
+        skip(self, request, _context),
+        fields(ferramenta = %request.name)
+    )]
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -394,22 +484,28 @@ impl ServerHandler for RadarMcpServer {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let config = RadarMcpConfig::load();
+/// Inicializa o subsistema `tracing-subscriber` redirecionando 100% dos logs para `std::io::stderr`
+/// e aplicando o filtro da variável `RUST_LOG` (default: `"radar_mcp=info,warn"`).
+pub fn init_stderr_tracing() {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_RUST_LOG));
 
-    // Logs são enviados exclusivamente para stderr para preservar o transporte JSON-RPC em stdout.
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "radar_mcp=info".into()),
-        )
+    let _ = tracing_subscriber::registry()
+        .with(env_filter)
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
                 .with_ansi(false),
         )
-        .init();
+        .try_init();
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // 100% dos logs vão estritamente para std::io::stderr para isolamento total do transporte stdio JSON-RPC.
+    init_stderr_tracing();
+
+    let config = RadarMcpConfig::load();
 
     let http_client = RadarHttpClient::new(&config)
         .context("Falha ao inicializar cliente HTTP do Radar Cívico")?;
@@ -563,6 +659,29 @@ mod tests {
             assert_eq!(t["inputSchema"]["type"], "object");
             assert!(t["inputSchema"]["properties"].is_object());
         }
+    }
+
+    #[test]
+    fn sanitizacao_de_logs_mascara_cpf_e_preserva_cnpj() {
+        assert_eq!(DEFAULT_RUST_LOG, "radar_mcp=info,warn");
+        assert_eq!(sanitizar_parametro_log("12345678901"), "***.456.789-**");
+        assert_eq!(sanitizar_parametro_log("123.456.789-01"), "***.456.789-**");
+        assert_eq!(
+            sanitizar_parametro_log("cpf:12345678901"),
+            "cpf:***.456.789-**"
+        );
+        assert_eq!(
+            sanitizar_parametro_log("12345678000190"),
+            "12345678000190"
+        );
+        assert_eq!(
+            sanitizar_rota_log("/api/v1/dossie/cpf/12345678901"),
+            "/api/v1/dossie/cpf/***.456.789-**"
+        );
+        assert_eq!(
+            sanitizar_rota_log("/api/v1/grafo/cpf%3A12345678901"),
+            "/api/v1/grafo/cpf:***.456.789-**"
+        );
     }
 
     #[tokio::test]

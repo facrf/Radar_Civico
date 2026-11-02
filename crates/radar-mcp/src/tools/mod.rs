@@ -5,6 +5,7 @@ pub mod politicos;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use rmcp::{
@@ -12,6 +13,7 @@ use rmcp::{
     model::{CallToolResponse, CallToolResult, ContentBlock, JsonObject, Tool},
 };
 use serde_json::{Value, json};
+use tracing::{debug, error, info, warn};
 
 use crate::{RadarHttpClient, RadarHttpError};
 
@@ -88,13 +90,26 @@ impl ToolRegistry {
     }
 
     /// Despacha a execução de uma ferramenta registrada pelo nome.
+    #[tracing::instrument(
+        name = "mcp.registry.call_tool",
+        skip(self, client, arguments),
+        fields(ferramenta = %name, elapsed_ms = tracing::field::Empty)
+    )]
     pub async fn call_tool(
         &self,
         client: &RadarHttpClient,
         name: &str,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResponse, McpError> {
+        let inicio = Instant::now();
         let Some(tool) = self.tools.get(name) else {
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            warn!(
+                ferramenta = %name,
+                elapsed_ms,
+                "Tentativa de chamada a ferramenta inexistente no registro MCP"
+            );
             let msg = format_validation_error_json(
                 name,
                 &format!("Ferramenta não encontrada no registro MCP: '{name}'"),
@@ -105,7 +120,11 @@ impl ToolRegistry {
         };
 
         let args = arguments.unwrap_or_default();
+        debug!(ferramenta = %name, "Despachando execução da ferramenta MCP");
         let result = tool.call(client, args).await?;
+        let elapsed_ms = inicio.elapsed().as_millis() as u64;
+        tracing::Span::current().record("elapsed_ms", elapsed_ms);
+        info!(ferramenta = %name, elapsed_ms, "Execução da ferramenta MCP finalizada");
         Ok(CallToolResponse::from(result))
     }
 }
@@ -190,6 +209,59 @@ pub fn truncar_texto(texto: &str, max_chars: usize) -> String {
     format!("{prefixo}...")
 }
 
+/// Sanitiza um parâmetro de entrada antes de registrá-lo em logs/spans `tracing`,
+/// mascarando CPFs íntegros (11 dígitos ou prefixados com `cpf:`) para `***.XXX.XXX-**`.
+pub fn sanitizar_parametro_log(valor: &str) -> String {
+    let trimmed = valor.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if let Some(rest) = trimmed
+        .strip_prefix("cpf:")
+        .or_else(|| trimmed.strip_prefix("CPF:"))
+    {
+        return format!("cpf:{}", mascarar_cpf_estrito(rest));
+    }
+
+    let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    let apenas_caracteres_doc = trimmed
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '*' | ' '));
+
+    if apenas_caracteres_doc && digits.len() == 11 {
+        return mascarar_cpf_estrito(trimmed);
+    }
+
+    trimmed.to_string()
+}
+
+/// Sanitiza caminhos de rota ou URLs para logging seguro, mascarando CPFs presentes
+/// em rotas `/api/v1/dossie/cpf/{cpf}` ou `/api/v1/grafo/cpf:...`.
+pub fn sanitizar_rota_log(rota: &str) -> String {
+    if let Some((prefixo, sufixo)) = rota.split_once("/api/v1/dossie/cpf/") {
+        let (doc_part, query_part) = match sufixo.split_once('?') {
+            Some((d, q)) => (d, Some(q)),
+            None => (sufixo, None),
+        };
+        let doc_mascarado = mascarar_cpf_estrito(doc_part);
+        return match query_part {
+            Some(q) => format!("{prefixo}/api/v1/dossie/cpf/{doc_mascarado}?{q}"),
+            None => format!("{prefixo}/api/v1/dossie/cpf/{doc_mascarado}"),
+        };
+    }
+
+    if let Some((prefixo, sufixo)) = rota.split_once("/api/v1/grafo/") {
+        let decoded = urlencoding::decode(sufixo)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| sufixo.to_string());
+        let id_seguro = sanitizar_parametro_log(&decoded);
+        return format!("{prefixo}/api/v1/grafo/{id_seguro}");
+    }
+
+    rota.to_string()
+}
+
 /// Ferramenta base de verificação de conectividade e status da instância do Radar Cívico.
 pub struct RadarStatusTool;
 
@@ -212,18 +284,30 @@ impl McpTool for RadarStatusTool {
         )
     }
 
+    #[tracing::instrument(
+        name = "tool.radar_status",
+        skip(self, client, _arguments),
+        fields(ferramenta = "radar_status", elapsed_ms = tracing::field::Empty)
+    )]
     async fn call(
         &self,
         client: &RadarHttpClient,
         _arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let inicio = Instant::now();
         match client.get_json("/api/versao", &[]).await {
             Ok(payload) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                info!(elapsed_ms, "Status da API consultado com sucesso");
                 let text = serde_json::to_string_pretty(&payload)
                     .unwrap_or_else(|_| payload.to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                error!(elapsed_ms, erro = %err, "Falha ao consultar status da API");
                 let erro_json = format_http_error_json("radar_status", &err);
                 Ok(CallToolResult::error(vec![ContentBlock::text(erro_json)]))
             }

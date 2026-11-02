@@ -475,3 +475,95 @@ async fn test_stdio_tools_call_erro_404_retorna_erro_controlado_e_mantem_process
     .await
     .expect("join de spawn_blocking deve concluir");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_logs_isolados_no_stderr_e_cpf_mascarado_nos_logs() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/dossie/cpf/12345678901"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "cpf_mascarado": "12345678901",
+            "nome": "MARIA TESTE LOGS",
+            "score_risco": "BAIXO",
+            "total_faturado_empresas_ceap": 0.0,
+            "total_contratado_empresas_pncp": 0.0,
+            "empresas_socio": [],
+            "doacoes_eleitorais": [],
+            "total_alertas": 0,
+            "alertas": []
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let radar_url = mock_server.uri();
+
+    tokio::task::spawn_blocking(move || {
+        let requests = [
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "test-stderr-logging", "version": "0.1.0" }
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "dossie_cpf",
+                    "arguments": { "cpf": "123.456.789-01" }
+                }
+            }),
+        ];
+
+        let mut input = String::new();
+        for req in requests {
+            input.push_str(&serde_json::to_string(&req).unwrap());
+            input.push('\n');
+        }
+
+        let mut cmd = Command::cargo_bin("radar-mcp").unwrap();
+        cmd.env("RADAR_URL", &radar_url);
+        cmd.env_remove("RUST_LOG"); // Exercita o default "radar_mcp=info,warn"
+
+        let output = cmd.write_stdin(input).output().unwrap();
+        assert!(output.status.success());
+
+        let stdout_str = String::from_utf8(output.stdout).unwrap();
+        let stderr_str = String::from_utf8(output.stderr).unwrap();
+
+        // 1. 100% das linhas do stdout devem ser objetos JSON-RPC válidos (zero vazamento de logs)
+        for line in stdout_str.lines().filter(|l| !l.trim().is_empty()) {
+            let parsed: Value = serde_json::from_str(line)
+                .expect("stdout deve conter exclusivamente mensagens JSON-RPC");
+            assert_eq!(parsed["jsonrpc"], "2.0");
+        }
+
+        // 2. O stderr deve conter os logs do tracing com tempo de resposta e CPF mascarado
+        assert!(
+            stderr_str.contains("elapsed_ms="),
+            "stderr deve registrar tempos de resposta (elapsed_ms): {stderr_str}"
+        );
+        assert!(
+            stderr_str.contains("***.456.789-**"),
+            "stderr deve registrar o CPF mascarado: {stderr_str}"
+        );
+        assert!(
+            !stderr_str.contains("12345678901") && !stderr_str.contains("123.456.789-01"),
+            "stderr NÃO pode vazar o CPF íntegro nos logs: {stderr_str}"
+        );
+    })
+    .await
+    .unwrap();
+}
+

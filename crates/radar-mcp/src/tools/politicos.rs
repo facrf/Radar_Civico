@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use rmcp::{
@@ -7,9 +8,13 @@ use rmcp::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
+use tracing::{info, warn};
 
 use crate::{RadarHttpClient, RadarHttpError};
-use crate::tools::{McpTool, format_http_error_json, format_validation_error_json, truncar_texto};
+use crate::tools::{
+    McpTool, format_http_error_json, format_validation_error_json, sanitizar_parametro_log,
+    truncar_texto,
+};
 
 pub const DEFAULT_PAGINA_POLITICOS: usize = 1;
 pub const DEFAULT_LIMITE_POLITICOS: usize = 20;
@@ -284,14 +289,30 @@ impl McpTool for ListarPoliticosTool {
         )
     }
 
+    #[tracing::instrument(
+        name = "tool.listar_politicos",
+        skip(self, client, arguments),
+        fields(
+            ferramenta = "listar_politicos",
+            uf = tracing::field::Empty,
+            partido = tracing::field::Empty,
+            pagina = tracing::field::Empty,
+            limite = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty
+        )
+    )]
     async fn call(
         &self,
         client: &RadarHttpClient,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let inicio = Instant::now();
         let input: ListarPoliticosInput = match serde_json::from_value(Value::Object(arguments)) {
             Ok(val) => val,
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'listar_politicos'");
                 let msg = format_validation_error_json(
                     "listar_politicos",
                     &format!("Parâmetros inválidos para 'listar_politicos': {err}"),
@@ -302,6 +323,9 @@ impl McpTool for ListarPoliticosTool {
 
         if let Some(ref uf) = input.uf_normalizada() {
             if uf.chars().count() != 2 || !uf.chars().all(|c| c.is_ascii_alphabetic()) {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(uf = %uf, elapsed_ms, "Parâmetro 'uf' inválido em 'listar_politicos'");
                 let msg = format_validation_error_json(
                     "listar_politicos",
                     "O parâmetro 'uf' deve conter exatamente 2 letras (ex.: 'SP', 'DF').",
@@ -312,26 +336,58 @@ impl McpTool for ListarPoliticosTool {
 
         let pagina = input.pagina_efetiva();
         let limite = input.limite_efetivo();
+        let uf_norm = input.uf_normalizada();
+        let partido_norm = input.partido_normalizado();
+
+        tracing::Span::current().record("pagina", pagina);
+        tracing::Span::current().record("limite", limite);
+        if let Some(ref u) = uf_norm {
+            tracing::Span::current().record("uf", u.as_str());
+        }
+        if let Some(ref p) = partido_norm {
+            tracing::Span::current().record("partido", p.as_str());
+        }
+
+        info!(
+            uf = uf_norm.as_deref().unwrap_or("*"),
+            partido = partido_norm.as_deref().unwrap_or("*"),
+            pagina,
+            limite,
+            "Executando ferramenta MCP 'listar_politicos'"
+        );
 
         let mut query_params: Vec<(&str, String)> = vec![
             ("page", pagina.to_string()),
             ("limit", limite.to_string()),
         ];
-        if let Some(uf) = input.uf_normalizada() {
+        if let Some(uf) = uf_norm {
             query_params.push(("uf", uf));
         }
-        if let Some(partido) = input.partido_normalizado() {
+        if let Some(partido) = partido_norm {
             query_params.push(("partido", partido));
         }
 
         match client.get_json("/api/v1/politicos", &query_params).await {
             Ok(raw_json) => {
                 let saida = parse_e_formatar_lista_politicos(&raw_json, pagina, limite);
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                info!(
+                    retornados = saida.politicos.len(),
+                    total = saida.total,
+                    elapsed_ms,
+                    "Listagem de políticos concluída com sucesso"
+                );
                 let texto = serde_json::to_string_pretty(&saida)
                     .unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
-            Err(err) => Ok(tratar_erro_rota("listar_politicos", &err)),
+            Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(elapsed_ms, erro = %err, "Falha na chamada à API durante 'listar_politicos'");
+                Ok(tratar_erro_rota("listar_politicos", &err))
+            }
         }
     }
 }
@@ -670,14 +726,27 @@ impl McpTool for DetalhePoliticoTool {
         )
     }
 
+    #[tracing::instrument(
+        name = "tool.detalhe_politico",
+        skip(self, client, arguments),
+        fields(
+            ferramenta = "detalhe_politico",
+            id = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty
+        )
+    )]
     async fn call(
         &self,
         client: &RadarHttpClient,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let inicio = Instant::now();
         let input: DetalhePoliticoInput = match serde_json::from_value(Value::Object(arguments)) {
             Ok(val) => val,
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'detalhe_politico'");
                 let msg = format_validation_error_json(
                     "detalhe_politico",
                     &format!("Parâmetros inválidos para 'detalhe_politico': {err}"),
@@ -688,6 +757,9 @@ impl McpTool for DetalhePoliticoTool {
 
         let id_clean = input.id.trim();
         if id_clean.is_empty() {
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            warn!(elapsed_ms, "Parâmetro 'id' vazio em 'detalhe_politico'");
             let msg = format_validation_error_json(
                 "detalhe_politico",
                 "O parâmetro obrigatório 'id' não pode ser vazio.",
@@ -695,16 +767,38 @@ impl McpTool for DetalhePoliticoTool {
             return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
         }
 
+        let id_seguro = sanitizar_parametro_log(id_clean);
+        tracing::Span::current().record("id", id_seguro.as_str());
+        info!(id = %id_seguro, "Consultando detalhe do político na API local");
+
         let encoded_id = urlencoding::encode(id_clean);
         let path = format!("/api/v1/politicos/{encoded_id}");
         match client.get_json(&path, &[]).await {
             Ok(raw_json) => {
                 let formatado = parse_e_formatar_detalhe_politico(&raw_json, id_clean);
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                info!(
+                    id = %id_seguro,
+                    candidaturas = formatado.candidaturas.len(),
+                    elapsed_ms,
+                    "Detalhe do político formatado com sucesso"
+                );
                 let texto = serde_json::to_string_pretty(&formatado)
                     .unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
-            Err(err) => Ok(tratar_erro_rota("detalhe_politico", &err)),
+            Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(
+                    id = %id_seguro,
+                    elapsed_ms,
+                    erro = %err,
+                    "Falha na chamada à API durante 'detalhe_politico'"
+                );
+                Ok(tratar_erro_rota("detalhe_politico", &err))
+            }
         }
     }
 }
@@ -961,14 +1055,27 @@ impl McpTool for DossieCpfTool {
         )
     }
 
+    #[tracing::instrument(
+        name = "tool.dossie_cpf",
+        skip(self, client, arguments),
+        fields(
+            ferramenta = "dossie_cpf",
+            cpf = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty
+        )
+    )]
     async fn call(
         &self,
         client: &RadarHttpClient,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let inicio = Instant::now();
         let input: DossieCpfInput = match serde_json::from_value(Value::Object(arguments)) {
             Ok(val) => val,
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'dossie_cpf'");
                 let msg = format_validation_error_json(
                     "dossie_cpf",
                     &format!("Parâmetros inválidos para 'dossie_cpf': {err}"),
@@ -979,6 +1086,9 @@ impl McpTool for DossieCpfTool {
 
         let cpf_limpo = input.cpf_sanitizado();
         if cpf_limpo.is_empty() {
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            warn!(elapsed_ms, "Parâmetro 'cpf' vazio em 'dossie_cpf'");
             let msg = format_validation_error_json(
                 "dossie_cpf",
                 "O parâmetro obrigatório 'cpf' não contém dígitos válidos.",
@@ -986,15 +1096,39 @@ impl McpTool for DossieCpfTool {
             return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
         }
 
+        // Garante que nos logs/spans o CPF nunca apareça íntegro, apenas mascarado (***.XXX.XXX-**)
+        let cpf_log = mascarar_cpf_estrito(&cpf_limpo);
+        tracing::Span::current().record("cpf", cpf_log.as_str());
+        info!(cpf = %cpf_log, "Consultando dossiê CPF na API local");
+
         let path = format!("/api/v1/dossie/cpf/{cpf_limpo}");
         match client.get_json(&path, &[]).await {
             Ok(raw_json) => {
                 let formatado = parse_e_formatar_dossie_cpf(&raw_json, &cpf_limpo);
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                info!(
+                    cpf = %cpf_log,
+                    sociedades = formatado.total_empresas_socio,
+                    alertas = formatado.total_alertas,
+                    elapsed_ms,
+                    "Dossiê CPF formatado com sucesso"
+                );
                 let texto = serde_json::to_string_pretty(&formatado)
                     .unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
-            Err(err) => Ok(tratar_erro_rota("dossie_cpf", &err)),
+            Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(
+                    cpf = %cpf_log,
+                    elapsed_ms,
+                    erro = %err,
+                    "Falha na chamada à API durante 'dossie_cpf'"
+                );
+                Ok(tratar_erro_rota("dossie_cpf", &err))
+            }
         }
     }
 }

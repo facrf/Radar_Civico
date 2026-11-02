@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use rmcp::{
@@ -7,9 +8,12 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tracing::{info, warn};
 
 use crate::RadarHttpClient;
-use crate::tools::{McpTool, format_http_error_json, format_validation_error_json};
+use crate::tools::{
+    McpTool, format_http_error_json, format_validation_error_json, sanitizar_parametro_log,
+};
 
 pub const DEFAULT_LIMITE_BUSCA: usize = 10;
 pub const MAX_LIMITE_BUSCA: usize = 25;
@@ -195,14 +199,28 @@ impl McpTool for BuscarTool {
         )
     }
 
+    #[tracing::instrument(
+        name = "tool.buscar",
+        skip(self, client, arguments),
+        fields(
+            ferramenta = "buscar",
+            q = tracing::field::Empty,
+            limite = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty
+        )
+    )]
     async fn call(
         &self,
         client: &RadarHttpClient,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let inicio = Instant::now();
         let input: BuscarInput = match serde_json::from_value(Value::Object(arguments)) {
             Ok(val) => val,
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(elapsed_ms, erro = %err, "Parâmetros de entrada inválidos para 'buscar'");
                 let msg = format_validation_error_json(
                     "buscar",
                     &format!("Parâmetros inválidos para 'buscar': {err}"),
@@ -213,6 +231,9 @@ impl McpTool for BuscarTool {
 
         let termo = input.q.trim();
         if termo.is_empty() {
+            let elapsed_ms = inicio.elapsed().as_millis() as u64;
+            tracing::Span::current().record("elapsed_ms", elapsed_ms);
+            warn!(elapsed_ms, "Parâmetro 'q' vazio em 'buscar'");
             let msg = format_validation_error_json(
                 "buscar",
                 "O parâmetro obrigatório 'q' não pode ser vazio.",
@@ -220,7 +241,17 @@ impl McpTool for BuscarTool {
             return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
         }
 
+        let termo_seguro = sanitizar_parametro_log(termo);
         let limite = input.limite_efetivo();
+        tracing::Span::current().record("q", termo_seguro.as_str());
+        tracing::Span::current().record("limite", limite);
+
+        info!(
+            q = %termo_seguro,
+            limite,
+            "Executando ferramenta MCP 'buscar'"
+        );
+
         let query_params = [
             ("q", termo.to_string()),
             ("limite", limite.to_string()),
@@ -229,11 +260,27 @@ impl McpTool for BuscarTool {
         match client.get_json("/api/v1/busca", &query_params).await {
             Ok(raw_json) => {
                 let formatado = parse_e_formatar_busca(&raw_json, termo, limite);
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                info!(
+                    q = %termo_seguro,
+                    total_retornado = formatado.total_retornado,
+                    elapsed_ms,
+                    "Busca concluída com sucesso"
+                );
                 let texto = serde_json::to_string_pretty(&formatado)
                     .unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
+                let elapsed_ms = inicio.elapsed().as_millis() as u64;
+                tracing::Span::current().record("elapsed_ms", elapsed_ms);
+                warn!(
+                    q = %termo_seguro,
+                    elapsed_ms,
+                    erro = %err,
+                    "Falha na chamada à API durante 'buscar'"
+                );
                 let erro_json = format_http_error_json("buscar", &err);
                 Ok(CallToolResult::error(vec![ContentBlock::text(erro_json)]))
             }
