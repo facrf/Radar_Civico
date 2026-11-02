@@ -121,6 +121,25 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             ingestion::progress::persist_progress_loop(progress_pool).await;
         });
+        let maintenance_pool = pool.clone();
+        tokio::spawn(async move {
+            let interval = std::time::Duration::from_secs(600);
+            loop {
+                tokio::time::sleep(interval).await;
+                if let Err(err) = maintenance_pool
+                    .run_blocking(|conn| storage::executar_manutencao_db(conn))
+                    .await
+                {
+                    tracing::warn!(
+                        "Rotina periódica de checkpoint passivo do WAL / optimize adiou execução: {err}"
+                    );
+                } else {
+                    tracing::debug!(
+                        "Manutenção periódica SQLite (PRAGMA optimize + wal_checkpoint PASSIVE) concluída"
+                    );
+                }
+            }
+        });
     }
     if eh_auditoria {
         println!("=== Radar Cívico: Executando Varredura do Motor de Auditoria ===");
@@ -159,6 +178,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let shutdown_pool = pool.clone();
     let app = criar_router(pool);
 
     let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -175,6 +195,13 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("Erro no loop de execução do servidor HTTP")?;
+
+    if let Err(err) = shutdown_pool
+        .run_blocking(|conn| storage::executar_manutencao_db(conn))
+        .await
+    {
+        tracing::warn!("Não foi possível executar checkpoint final do WAL no desligamento: {err}");
+    }
 
     info!("Servidor desligado com sucesso (graceful shutdown).");
     Ok(())
