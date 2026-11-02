@@ -2,29 +2,29 @@ pub mod prompts;
 pub mod tools;
 
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use prompts::PromptRegistry;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use rmcp::{
-    ErrorData as McpError, RoleServer, ServerHandler,
     model::{
         CallToolRequestParams, CallToolResponse, GetPromptRequestParams, GetPromptResponse,
         Implementation, InitializeRequestParams, InitializeResult, ListPromptsResult,
         ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
     },
-    service::{RequestContext, serve_directly},
+    service::{serve_directly, RequestContext},
+    ErrorData as McpError, RoleServer, ServerHandler,
 };
 use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::Notify;
-use tools::{ToolRegistry, sanitizar_parametro_log, sanitizar_rota_log};
+use tools::{sanitizar_parametro_log, sanitizar_rota_log, ToolRegistry};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -329,11 +329,7 @@ struct GracefulStdin {
 }
 
 impl GracefulStdin {
-    fn new(
-        inner: tokio::io::Stdin,
-        in_flight: Arc<AtomicUsize>,
-        idle_notify: Arc<Notify>,
-    ) -> Self {
+    fn new(inner: tokio::io::Stdin, in_flight: Arc<AtomicUsize>, idle_notify: Arc<Notify>) -> Self {
         Self {
             inner,
             eof_seen: false,
@@ -467,7 +463,10 @@ impl ServerHandler for RadarMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         let tools = self.registry.list_tools();
-        debug!(tools_count = tools.len(), "Listando ferramentas MCP registradas");
+        debug!(
+            tools_count = tools.len(),
+            "Listando ferramentas MCP registradas"
+        );
         Ok(ListToolsResult::with_all_items(tools))
     }
 
@@ -478,7 +477,10 @@ impl ServerHandler for RadarMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, McpError> {
         let prompts = self.prompts.list_prompts();
-        debug!(prompts_count = prompts.len(), "Listando prompts nativos MCP");
+        debug!(
+            prompts_count = prompts.len(),
+            "Listando prompts nativos MCP"
+        );
         Ok(ListPromptsResult::with_all_items(prompts))
     }
 
@@ -664,9 +666,7 @@ mod tests {
             )
         );
 
-        let subgrafo = server
-            .get_tool("subgrafo")
-            .expect("deve conter 'subgrafo'");
+        let subgrafo = server.get_tool("subgrafo").expect("deve conter 'subgrafo'");
         assert_eq!(
             subgrafo.description.as_deref(),
             Some(
@@ -686,8 +686,11 @@ mod tests {
 
         // Valida se todos os schemas JSON-RPC gerados são objetos JSON Schema válidos
         let list_result = ListToolsResult::with_all_items(tools.clone());
-        let list_json = serde_json::to_value(&list_result).expect("deve serializar ListToolsResult");
-        let tools_arr = list_json["tools"].as_array().expect("deve conter array 'tools'");
+        let list_json =
+            serde_json::to_value(&list_result).expect("deve serializar ListToolsResult");
+        let tools_arr = list_json["tools"]
+            .as_array()
+            .expect("deve conter array 'tools'");
         assert_eq!(tools_arr.len(), tools.len());
         for t in tools_arr {
             assert!(t["name"].as_str().is_some_and(|s| !s.is_empty()));
@@ -706,10 +709,7 @@ mod tests {
             sanitizar_parametro_log("cpf:12345678901"),
             "cpf:***.456.789-**"
         );
-        assert_eq!(
-            sanitizar_parametro_log("12345678000190"),
-            "12345678000190"
-        );
+        assert_eq!(sanitizar_parametro_log("12345678000190"), "12345678000190");
         assert_eq!(
             sanitizar_rota_log("/api/v1/dossie/cpf/12345678901"),
             "/api/v1/dossie/cpf/***.456.789-**"
@@ -733,7 +733,9 @@ mod tests {
             let req_str = String::from_utf8_lossy(&buf[..n]).to_string();
 
             assert!(
-                req_str.to_ascii_lowercase().contains("x-api-key: segredo-mcp-123"),
+                req_str
+                    .to_ascii_lowercase()
+                    .contains("x-api-key: segredo-mcp-123"),
                 "Requisição deve incluir o header x-api-key: {req_str}"
             );
             assert!(
@@ -757,9 +759,7 @@ mod tests {
         let client = RadarHttpClient::new(&cfg).unwrap();
         let registry = ToolRegistry::with_default_tools();
 
-        let args = json!({ "cnpj": "12.345.678/0001-90" })
-            .as_object()
-            .cloned();
+        let args = json!({ "cnpj": "12.345.678/0001-90" }).as_object().cloned();
         let response = registry
             .call_tool(&client, "dossie_cnpj", args)
             .await

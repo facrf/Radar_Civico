@@ -2,13 +2,17 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command as StdCommand, Stdio};
 
 use assert_cmd::Command;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Executa o binário `radar-mcp` via `assert_cmd` alimentando `stdin` com linhas JSON-RPC
 /// dentro de `spawn_blocking` para não bloquear o runtime assíncrono do `wiremock`.
-async fn run_mcp_batch(radar_url: String, api_key: Option<String>, lines: Vec<Value>) -> Vec<Value> {
+async fn run_mcp_batch(
+    radar_url: String,
+    api_key: Option<String>,
+    lines: Vec<Value>,
+) -> Vec<Value> {
     tokio::task::spawn_blocking(move || {
         let mut input = String::new();
         for line in lines {
@@ -43,9 +47,8 @@ async fn run_mcp_batch(radar_url: String, api_key: Option<String>, lines: Vec<Va
             .lines()
             .filter(|l| !l.trim().is_empty())
             .map(|l| {
-                serde_json::from_str::<Value>(l).unwrap_or_else(|e| {
-                    panic!("Linha inválida no stdout JSON-RPC: '{l}' ({e})")
-                })
+                serde_json::from_str::<Value>(l)
+                    .unwrap_or_else(|e| panic!("Linha inválida no stdout JSON-RPC: '{l}' ({e})"))
             })
             .collect()
     })
@@ -262,13 +265,10 @@ async fn test_stdio_tools_call_dossie_cnpj_formata_resposta_corretamente() {
     let text = call_resp["result"]["content"][0]["text"]
         .as_str()
         .expect("deve retornar bloco de texto com JSON formatado");
-    let formatted: Value =
-        serde_json::from_str(text).expect("conteúdo retornado por dossie_cnpj deve ser JSON válido");
+    let formatted: Value = serde_json::from_str(text)
+        .expect("conteúdo retornado por dossie_cnpj deve ser JSON válido");
 
-    assert_eq!(
-        formatted["resumo_cadastral"]["cnpj"],
-        "00000000000191"
-    );
+    assert_eq!(formatted["resumo_cadastral"]["cnpj"], "00000000000191");
     assert_eq!(
         formatted["resumo_cadastral"]["cnpj_formatado"],
         "00.000.000/0001-91"
@@ -289,19 +289,14 @@ async fn test_stdio_tools_call_dossie_cnpj_formata_resposta_corretamente() {
     );
     assert_eq!(formatted["total_socios"], 1);
     assert_eq!(formatted["socios_truncados"], false);
-    assert_eq!(
-        formatted["socios"][0]["nome"],
-        "DIRETORIA EXECUTIVA TESTE"
-    );
+    assert_eq!(formatted["socios"][0]["nome"], "DIRETORIA EXECUTIVA TESTE");
     assert_eq!(formatted["socios"][0]["total_outras_empresas"], 1);
     assert_eq!(formatted["total_alertas"], 1);
     assert_eq!(formatted["alertas"][0]["tipo"], "FORNECEDOR_HUB");
-    assert!(
-        formatted["nota_metodologica"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("heurística")
-    );
+    assert!(formatted["nota_metodologica"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("heurística"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -432,16 +427,17 @@ async fn test_stdio_tools_call_erro_404_retorna_erro_controlado_e_mantem_process
             serde_json::from_str(err_text).expect("erro controlado deve ser JSON estruturado");
         assert_eq!(err_payload["status_http"], 404);
         assert_eq!(err_payload["ferramenta"], "dossie_cnpj");
-        assert!(
-            err_payload["detalhe"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("99999999000199")
-        );
+        assert!(err_payload["detalhe"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("99999999000199"));
 
         // 3. Verifica que o processo continua ativo após o erro 404
         assert!(
-            child.try_wait().expect("try_wait não deve falhar").is_none(),
+            child
+                .try_wait()
+                .expect("try_wait não deve falhar")
+                .is_none(),
             "O processo radar-mcp deve permanecer ativo após erro HTTP 404"
         );
 
@@ -470,7 +466,9 @@ async fn test_stdio_tools_call_erro_404_retorna_erro_controlado_e_mantem_process
 
         // Encerra stdin graciosamente e aguarda término limpo do processo
         drop(stdin);
-        let exit_status = child.wait().expect("processo deve encerrar após fechar stdin");
+        let exit_status = child
+            .wait()
+            .expect("processo deve encerrar após fechar stdin");
         assert!(exit_status.success());
     })
     .await
@@ -651,7 +649,6 @@ async fn test_stdio_prompts_list_e_prompts_get_cruzar_campanha_contratos_pncp() 
     assert!(text.contains("Passo 2: Extrair a lista de doadores de campanha"));
     assert!(text.contains("Passo 3: Mapear os CNPJs dessas empresas via `dossie_cnpj`"));
     assert!(text.contains("Passo 4: Consultar contratos/vínculos e disparar `listar_alertas`"));
-    assert!(text.contains("Passo 5: Formatar relatório com links/fontes originais e avisos de heurística"));
+    assert!(text
+        .contains("Passo 5: Formatar relatório com links/fontes originais e avisos de heurística"));
 }
-
-

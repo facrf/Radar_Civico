@@ -9,10 +9,10 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use rmcp::{
-    ErrorData as McpError,
     model::{CallToolResponse, CallToolResult, ContentBlock, JsonObject, Tool},
+    ErrorData as McpError,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tracing::{debug, error, info, warn};
 
 use crate::{RadarHttpClient, RadarHttpError};
@@ -23,13 +23,13 @@ pub use auditoria::{
 };
 pub use buscar::{BuscarInput, BuscarTool, ItemBuscaFormatado, SaidaBuscaFormatada};
 pub use dossie_cnpj::{
-    AlertaResumidoCnpj, DossieCnpjFormatado, DossieCnpjInput, DossieCnpjTool, ResumoCadastralCnpj,
-    SocioResumidoCnpj, sanitizar_cnpj,
+    sanitizar_cnpj, AlertaResumidoCnpj, DossieCnpjFormatado, DossieCnpjInput, DossieCnpjTool,
+    ResumoCadastralCnpj, SocioResumidoCnpj,
 };
 pub use politicos::{
-    DetalhePoliticoFormatado, DetalhePoliticoInput, DetalhePoliticoTool, DossieCpfFormatado,
-    DossieCpfInput, DossieCpfTool, ItemPoliticoCompacto, ListarPoliticosInput,
-    ListarPoliticosTool, SaidaListarPoliticos, mascarar_cpf_estrito, sanitizar_cpf,
+    mascarar_cpf_estrito, sanitizar_cpf, DetalhePoliticoFormatado, DetalhePoliticoInput,
+    DetalhePoliticoTool, DossieCpfFormatado, DossieCpfInput, DossieCpfTool, ItemPoliticoCompacto,
+    ListarPoliticosInput, ListarPoliticosTool, SaidaListarPoliticos,
 };
 
 /// Interface modular para definição e execução de ferramentas MCP do Radar Cívico.
@@ -147,7 +147,11 @@ pub fn format_http_error_json(ferramenta: &str, err: &RadarHttpError) -> String 
             let detalhe_json = serde_json::from_str::<Value>(body).ok();
             let mensagem_servidor = detalhe_json
                 .as_ref()
-                .and_then(|v| v.get("mensagem").or_else(|| v.get("error")).and_then(Value::as_str))
+                .and_then(|v| {
+                    v.get("mensagem")
+                        .or_else(|| v.get("error"))
+                        .and_then(Value::as_str)
+                })
                 .map(ToString::to_string)
                 .unwrap_or_else(|| truncar_texto(body.trim(), 300));
 
@@ -300,8 +304,8 @@ impl McpTool for RadarStatusTool {
                 let elapsed_ms = inicio.elapsed().as_millis() as u64;
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 info!(elapsed_ms, "Status da API consultado com sucesso");
-                let text = serde_json::to_string_pretty(&payload)
-                    .unwrap_or_else(|_| payload.to_string());
+                let text =
+                    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
             Err(err) => {

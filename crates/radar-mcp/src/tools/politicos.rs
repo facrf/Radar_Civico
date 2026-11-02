@@ -3,18 +3,18 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use rmcp::{
-    ErrorData as McpError,
     model::{CallToolResult, ContentBlock, JsonObject, Tool},
+    ErrorData as McpError,
 };
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use crate::{RadarHttpClient, RadarHttpError};
 use crate::tools::{
-    McpTool, format_http_error_json, format_validation_error_json, sanitizar_parametro_log,
-    truncar_texto,
+    format_http_error_json, format_validation_error_json, sanitizar_parametro_log, truncar_texto,
+    McpTool,
 };
+use crate::{RadarHttpClient, RadarHttpError};
 
 pub const DEFAULT_PAGINA_POLITICOS: usize = 1;
 pub const DEFAULT_LIMITE_POLITICOS: usize = 20;
@@ -33,9 +33,7 @@ pub const MAX_DESCRICAO_CHARS: usize = 220;
 
 /// Sanitiza um CPF removendo pontos, traços, barras, espaços e caracteres não numéricos/asteriscos.
 pub fn sanitizar_cpf(raw: &str) -> String {
-    raw.chars()
-        .filter(|c| c.is_ascii_digit())
-        .collect()
+    raw.chars().filter(|c| c.is_ascii_digit()).collect()
 }
 
 /// Aplica mascaramento estrito no padrão `***.XXX.XXX-**` para qualquer CPF sem máscara
@@ -356,10 +354,8 @@ impl McpTool for ListarPoliticosTool {
             "Executando ferramenta MCP 'listar_politicos'"
         );
 
-        let mut query_params: Vec<(&str, String)> = vec![
-            ("page", pagina.to_string()),
-            ("limit", limite.to_string()),
-        ];
+        let mut query_params: Vec<(&str, String)> =
+            vec![("page", pagina.to_string()), ("limit", limite.to_string())];
         if let Some(uf) = uf_norm {
             query_params.push(("uf", uf));
         }
@@ -378,8 +374,8 @@ impl McpTool for ListarPoliticosTool {
                     elapsed_ms,
                     "Listagem de políticos concluída com sucesso"
                 );
-                let texto = serde_json::to_string_pretty(&saida)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let texto =
+                    serde_json::to_string_pretty(&saida).unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -784,8 +780,8 @@ impl McpTool for DetalhePoliticoTool {
                     elapsed_ms,
                     "Detalhe do político formatado com sucesso"
                 );
-                let texto = serde_json::to_string_pretty(&formatado)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let texto =
+                    serde_json::to_string_pretty(&formatado).unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -1114,8 +1110,8 @@ impl McpTool for DossieCpfTool {
                     elapsed_ms,
                     "Dossiê CPF formatado com sucesso"
                 );
-                let texto = serde_json::to_string_pretty(&formatado)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let texto =
+                    serde_json::to_string_pretty(&formatado).unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -1308,7 +1304,10 @@ mod tests {
         let detalhe = parse_e_formatar_detalhe_politico(&mock_detalhe, "77");
         assert_eq!(detalhe.id, "77");
         assert_eq!(detalhe.cpf_mascarado.as_deref(), Some("***.222.333-**"));
-        assert_eq!(detalhe.principais_doadores[0].doador_documento, "***.888.777-**");
+        assert_eq!(
+            detalhe.principais_doadores[0].doador_documento,
+            "***.888.777-**"
+        );
 
         let json_out = serde_json::to_value(&detalhe).unwrap();
         assert!(json_out.get("foto_base64").is_none());

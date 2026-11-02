@@ -1,9 +1,9 @@
 use rmcp::{
-    ErrorData as McpError,
     model::{
         GetPromptRequestParams, GetPromptResponse, GetPromptResult, JsonObject, Prompt,
         PromptArgument, PromptMessage, Role,
     },
+    ErrorData as McpError,
 };
 use serde_json::Value;
 use tracing::{info, warn};
@@ -37,7 +37,10 @@ impl PromptRegistry {
         skip(self, request),
         fields(prompt_name = %request.name)
     )]
-    pub fn get_prompt(&self, request: GetPromptRequestParams) -> Result<GetPromptResponse, McpError> {
+    pub fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+    ) -> Result<GetPromptResponse, McpError> {
         if request.name != PROMPT_CRUZAR_CAMPANHA_PNCP {
             warn!(
                 prompt_name = %request.name,
@@ -68,10 +71,8 @@ impl PromptRegistry {
             "Montando roteiro investigativo MCP 'cruzar_campanha_contratos_pncp'"
         );
 
-        let conteudo = montar_roteiro_cruzar_campanha_pncp(
-            &nome_ou_id_politico,
-            municipio_uf.as_deref(),
-        );
+        let conteudo =
+            montar_roteiro_cruzar_campanha_pncp(&nome_ou_id_politico, municipio_uf.as_deref());
 
         let result = GetPromptResult::new(vec![PromptMessage::new_text(Role::User, conteudo)])
             .with_description(DESCRICAO_CRUZAR_CAMPANHA_PNCP);
@@ -203,8 +204,8 @@ mod tests {
         .cloned()
         .unwrap();
 
-        let req = GetPromptRequestParams::new("cruzar_campanha_contratos_pncp")
-            .with_arguments(args);
+        let req =
+            GetPromptRequestParams::new("cruzar_campanha_contratos_pncp").with_arguments(args);
         let resp = registry.get_prompt(req).expect("deve gerar o prompt");
         let GetPromptResponse::Complete(result) = resp else {
             panic!("esperado GetPromptResponse::Complete");
@@ -224,8 +225,12 @@ mod tests {
         assert!(msg_text.contains("Passo 1: Chamar `buscar` ou `detalhe_politico`"));
         assert!(msg_text.contains("Passo 2: Extrair a lista de doadores de campanha"));
         assert!(msg_text.contains("Passo 3: Mapear os CNPJs dessas empresas via `dossie_cnpj`"));
-        assert!(msg_text.contains("Passo 4: Consultar contratos/vínculos e disparar `listar_alertas`"));
-        assert!(msg_text.contains("Passo 5: Formatar relatório com links/fontes originais e avisos de heurística"));
+        assert!(
+            msg_text.contains("Passo 4: Consultar contratos/vínculos e disparar `listar_alertas`")
+        );
+        assert!(msg_text.contains(
+            "Passo 5: Formatar relatório com links/fontes originais e avisos de heurística"
+        ));
 
         // Verifica erro caso o argumento obrigatório `nome_ou_id_politico` esteja ausente
         let req_sem_arg = GetPromptRequestParams::new("cruzar_campanha_contratos_pncp");

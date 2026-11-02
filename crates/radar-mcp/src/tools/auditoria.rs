@@ -4,17 +4,17 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use rmcp::{
-    ErrorData as McpError,
     model::{CallToolResult, ContentBlock, JsonObject, Tool},
+    ErrorData as McpError,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::tools::politicos::mascarar_cpf_estrito;
 use crate::tools::{
-    McpTool, format_http_error_json, format_validation_error_json, sanitizar_parametro_log,
-    truncar_texto,
+    format_http_error_json, format_validation_error_json, sanitizar_parametro_log, truncar_texto,
+    McpTool,
 };
 use crate::{RadarHttpClient, RadarHttpError};
 
@@ -229,7 +229,8 @@ pub fn parse_e_formatar_subgrafo(
                 .take(limite_clamped)
                 .map(|item| {
                     let obj = item.get("data").unwrap_or(item);
-                    let origem = extrair_endpoint_aresta(obj, "source", "origem_id", &db_id_to_uuid);
+                    let origem =
+                        extrair_endpoint_aresta(obj, "source", "origem_id", &db_id_to_uuid);
                     let destino =
                         extrair_endpoint_aresta(obj, "target", "destino_id", &db_id_to_uuid);
                     let tipo_aresta = obj
@@ -399,8 +400,8 @@ impl McpTool for SubgrafoTool {
                     elapsed_ms,
                     "Subgrafo formatado com sucesso"
                 );
-                let texto = serde_json::to_string_pretty(&formatado)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let texto =
+                    serde_json::to_string_pretty(&formatado).unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
@@ -663,11 +664,10 @@ impl McpTool for ListarAlertasTool {
                 tracing::Span::current().record("elapsed_ms", elapsed_ms);
                 info!(
                     total_retornado = saida.total_retornado,
-                    elapsed_ms,
-                    "Alertas heurísticos listados com sucesso"
+                    elapsed_ms, "Alertas heurísticos listados com sucesso"
                 );
-                let texto = serde_json::to_string_pretty(&saida)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let texto =
+                    serde_json::to_string_pretty(&saida).unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {

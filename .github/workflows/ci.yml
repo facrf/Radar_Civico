@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Configurar Rust estável
-        run: rustup update stable --no-self-update && rustup default stable
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
       - id: compiler
         run: echo "version=$(rustc -V | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
@@ -25,6 +25,16 @@ jobs:
             target
           key: rust-${{ runner.os }}-${{ steps.compiler.outputs.version }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
           restore-keys: rust-${{ runner.os }}-${{ steps.compiler.outputs.version }}-${{ hashFiles('Cargo.lock') }}-
+      - run: cargo fmt --check --package radar-mcp
+      - run: cargo clippy --package radar-mcp --all-targets -- -D warnings
+      - run: cargo test --package radar-mcp
+      - name: Compilar binário release radar-mcp
+        run: cargo build --release --bin radar-mcp
+      - name: Validar sanidade do binário radar-mcp via stdio (ping)
+        run: |
+          RESPONSE=$(printf '{"jsonrpc":"2.0","id":1,"method":"ping"}\n' | ./target/release/radar-mcp)
+          echo "$RESPONSE"
+          echo "$RESPONSE" | python3 -c 'import json,sys; msg = json.load(sys.stdin); assert msg.get("jsonrpc") == "2.0" and msg.get("id") == 1 and "result" in msg, f"Resposta ping inválida: {msg}"'
       - run: cargo check --workspace --locked
       - run: cargo test --all --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

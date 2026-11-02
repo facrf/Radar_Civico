@@ -3,17 +3,17 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use rmcp::{
-    ErrorData as McpError,
     model::{CallToolResult, ContentBlock, JsonObject, Tool},
+    ErrorData as McpError,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use crate::RadarHttpClient;
 use crate::tools::{
-    McpTool, format_http_error_json, format_validation_error_json, sanitizar_parametro_log,
+    format_http_error_json, format_validation_error_json, sanitizar_parametro_log, McpTool,
 };
+use crate::RadarHttpClient;
 
 pub const DEFAULT_LIMITE_BUSCA: usize = 10;
 pub const MAX_LIMITE_BUSCA: usize = 25;
@@ -252,10 +252,7 @@ impl McpTool for BuscarTool {
             "Executando ferramenta MCP 'buscar'"
         );
 
-        let query_params = [
-            ("q", termo.to_string()),
-            ("limite", limite.to_string()),
-        ];
+        let query_params = [("q", termo.to_string()), ("limite", limite.to_string())];
 
         match client.get_json("/api/v1/busca", &query_params).await {
             Ok(raw_json) => {
@@ -268,8 +265,8 @@ impl McpTool for BuscarTool {
                     elapsed_ms,
                     "Busca concluída com sucesso"
                 );
-                let texto = serde_json::to_string_pretty(&formatado)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let texto =
+                    serde_json::to_string_pretty(&formatado).unwrap_or_else(|_| "{}".to_string());
                 Ok(CallToolResult::success(vec![ContentBlock::text(texto)]))
             }
             Err(err) => {
