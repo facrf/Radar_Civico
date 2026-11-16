@@ -17,7 +17,7 @@
 	// Parâmetros do Motor de Auditoria
 
 	let auditRules: ParametrosAuditoria = {
-		limite_combustivel_litros: 250,
+		limite_combustivel_litros: 80,
 		preco_combustivel_referencia: 5.8,
 		sobrepreco_combustivel_percentual: 50,
 		estimar_volume_combustivel: true,
@@ -25,7 +25,7 @@
 		referencia_combustivel_local: 'Não informado',
 		referencia_combustivel_url: null,
 		janela_triangulacao_dias: 180,
-		concentracao_fornecedor_percentual: 60
+		concentracao_fornecedor_percentual: 70
 	};
 	let carregandoAuditRules = false;
 	let salvandoAuditRules = false;
@@ -40,7 +40,7 @@
 			if (res.ok) {
 				const data = await res.json();
 				auditRules = {
-					limite_combustivel_litros: Number(data.limite_combustivel_litros) || 250,
+					limite_combustivel_litros: Number(data.limite_combustivel_litros) || 80,
 					preco_combustivel_referencia: Number(data.preco_combustivel_referencia ?? 5.8),
 					sobrepreco_combustivel_percentual: Number(data.sobrepreco_combustivel_percentual ?? 50),
 					estimar_volume_combustivel: data.estimar_volume_combustivel ?? true,
@@ -48,7 +48,7 @@
 					referencia_combustivel_local: data.referencia_combustivel_local ?? 'Não informado',
 					referencia_combustivel_url: data.referencia_combustivel_url ?? null,
 					janela_triangulacao_dias: Number(data.janela_triangulacao_dias) || 180,
-					concentracao_fornecedor_percentual: Number(data.concentracao_fornecedor_percentual ?? 60)
+					concentracao_fornecedor_percentual: Number(data.concentracao_fornecedor_percentual ?? 70)
 				};
 			}
 		} catch (e: any) {
@@ -129,7 +129,7 @@
 
 	async function restaurarPadroesAuditRules() {
 		auditRules = {
-			limite_combustivel_litros: 250,
+			limite_combustivel_litros: 80,
 			preco_combustivel_referencia: 5.8,
 			sobrepreco_combustivel_percentual: 50,
 			estimar_volume_combustivel: true,
@@ -137,7 +137,7 @@
 			referencia_combustivel_local: 'Não informado',
 			referencia_combustivel_url: null,
 			janela_triangulacao_dias: 180,
-			concentracao_fornecedor_percentual: 60
+			concentracao_fornecedor_percentual: 70
 		};
 		await salvarAuditRules();
 	}

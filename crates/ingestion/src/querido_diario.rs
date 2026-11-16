@@ -1,6 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use storage::rusqlite::Connection;
+use storage::rusqlite::{Connection, OptionalExtension};
 
 use crate::error::{IngestionError, Result};
 use crate::normalizer::limpar_apenas_digitos;
@@ -65,7 +65,11 @@ impl QueridoDiarioClient {
         data_inicio: Option<&str>,
     ) -> Result<QueridoDiarioApiResponse> {
         let query = Self::construir_query(doador_nome, None);
-        let mut url = format!("{}/gazettes?querystring={}", self.base_url, urlencoding::encode(&query));
+        let mut url = format!(
+            "{}/gazettes?querystring={}",
+            self.base_url,
+            urlencoding::encode(&query)
+        );
 
         if let Some(muni) = municipio {
             url.push_str(&format!("&territory_name={}", urlencoding::encode(muni)));
@@ -79,7 +83,8 @@ impl QueridoDiarioClient {
             .get(&url)
             .send()
             .await
-            .map_err(IngestionError::Reqwest)?;
+            .map_err(IngestionError::Reqwest)?
+            .error_for_status()?;
 
         let texto = resp.text().await.map_err(IngestionError::Reqwest)?;
         Self::parse_response(&texto)
@@ -105,7 +110,7 @@ impl QueridoDiarioClient {
                     Ok(payload)
                 },
             )
-            .ok()
+            .optional()?
             .flatten();
 
         if let Some(json_str) = res {
@@ -117,7 +122,7 @@ impl QueridoDiarioClient {
     }
 
     pub fn salvar_cache(
-        conn: &mut Connection,
+        conn: &Connection,
         doador_cpf_cnpj: &str,
         termo: &str,
         municipio_uf: &str,
@@ -201,7 +206,8 @@ mod tests {
         assert!(inicial.is_none());
 
         // Salva resposta no cache
-        QueridoDiarioClient::salvar_cache(&mut conn, cpf, "MARIA DA SILVA", muni, 1, mock_json).unwrap();
+        QueridoDiarioClient::salvar_cache(&conn, cpf, "MARIA DA SILVA", muni, 1, mock_json)
+            .unwrap();
 
         // Agora busca no cache
         let em_cache = QueridoDiarioClient::buscar_cache(&conn, cpf, muni)
@@ -209,7 +215,12 @@ mod tests {
             .expect("Deve encontrar no cache");
 
         assert_eq!(em_cache.total_gazettes, 1);
-        assert_eq!(em_cache.gazettes[0].territory_name.as_deref(), Some("Campinas"));
-        assert!(em_cache.gazettes[0].excerpt.contains("Resolve nomear MARIA DA SILVA"));
+        assert_eq!(
+            em_cache.gazettes[0].territory_name.as_deref(),
+            Some("Campinas")
+        );
+        assert!(em_cache.gazettes[0]
+            .excerpt
+            .contains("Resolve nomear MARIA DA SILVA"));
     }
 }

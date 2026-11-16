@@ -79,58 +79,71 @@ pub async fn public_client(url: &str) -> anyhow::Result<reqwest::Client> {
 /// no ambiente, o sistema permanece em modo livre para facilidade de uso local.
 #[derive(Clone, Default)]
 pub struct AdminAuth {
-    secret: Option<String>,
+    secrets: Vec<String>,
     sessions: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl AdminAuth {
     pub fn from_env() -> Self {
-        let secret = std::env::var("RADAR_ADMIN_PASSWORD")
-            .ok()
-            .or_else(|| std::env::var("RADAR_API_KEY").ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        Self {
-            secret,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Self::new_with_secrets(
+            std::env::var("RADAR_ADMIN_PASSWORD").ok(),
+            std::env::var("RADAR_API_KEY").ok(),
+        )
     }
 
     pub fn new_with_secret(secret: Option<String>) -> Self {
+        Self::new_with_secrets(secret, None)
+    }
+
+    pub fn new_with_secrets(password: Option<String>, api_key: Option<String>) -> Self {
         Self {
-            secret: secret.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+            secrets: [password, api_key]
+                .into_iter()
+                .flatten()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn is_active(&self) -> bool {
-        self.secret.is_some()
+        !self.secrets.is_empty()
     }
 
     pub fn is_authorized(&self, headers: &header::HeaderMap) -> bool {
-        let Some(ref sec) = self.secret else {
+        if !self.is_active() {
             return true; // Se auth não estiver ativada, permite tudo
-        };
+        }
+        let matches = |value: &str| self.secrets.iter().any(|secret| secret == value);
 
         // 1. Header X-API-Key
         if let Some(key) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
-            if key.trim() == sec {
+            if matches(key.trim()) {
                 return true;
             }
         }
 
         // 2. Header Authorization (Bearer ou Basic)
-        if let Some(auth_val) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
-            if let Some(bearer) = auth_val.strip_prefix("Bearer ").or_else(|| auth_val.strip_prefix("bearer ")) {
-                if bearer.trim() == sec {
+        if let Some(auth_val) = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+        {
+            if let Some(bearer) = auth_val
+                .strip_prefix("Bearer ")
+                .or_else(|| auth_val.strip_prefix("bearer "))
+            {
+                if matches(bearer.trim()) {
                     return true;
                 }
-            } else if let Some(basic) = auth_val.strip_prefix("Basic ").or_else(|| auth_val.strip_prefix("basic ")) {
+            } else if let Some(basic) = auth_val
+                .strip_prefix("Basic ")
+                .or_else(|| auth_val.strip_prefix("basic "))
+            {
                 if let Ok(decoded) = BASE64.decode(basic.trim()) {
                     if let Ok(cred_str) = String::from_utf8(decoded) {
                         if let Some((_user, pass)) = cred_str.split_once(':') {
-                            if pass == sec {
+                            if matches(pass) {
                                 return true;
                             }
                         }
@@ -160,11 +173,7 @@ impl AdminAuth {
 
 /// Middleware que protege rotas de mutação (POST, PUT, DELETE) e exportação sensível
 /// quando a autenticação estiver ativada via variável de ambiente.
-pub async fn auth_guard(
-    State(auth): State<AdminAuth>,
-    req: Request<Body>,
-    next: Next,
-) -> Response {
+pub async fn auth_guard(State(auth): State<AdminAuth>, req: Request<Body>, next: Next) -> Response {
     if !auth.is_active() {
         return next.run(req).await;
     }
@@ -204,8 +213,12 @@ pub async fn auth_guard(
             || path.starts_with("/api/v1/config/favicon")
             || path.starts_with("/api/import/status")
             || path.starts_with("/api/v1/import/status")
-            || (path.starts_with("/api/importers") && !path.contains("/start") && !path.contains("/cancel"))
-            || (path.starts_with("/api/v1/importers") && !path.contains("/start") && !path.contains("/cancel")));
+            || (path.starts_with("/api/importers")
+                && !path.contains("/start")
+                && !path.contains("/cancel"))
+            || (path.starts_with("/api/v1/importers")
+                && !path.contains("/start")
+                && !path.contains("/cancel")));
 
     if eh_leitura_publica {
         return next.run(req).await;
@@ -248,6 +261,31 @@ pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Resp
 mod tests {
     use super::*;
     use axum::http::HeaderMap;
+
+    #[test]
+    fn senha_vazia_nao_desativa_chave_e_credenciais_distintas_sao_aceitas() {
+        for password in [
+            None,
+            Some("".into()),
+            Some("   ".into()),
+            Some("senha-administrativa".into()),
+        ] {
+            let auth = AdminAuth::new_with_secrets(password.clone(), Some("chave-api".into()));
+            assert!(auth.is_active());
+            assert!(!auth.is_authorized(&HeaderMap::new()));
+            let mut headers = HeaderMap::new();
+            headers.insert("x-api-key", "chave-api".parse().unwrap());
+            assert!(auth.is_authorized(&headers));
+            if password.as_deref() == Some("senha-administrativa") {
+                headers.clear();
+                headers.insert(
+                    header::AUTHORIZATION,
+                    "Bearer senha-administrativa".parse().unwrap(),
+                );
+                assert!(auth.is_authorized(&headers));
+            }
+        }
+    }
 
     #[test]
     fn rejects_internal_and_reserved_addresses() {

@@ -642,6 +642,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version:32, name:"indice_doador_situacao_cadastral", sql:include_str!("032_indice_doador_situacao_cadastral.sql") },
     Migration { version:33, name:"dedup_alertas_chave_origem_completa", sql:include_str!("033_dedup_alertas_chave_origem_completa.sql") },
     Migration { version:34, name:"alertas_fracionamento_exclusivo_circular", sql:include_str!("034_alertas_fracionamento_exclusivo_circular.sql") },
+    Migration { version:35, name:"auditoria_confiavel", sql:include_str!("035_auditoria_confiavel.sql") },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -1627,5 +1628,26 @@ mod quality_upgrade_regressions {
         assert_eq!(chave_hub, Some("[42]".to_string()));
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod reliability_upgrade {
+    use super::*;
+    #[test]
+    fn migration_35_preserva_fontes_parametros_e_historico_sem_revalidar_resultados_antigos() {
+        let pool=crate::DbPool::open_in_memory().unwrap();let mut conn=pool.get().unwrap();
+        conn.execute_batch("CREATE TABLE _migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,sql_hash TEXT)").unwrap();
+        for migration in MIGRATIONS.iter().filter(|m|m.version<=34) {
+            conn.execute_batch(migration.sql).unwrap();
+            conn.execute("INSERT INTO _migrations(version,name,sql_hash) VALUES(?1,?2,?3)",rusqlite::params![migration.version,migration.name,crate::integrity::calcular_sha256_bytes(migration.sql.as_bytes())]).unwrap();
+        }
+        conn.execute_batch("INSERT INTO politicos(nome_completo,nome_urna) VALUES('PESSOA TESTE','PESSOA TESTE'); INSERT INTO configuracoes_sistema(chave,valor_texto) VALUES('audit_rules','{\"limite_combustivel_litros\":250}'); INSERT INTO alertas_auditoria(tipo,severidade,titulo,descricao,alvo_nome,fonte_dado,valor_envolvido,detalhes_json) VALUES('DOACAO_CIRCULAR','ALTA','Indício legado','Detalhes originais','PESSOA TESTE','TSE',18000,'{\"politico_id\":1,\"fornecedor_doc\":\"52998224725\",\"ano_eleicao\":2024}'); UPDATE auditoria_estado SET pendente=0,concluida_em=CURRENT_TIMESTAMP;").unwrap();
+        run_migrations(&mut conn).unwrap();run_migrations(&mut conn).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM politicos",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM alertas_auditoria",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM qualidade_dados_eventos WHERE entidade='alertas_auditoria' AND json_extract(valor_anterior,'$.valor_envolvido')=18000",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(conn.query_row("SELECT valor_texto FROM configuracoes_sistema WHERE chave='audit_rules'",[],|r|r.get::<_,String>(0)).unwrap(),"{\"limite_combustivel_litros\":250}");
+        assert_eq!(conn.query_row("SELECT pendente FROM auditoria_estado",[],|r|r.get::<_,i64>(0)).unwrap(),1);
     }
 }

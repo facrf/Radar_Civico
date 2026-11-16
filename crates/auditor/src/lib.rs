@@ -37,9 +37,7 @@ pub use conflito_oab::{
     auditar_conflito_oab, auditar_lote_conflitos_oab, is_cargo_incompativel, AlertaConflitoOab,
     OcupanteCargo, RegistroOab,
 };
-pub use doacao_circular::{
-    auditar_doacoes_circulares, AlertaDoacaoCircular, VinculoCeapDoacao,
-};
+pub use doacao_circular::{auditar_doacoes_circulares, AlertaDoacaoCircular, VinculoCeapDoacao};
 pub use doador_incompativel::{
     auditar_doador_incompativel, AlertaDoadorIncompativel, BeneficiarioSocialAnalise,
     DoadorCampanhaAnalise, LIMITE_DOACAO_SUSPEITA_BENEFICIARIO,
@@ -54,12 +52,13 @@ pub use fornecedor_exclusivo::{
     PERCENTUAL_DEPENDENCIA_CRITICA, PISO_FATURAMENTO_EXCLUSIVIDADE,
 };
 pub use fornecedores_fantasmas::{
-    auditar_fornecedores_fantasmas, AlertaFornecedorFantasma, FornecedorReceita, PagamentoFornecedor,
-    TipoIrregularidadeFornecedor, DIAS_LIMITE_RECEM_CRIADA,
+    auditar_fornecedores_fantasmas, AlertaFornecedorFantasma, FornecedorReceita,
+    PagamentoFornecedor, TipoIrregularidadeFornecedor, DIAS_LIMITE_RECEM_CRIADA,
 };
 pub use fracionamento::{
-    auditar_fracionamento_despesas, AlertaFracionamentoDespesas, DespesaFracionamentoInput,
-    JANELA_DIAS_FRACIONAMENTO, MIN_DESPESAS_FRACIONAMENTO, PISO_VALOR_FRACIONAMENTO,
+    auditar_fracionamento_despesas, AlertaFracionamentoDespesas, AuditorFracionamentoOrdenado,
+    DespesaFracionamentoInput, JANELA_DIAS_FRACIONAMENTO, MIN_DESPESAS_FRACIONAMENTO,
+    PISO_VALOR_FRACIONAMENTO,
 };
 pub use nepotismo::{
     auditar_possivel_parentesco, extrair_sobrenomes_raros, AlertaPossivelParentesco,

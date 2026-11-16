@@ -121,8 +121,8 @@ services:
 
 Para construir a imagem e iniciar em segundo plano:
 ```bash
-# Iniciar o container
-docker compose up --build -d
+# Atualizar metadados e iniciar o contêiner
+make docker-up
 
 # Verificar status e logs
 docker compose ps
@@ -260,3 +260,7 @@ Em **Configurações → Upload**, escolha **UTF-8** (padrão) ou **Latin-1 (ISO
 ## Qualidade dos dados e escala
 
 Consulte o [guia de confiabilidade e escala](docs/confiabilidade_e_escala.md) para avaliação de integridade, evidência de autoridades, cobertura PNCP, retificações CEAP, projeção incremental e backups em segundo plano.
+
+## Correções de confiabilidade
+
+Consulte [Correções de confiabilidade — 16/11/2026](docs/correcoes_confiabilidade_2026-11-16.md) para agregação financeira sem multiplicação, cobertura completa das regras revisadas, evidência OAB, autenticação e migração dos resultados anteriores. Os padrões são 80 litros e concentração de 70%; parâmetros personalizados persistidos são preservados.

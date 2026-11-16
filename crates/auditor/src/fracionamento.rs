@@ -6,6 +6,80 @@ pub const JANELA_DIAS_FRACIONAMENTO: i64 = 7;
 pub const PISO_VALOR_FRACIONAMENTO: f64 = 10_000.0;
 pub const MIN_DESPESAS_FRACIONAMENTO: usize = 3;
 
+/// Recebe despesas ordenadas por parlamentar, documento e data. Retém apenas
+/// a janela corrente de um fornecedor, em vez da base nacional inteira.
+#[derive(Default)]
+pub struct AuditorFracionamentoOrdenado {
+    janela: std::collections::VecDeque<DespesaFracionamentoInput>,
+    anterior: Option<(String, String, NaiveDate)>,
+}
+
+impl AuditorFracionamentoOrdenado {
+    pub fn adicionar(
+        &mut self,
+        item: DespesaFracionamentoInput,
+    ) -> crate::Result<Vec<AlertaFracionamentoDespesas>> {
+        let chave = (
+            item.parlamentar_nome.clone(),
+            item.fornecedor_cnpj_cpf.clone(),
+            item.data_emissao,
+        );
+        if self
+            .anterior
+            .as_ref()
+            .is_some_and(|anterior| anterior > &chave)
+        {
+            return Err(crate::AuditorError::Calculation(
+                "Despesas fora da ordem de auditoria".into(),
+            ));
+        }
+        self.anterior = Some(chave);
+        let mut saida = Vec::new();
+        while let Some(primeira) = self.janela.front() {
+            let mesmo_grupo = primeira.parlamentar_nome == item.parlamentar_nome
+                && primeira.fornecedor_cnpj_cpf == item.fornecedor_cnpj_cpf;
+            if mesmo_grupo
+                && (item.data_emissao - primeira.data_emissao).num_days()
+                    <= JANELA_DIAS_FRACIONAMENTO
+            {
+                break;
+            }
+            self.concluir_janela(&mut saida);
+        }
+        self.janela.push_back(item);
+        Ok(saida)
+    }
+
+    fn concluir_janela(&mut self, saida: &mut Vec<AlertaFracionamentoDespesas>) {
+        let itens: Vec<_> = self.janela.iter().cloned().collect();
+        if let Some(alerta) = auditar_fracionamento_despesas(&itens)
+            .into_iter()
+            .next()
+            .filter(|a| a.despesas_ids.first() == itens.first().map(|i| &i.despesa_id))
+        {
+            // Só conclui o início cuja janela terminou. Um início posterior
+            // ainda pode receber despesas na próxima chamada.
+            let ultimo = alerta.despesas_ids.last().copied();
+            while let Some(item) = self.janela.pop_front() {
+                if Some(item.despesa_id) == ultimo {
+                    break;
+                }
+            }
+            saida.push(alerta);
+        } else {
+            self.janela.pop_front();
+        }
+    }
+
+    pub fn concluir(mut self) -> Vec<AlertaFracionamentoDespesas> {
+        let mut saida = Vec::new();
+        while !self.janela.is_empty() {
+            self.concluir_janela(&mut saida);
+        }
+        saida
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DespesaFracionamentoInput {
     pub despesa_id: i64,
@@ -76,7 +150,8 @@ pub fn auditar_fracionamento_despesas(
             }
 
             let qtd = ids.len();
-            let e_fracionamento_janela = qtd >= MIN_DESPESAS_FRACIONAMENTO && soma >= PISO_VALOR_FRACIONAMENTO;
+            let e_fracionamento_janela =
+                qtd >= MIN_DESPESAS_FRACIONAMENTO && soma >= PISO_VALOR_FRACIONAMENTO;
             let e_fracionamento_mesmo_dia = mesmo_dia_count >= 2 && soma >= 8_000.0;
 
             if e_fracionamento_janela || e_fracionamento_mesmo_dia {
@@ -120,7 +195,11 @@ pub fn auditar_fracionamento_despesas(
         }
     }
 
-    alertas.sort_by(|a, b| b.valor_total.partial_cmp(&a.valor_total).unwrap_or(std::cmp::Ordering::Equal));
+    alertas.sort_by(|a, b| {
+        b.valor_total
+            .partial_cmp(&a.valor_total)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     alertas
 }
 
@@ -199,5 +278,63 @@ mod tests {
         assert_eq!(alertas.len(), 1);
         assert_eq!(alertas[0].quantidade_despesas, 3);
         assert_eq!(alertas[0].valor_total, 15_000.0);
+    }
+}
+
+#[cfg(test)]
+mod streaming_regressions {
+    use super::*;
+    fn item(id: i64, dia: i64, valor: f64) -> DespesaFracionamentoInput {
+        DespesaFracionamentoInput {
+            despesa_id: id,
+            parlamentar_nome: "PARLAMENTAR".into(),
+            fornecedor_cnpj_cpf: "52998224725".into(),
+            fornecedor_nome: "FORNECEDOR".into(),
+            data_emissao: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+                + chrono::Duration::days(dia),
+            valor,
+            categoria_despesa: "SERVICOS".into(),
+            numero_documento: Some(id.to_string()),
+        }
+    }
+    fn comparar(itens: Vec<DespesaFracionamentoInput>) {
+        let mut referencia = auditar_fracionamento_despesas(&itens);
+        let mut motor = AuditorFracionamentoOrdenado::default();
+        let mut resultado = Vec::new();
+        for item in itens {
+            resultado.extend(motor.adicionar(item).unwrap());
+        }
+        resultado.extend(motor.concluir());
+        referencia.sort_by_key(|a| (a.parlamentar_nome.clone(), a.data_inicio));
+        resultado.sort_by_key(|a| (a.parlamentar_nome.clone(), a.data_inicio));
+        assert_eq!(resultado, referencia);
+    }
+    #[test]
+    fn janela_posterior_aguarda_despesas_que_ainda_podem_chegar() {
+        comparar(vec![
+            item(1, 0, 1000.0),
+            item(2, 1, 4000.0),
+            item(3, 1, 4000.0),
+            item(4, 8, 5000.0),
+        ]);
+    }
+    #[test]
+    fn fluxo_ordenado_equivale_a_lotes_em_varias_janelas_e_grupos() {
+        let mut itens = Vec::new();
+        for grupo in 0..5 {
+            for i in 0..90 {
+                let mut entrada = item(
+                    grupo * 100 + i,
+                    i / 2,
+                    ((i * 7919 + grupo * 101) % 5000) as f64 + 0.01,
+                );
+                entrada.parlamentar_nome = format!("PARLAMENTAR {grupo}");
+                itens.push(entrada);
+            }
+        }
+        comparar(itens);
+        let mut motor = AuditorFracionamentoOrdenado::default();
+        motor.adicionar(item(2, 2, 10.0)).unwrap();
+        assert!(motor.adicionar(item(1, 1, 10.0)).is_err());
     }
 }

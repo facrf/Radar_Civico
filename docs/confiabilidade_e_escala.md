@@ -2,7 +2,7 @@
 
 ## Avaliação dos políticos
 
-Listagem, dossiê e detalhe usam a mesma avaliação (`alertas-locais-v1`). O valor total de despesas não reduz a nota. O cálculo usa as severidades dos alertas persistidos, com a mesma fórmula da crate `auditor`.
+Listagem, dossiê e detalhe usam a mesma avaliação (`alertas-locais-v2`). O valor total de despesas não reduz a nota. O cálculo usa as severidades dos alertas persistidos, com a mesma fórmula da crate `auditor`.
 
 `score_integridade` é `null` quando faltam dados, ainda não houve auditoria válida ou as fontes mudaram desde a última auditoria. `avaliacao_integridade` informa situação, cobertura, metodologia, data da auditoria e quantidades por severidade. Uma nota 100 significa ausência de alertas nas bases locais avaliadas. A cobertura local não equivale à cobertura nacional completa, nem comprova regularidade.
 
@@ -66,3 +66,7 @@ curl -f http://127.0.0.1:28080/ready
 ```
 
 Antes da atualização de uma base existente, preserve um snapshot consistente do SQLite e mantenha os arquivos de conclusão de tarefas no volume de dados. Migrações são versionadas: não substitua uma base migrada por um binário antigo sem restaurar o snapshot correspondente.
+
+## Revisão de 16/11/2026
+
+A migração 35 preserva o histórico dos alertas afetados e deixa as avaliações pendentes até nova auditoria. Veja o [registro das correções e o contrato de evidência OAB](correcoes_confiabilidade_2026-11-16.md). A concentração financeira da auditoria usa agregação SQLite por empresa; a centralidade não é calculada nesse fluxo.

@@ -4,6 +4,19 @@ Todas as alterações relevantes neste projeto são documentadas neste arquivo.
 
 ## [Unreleased]
 
+### Correções de confiabilidade — 16/11/2026
+
+- Corrige multiplicação de valores no cruzamento de doações e despesas e retira resultados que deixaram de satisfazer as regras.
+- Propaga falhas de consulta e persistência, sem concluir auditorias incompletas.
+- Remove cortes silenciosos de cobertura e processa fracionamento por janelas ordenadas.
+- Calcula concentração por empresa em SQLite, sem materializar a rede nacional ou inventar centralidade.
+- Exige evidência documental e de vigência na investigação OAB e distingue indisponibilidade de ausência de indícios.
+- Aceita senha e chave de API independentes, inclusive quando uma delas está vazia, e repassa ambas pelo Compose.
+- Alinha defaults a 80 litros e 70%, preservando configuração personalizada.
+- Adiciona migração 35 com histórico dos alertas afetados e invalidação das avaliações anteriores.
+- Adiciona `make docker-up` para atualizar metadados antes do rebuild. Detalhes em [correções de confiabilidade](docs/correcoes_confiabilidade_2026-11-16.md).
+
+
 ### Segurança e Mitigações de Vulnerabilidades
 
 - **Autenticação Administrativa Configurável:** Implementação da estrutura `AdminAuth` permitindo controle de acesso opcional em endpoints de mutação (uploads, sincronizações, disparos de auditoria, backups e configurações) e exportação de banco de dados (`/api/v1/config/exportar/*`).

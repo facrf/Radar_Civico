@@ -153,7 +153,7 @@ pub fn expurgar_alertas_combustivel_obsoletos(
 
     let total = ids_para_remover.len();
     for id in ids_para_remover {
-        let _ = conn.execute("DELETE FROM alertas_auditoria WHERE id = ?1", [id]);
+        conn.execute("DELETE FROM alertas_auditoria WHERE id = ?1", [id])?;
     }
     Ok(total)
 }
@@ -862,6 +862,17 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         conn.execute_batch("DROP TABLE temp.capital_alertas_ativos")?;
     }
 
+    let revisao = uuid::Uuid::new_v4().to_string();
+    let registrar_revisado =
+        |conn: &Connection, alerta: &NovoAlerta| -> Result<i64, storage::StorageError> {
+            let mut alerta = alerta.clone();
+            let mut detalhes: serde_json::Value =
+                serde_json::from_str(alerta.detalhes_json.as_deref().unwrap_or("{}"))
+                    .map_err(|e| storage::StorageError::Pool(e.to_string()))?;
+            detalhes["revisao_motor"] = revisao.clone().into();
+            alerta.detalhes_json = Some(detalhes.to_string());
+            registrar_alerta(conn, &alerta)
+        };
     // 9. Sincroniza fornecedores recém-criados (< 180 dias de fundação formal ao emitir despesa CEAP)
     {
         let mut stmt = conn.prepare(
@@ -879,8 +890,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                AND d.valor_liquido >= 5000.0
                AND (julianday(d.data_emissao) - julianday(q.data_inicio_atividade)) >= 0
                AND (julianday(d.data_emissao) - julianday(q.data_inicio_atividade)) <= 180
-             ORDER BY d.valor_liquido DESC
-             LIMIT 300",
+             ORDER BY d.valor_liquido DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -935,7 +945,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                     "regra": "Empresa faturou recursos da CEAP com menos de 180 dias de fundação formal (alerta de empresa recém-criada)"
                 });
 
-                registrar_alerta(
+                registrar_revisado(
                     conn,
                     &NovoAlerta {
                         tipo: "EMPRESA_RECEM_CRIADA".to_string(),
@@ -959,7 +969,8 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         }
 
         // Sincroniza fornecedores com situação cadastral irregular (inapta/baixada/suspensa)
-        if let Ok(mut stmt_inaptas) = conn.prepare(
+        {
+            let mut stmt_inaptas = conn.prepare(
             "SELECT d.id, d.fornecedor_cnpj_cpf, d.fornecedor_nome,
                     COALESCE(q.situacao_cadastral, 'ATIVA'),
                     d.data_emissao,
@@ -971,20 +982,31 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                AND length(d.fornecedor_cnpj_cpf) >= 14
                AND UPPER(COALESCE(q.situacao_cadastral, 'ATIVA')) IN ('INAPTA', 'BAIXADA', 'SUSPENSA', 'NULA')
                AND d.valor_liquido >= 1000.0
-             ORDER BY d.valor_liquido DESC
-             LIMIT 300",
-        ) {
-            if let Ok(alertas_inaptas) = stmt_inaptas.query_map([], |row| {
-                let desp_id: i64 = row.get(0)?;
-                let cnpj: String = row.get(1)?;
-                let nome: String = row.get(2)?;
-                let situacao: String = row.get(3)?;
-                let dt_emissao: String = row.get(4)?;
-                let valor: f64 = row.get(5)?;
-                let parlamentar: String = row.get(6)?;
-                Ok((desp_id, cnpj, nome, situacao, dt_emissao, valor, parlamentar))
-            }) {
-                for r in alertas_inaptas.flatten() {
+             ORDER BY d.valor_liquido DESC",
+        )?;
+
+            {
+                let alertas_inaptas = stmt_inaptas.query_map([], |row| {
+                    let desp_id: i64 = row.get(0)?;
+                    let cnpj: String = row.get(1)?;
+                    let nome: String = row.get(2)?;
+                    let situacao: String = row.get(3)?;
+                    let dt_emissao: String = row.get(4)?;
+                    let valor: f64 = row.get(5)?;
+                    let parlamentar: String = row.get(6)?;
+                    Ok((
+                        desp_id,
+                        cnpj,
+                        nome,
+                        situacao,
+                        dt_emissao,
+                        valor,
+                        parlamentar,
+                    ))
+                })?;
+
+                for r in alertas_inaptas {
+                    let r = r?;
                     let (desp_id, cnpj, nome, situacao, dt_emissao, valor, parlamentar) = r;
                     let detalhes = serde_json::json!({
                         "despesa_id": desp_id,
@@ -997,7 +1019,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         "regra": "Pagamento público destinado a pessoa jurídica em situação irregular na Receita Federal"
                     });
 
-                    let _ = registrar_alerta(
+                    registrar_revisado(
                         conn,
                         &NovoAlerta {
                             tipo: "FORNECEDOR_FANTASMA".to_string(),
@@ -1016,7 +1038,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                             fonte_dado: "CÂMARA/RECEITA_FEDERAL".to_string(),
                             detalhes_json: Some(detalhes.to_string()),
                         },
-                    );
+                    )?;
                 }
             }
         }
@@ -1024,54 +1046,64 @@ pub fn sincronizar_alertas_sistema_com_parametros(
 
     // 10. Sincroniza detecção de Possível Parentesco / Nepotismo Cruzado (Sobrenomes Raros em Fornecedores CEAP e Doadores)
     {
-        if let Ok(mut stmt_pols) = conn.prepare(
+        {
+            let mut stmt_pols = conn.prepare(
             "SELECT DISTINCT p.id, p.nome_completo, p.nome_urna, p.cpf_mascarado, COALESCE(c.uf, 'BR')
              FROM politicos p
              LEFT JOIN candidaturas c ON c.politico_id = p.id
              WHERE EXISTS (SELECT 1 FROM despesas_parlamentares dp WHERE dp.parlamentar_nome = p.nome_urna OR dp.parlamentar_nome = p.nome_completo)
-                OR EXISTS (SELECT 1 FROM receitas_campanha rc JOIN candidaturas cand ON rc.candidatura_id = cand.id WHERE cand.politico_id = p.id)
-             LIMIT 150",
-        ) {
-            if let Ok(politicos) = stmt_pols.query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            }) {
-                for p in politicos.flatten() {
+                OR EXISTS (SELECT 1 FROM receitas_campanha rc JOIN candidaturas cand ON rc.candidatura_id = cand.id WHERE cand.politico_id = p.id)",
+        )?;
+
+            {
+                let politicos = stmt_pols.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })?;
+
+                for p in politicos {
+                    let p = p?;
                     let (pol_id, nome_completo, nome_urna, cpf_mascarado, uf) = p;
                     let mut alvos = Vec::new();
 
                     // 1. Sócios de fornecedores CEAP deste parlamentar
-                    if let Ok(mut stmt_socios) = conn.prepare(
+                    {
+                        let mut stmt_socios = conn.prepare(
                         "SELECT DISTINCT q.socio_nome, dp.fornecedor_cnpj_cpf, COALESCE(dp.uf_emissao, ?2)
                          FROM empresas_qsa q
                          JOIN despesas_parlamentares dp ON q.cnpj_basico = SUBSTR(REPLACE(REPLACE(REPLACE(dp.fornecedor_cnpj_cpf, '.', ''), '/', ''), '-', ''), 1, 8)
                          WHERE (dp.parlamentar_nome = ?1 OR dp.parlamentar_nome = ?3)
-                           AND q.socio_nome IS NOT NULL AND length(q.socio_nome) > 4
-                         LIMIT 50",
-                    ) {
-                        if let Ok(rows) = stmt_socios.query_map(
-                            params![nome_urna, uf, nome_completo],
-                            |r| Ok(auditor::AlvoAuditoriaParentesco {
-                                nome: r.get(0)?,
-                                cnpj_cpf: r.get(1)?,
-                                uf: r.get(2)?,
-                                tipo_vinculo: "SOCIO_FORNECEDOR_CEAP".to_string(),
-                            }),
-                        ) {
+                           AND q.socio_nome IS NOT NULL AND length(q.socio_nome) > 4",
+                    )?;
+
+                        {
+                            let rows = stmt_socios.query_map(
+                                params![nome_urna, uf, nome_completo],
+                                |r| {
+                                    Ok(auditor::AlvoAuditoriaParentesco {
+                                        nome: r.get(0)?,
+                                        cnpj_cpf: r.get(1)?,
+                                        uf: r.get(2)?,
+                                        tipo_vinculo: "SOCIO_FORNECEDOR_CEAP".to_string(),
+                                    })
+                                },
+                            )?;
+
                             for item in rows {
-            let item = item?;
+                                let item = item?;
                                 alvos.push(item);
                             }
                         }
                     }
 
                     if !alvos.is_empty() {
-                        let alertas_nep = auditor::auditar_possivel_parentesco(&nome_completo, &uf, &alvos);
+                        let alertas_nep =
+                            auditor::auditar_possivel_parentesco(&nome_completo, &uf, &alvos);
                         for al in alertas_nep {
                             {
                                 let severidade = "MEDIA";
@@ -1086,7 +1118,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                                     "regra": "Coincidência de sobrenomes raros com pessoas ligadas a recursos públicos ou de campanha na mesma UF"
                                 });
 
-                                registrar_alerta(
+                                registrar_revisado(
                                     conn,
                                     &NovoAlerta {
                                         tipo: "POSSIVEL_PARENTESCO".to_string(),
@@ -1106,7 +1138,6 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                                         detalhes_json: Some(detalhes.to_string()),
                                     },
                                 )?;
-
                             }
                         }
                     }
@@ -1115,54 +1146,32 @@ pub fn sincronizar_alertas_sistema_com_parametros(
         }
     }
 
-    // 11. Sincroniza fornecedores hub (concentração de repasses e centralidade de intermediação)
+    // Concentração é calculada em SQL por empresa; centralidade não é presumida.
     if parametros.concentracao_fornecedor_percentual > 0.0 {
-        if let Ok(grafo) = graph::GrafoSincronizado::carregar_do_sqlite(conn) {
-            if let Ok(alertas_hub) = grafo.detectar_fornecedores_hub_com_limite(parametros.concentracao_fornecedor_percentual) {
-                for a in alertas_hub {
-                    let detalhes = serde_json::json!({
-                        "fornecedor_id": a.fornecedor_id,
-                        "fornecedor_uuid": a.fornecedor_uuid,
-                        "total_faturamento": a.total_faturamento,
-                        "maior_coligacao_grupo": a.maior_coligacao_grupo,
-                        "faturamento_grupo": a.faturamento_grupo,
-                        "percentual_concentracao": a.percentual_concentracao,
-                        "betweenness_score": a.betweenness_score,
-                        "quantidade_agentes_conectados": a.quantidade_agentes_conectados,
-                        "regra": "Fornecedor canaliza recursos expressivos com alta dependência e centralidade em um único grupo político"
-                    });
-
-                    registrar_alerta(
-                        conn,
-                        &NovoAlerta {
-                            tipo: "FORNECEDOR_HUB".to_string(),
-                            severidade: "ALTA".to_string(),
-                            titulo: format!("Fornecedor Hub Concentrado ({:.0}%) - {}", a.percentual_concentracao, a.fornecedor_nome),
-                            descricao: a.motivo,
-                            alvo_nome: a.fornecedor_nome,
-                            alvo_documento: None,
-                            municipio: None,
-                            uf: None,
-                            ano: None,
-                            valor_envolvido: Some(a.total_faturamento),
-                            fonte_dado: "GRAFO_RELACIONAMENTOS".to_string(),
-                            detalhes_json: Some(detalhes.to_string()),
-                        },
-                    )?;
-                }
-            }
-        }
+        graph::visitar_fornecedores_concentrados(conn, parametros.concentracao_fornecedor_percentual, |a| {
+            registrar_revisado(conn, &NovoAlerta {
+                tipo: "FORNECEDOR_HUB".into(), severidade: "ALTA".into(),
+                titulo: format!("Fornecedor Hub Concentrado ({:.0}%) - {}", a.percentual,a.nome),
+                descricao: format!("{:.1}% dos pagamentos locais a {} vieram do grupo {} (R$ {:.2} de R$ {:.2}); {} pagadores. Centralidade não calculada nesta análise.",a.percentual,a.nome,a.grupo,a.faturamento_grupo,a.total_faturamento,a.agentes),
+                alvo_nome:a.nome.clone(),alvo_documento:a.documento,municipio:None,uf:None,ano:None,
+                valor_envolvido:Some(a.total_faturamento),fonte_dado:"GRAFO_RELACIONAMENTOS".into(),
+                detalhes_json:Some(serde_json::json!({"fornecedor_id":a.id,"fornecedor_uuid":a.uuid,"total_faturamento":a.total_faturamento,"maior_coligacao_grupo":a.grupo,"faturamento_grupo":a.faturamento_grupo,"percentual_concentracao":a.percentual,"quantidade_agentes_conectados":a.agentes,"betweenness_score":null,"metodologia":"concentracao-sql-v1"}).to_string()),
+            })?;
+            Ok(())
+        }).map_err(|e| storage::StorageError::Pool(format!("Auditoria de fornecedores: {e}")))?;
     }
 
     // 12. Sincroniza fracionamento de despesas da cota parlamentar (CEAP)
     {
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT id, parlamentar_nome, fornecedor_cnpj_cpf, fornecedor_nome,
+        {
+            let mut stmt = conn.prepare(
+            "SELECT id, UPPER(TRIM(parlamentar_nome)) AS parlamentar_nome, TRIM(fornecedor_cnpj_cpf) AS fornecedor_cnpj_cpf, fornecedor_nome,
                     data_emissao, valor_liquido, categoria_despesa, numero_documento
              FROM despesas_parlamentares
              WHERE valor_liquido > 0 AND length(fornecedor_cnpj_cpf) >= 11 AND data_emissao IS NOT NULL
-             ORDER BY data_emissao ASC LIMIT 10000",
-        ) {
+             ORDER BY parlamentar_nome, fornecedor_cnpj_cpf, data_emissao, id",
+        )?;
+
             let rows = stmt.query_map([], |r| {
                 let id: i64 = r.get(0)?;
                 let parl: String = r.get(1)?;
@@ -1173,8 +1182,13 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                 let cat: String = r.get(6)?;
                 let num_doc: Option<String> = r.get(7)?;
 
-                let dt = chrono::NaiveDate::parse_from_str(&dt_str, "%Y-%m-%d")
-                    .unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+                let dt = chrono::NaiveDate::parse_from_str(&dt_str, "%Y-%m-%d").map_err(|e| {
+                    storage::rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        storage::rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
 
                 Ok(auditor::DespesaFracionamentoInput {
                     despesa_id: id,
@@ -1188,39 +1202,56 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                 })
             });
 
-            if let Ok(despesas_iter) = rows {
-                let despesas: Vec<auditor::DespesaFracionamentoInput> = despesas_iter.flatten().collect();
-                let alertas_frac = auditor::auditar_fracionamento_despesas(&despesas);
-                for a in alertas_frac {
-                    let detalhes = serde_json::json!({
-                        "parlamentar": a.parlamentar_nome,
-                        "fornecedor_doc": a.fornecedor_cnpj_cpf,
-                        "fornecedor_nome": a.fornecedor_nome,
-                        "data_inicio": a.data_inicio.to_string(),
-                        "data_fim": a.data_fim.to_string(),
-                        "quantidade_despesas": a.quantidade_despesas,
-                        "valor_total": a.valor_total,
-                        "despesas_ids": a.despesas_ids,
-                        "regra": "Emissão de despesas sucessivas ou no mesmo dia para o mesmo fornecedor em valor expressivo"
-                    });
+            {
+                let despesas_iter = rows?;
 
-                    let _ = registrar_alerta(
-                        conn,
-                        &NovoAlerta {
-                            tipo: "FRACIONAMENTO_DESPESAS".to_string(),
-                            severidade: a.gravidade,
-                            titulo: format!("Fracionamento de Despesas - {}", a.fornecedor_nome),
-                            descricao: a.motivo,
-                            alvo_nome: a.parlamentar_nome,
-                            alvo_documento: Some(a.fornecedor_cnpj_cpf),
-                            municipio: None,
-                            uf: None,
-                            ano: Some(a.data_inicio.year()),
-                            valor_envolvido: Some(a.valor_total),
-                            fonte_dado: "CÂMARA/CEAP".to_string(),
-                            detalhes_json: Some(detalhes.to_string()),
-                        },
-                    );
+                let mut motor = auditor::AuditorFracionamentoOrdenado::default();
+                let salvar_fracionamento =
+                    |a: auditor::AlertaFracionamentoDespesas| -> Result<(), storage::StorageError> {
+                        let detalhes = serde_json::json!({
+                            "parlamentar": a.parlamentar_nome,
+                            "fornecedor_doc": a.fornecedor_cnpj_cpf,
+                            "fornecedor_nome": a.fornecedor_nome,
+                            "data_inicio": a.data_inicio.to_string(),
+                            "data_fim": a.data_fim.to_string(),
+                            "quantidade_despesas": a.quantidade_despesas,
+                            "valor_total": a.valor_total,
+                            "despesas_ids": a.despesas_ids,
+                            "regra": "Emissão de despesas sucessivas ou no mesmo dia para o mesmo fornecedor em valor expressivo"
+                        });
+
+                        registrar_revisado(
+                            conn,
+                            &NovoAlerta {
+                                tipo: "FRACIONAMENTO_DESPESAS".to_string(),
+                                severidade: a.gravidade,
+                                titulo: format!(
+                                    "Fracionamento de Despesas - {}",
+                                    a.fornecedor_nome
+                                ),
+                                descricao: a.motivo,
+                                alvo_nome: a.parlamentar_nome,
+                                alvo_documento: Some(a.fornecedor_cnpj_cpf),
+                                municipio: None,
+                                uf: None,
+                                ano: Some(a.data_inicio.year()),
+                                valor_envolvido: Some(a.valor_total),
+                                fonte_dado: "CÂMARA/CEAP".to_string(),
+                                detalhes_json: Some(detalhes.to_string()),
+                            },
+                        )?;
+                        Ok(())
+                    };
+                for item in despesas_iter {
+                    for alerta in motor
+                        .adicionar(item?)
+                        .map_err(|e| storage::StorageError::Pool(e.to_string()))?
+                    {
+                        salvar_fracionamento(alerta)?;
+                    }
+                }
+                for alerta in motor.concluir() {
+                    salvar_fracionamento(alerta)?;
                 }
             }
         }
@@ -1228,8 +1259,9 @@ pub fn sincronizar_alertas_sistema_com_parametros(
 
     // 13. Sincroniza fornecedores com dependência exclusiva de gabinete (> 85% de faturamento)
     {
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT d.fornecedor_cnpj_cpf, d.fornecedor_nome, d.parlamentar_nome,
+        {
+            let mut stmt = conn.prepare(
+                "SELECT d.fornecedor_cnpj_cpf, d.fornecedor_nome, d.parlamentar_nome,
                     SUM(d.valor_liquido) as faturamento_parl,
                     tot.total as faturamento_tot,
                     COUNT(*) as qtd
@@ -1244,7 +1276,8 @@ pub fn sincronizar_alertas_sistema_com_parametros(
              WHERE d.valor_liquido > 0
              GROUP BY d.fornecedor_cnpj_cpf, d.parlamentar_nome
              HAVING faturamento_parl >= 40000.0",
-        ) {
+            )?;
+
             let rows = stmt.query_map([], |r| {
                 Ok(auditor::FornecedorParlamentarFaturamento {
                     fornecedor_cnpj_cpf: r.get(0)?,
@@ -1256,8 +1289,11 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                 })
             });
 
-            if let Ok(itens) = rows {
-                let dados: Vec<auditor::FornecedorParlamentarFaturamento> = itens.flatten().collect();
+            {
+                let itens = rows?;
+
+                let dados: Vec<auditor::FornecedorParlamentarFaturamento> =
+                    itens.collect::<Result<Vec<_>, _>>()?;
                 let alertas_exclusivos = auditor::auditar_fornecedores_exclusivos(
                     &dados,
                     auditor::PISO_FATURAMENTO_EXCLUSIVIDADE,
@@ -1276,12 +1312,15 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         "regra": "Fornecedor da cota parlamentar tem faturamento concentrado em um único parlamentar"
                     });
 
-                    let _ = registrar_alerta(
+                    registrar_revisado(
                         conn,
                         &NovoAlerta {
                             tipo: "FORNECEDOR_EXCLUSIVO".to_string(),
                             severidade: a.gravidade,
-                            titulo: format!("Dependência de Gabinete ({:.0}%) - {}", a.percentual_dependencia, a.fornecedor_nome),
+                            titulo: format!(
+                                "Dependência de Gabinete ({:.0}%) - {}",
+                                a.percentual_dependencia, a.fornecedor_nome
+                            ),
                             descricao: a.motivo,
                             alvo_nome: a.fornecedor_nome,
                             alvo_documento: Some(a.fornecedor_cnpj_cpf),
@@ -1292,7 +1331,7 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                             fonte_dado: "CÂMARA/CEAP".to_string(),
                             detalhes_json: Some(detalhes.to_string()),
                         },
-                    );
+                    )?;
                 }
             }
         }
@@ -1300,26 +1339,33 @@ pub fn sincronizar_alertas_sistema_com_parametros(
 
     // 14. Sincroniza doações circulares (fornecedor CEAP que doou para a campanha do parlamentar)
     {
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT p.id, p.nome_completo, d.fornecedor_cnpj_cpf, d.fornecedor_nome,
-                    r.doador_cpf_cnpj, r.doador_nome,
-                    SUM(d.valor_liquido) as valor_ceap,
-                    SUM(r.valor) as valor_doacao,
-                    c.ano_eleicao,
-                    MIN(d.data_emissao) as dt_desp,
-                    MIN(COALESCE(r.data_receita, '')) as dt_doac
-             FROM despesas_parlamentares d
-             JOIN politicos p ON p.nome_completo = d.parlamentar_nome OR p.nome_urna = d.parlamentar_nome
-             JOIN candidaturas c ON c.politico_id = p.id
-             JOIN receitas_campanha r ON r.candidatura_id = c.id
-                  AND (
-                      r.doador_cpf_cnpj = d.fornecedor_cnpj_cpf
-                      OR (length(r.doador_cpf_cnpj) = 14 AND length(d.fornecedor_cnpj_cpf) = 14 AND substr(r.doador_cpf_cnpj, 1, 8) = substr(d.fornecedor_cnpj_cpf, 1, 8))
-                  )
-             WHERE d.valor_liquido > 0 AND r.valor > 0
-             GROUP BY p.id, d.fornecedor_cnpj_cpf, c.ano_eleicao
-             HAVING valor_ceap >= 10000.0 AND valor_doacao >= 1000.0",
-        ) {
+        {
+            let mut stmt = conn.prepare(
+            "WITH nomes AS (
+                SELECT nome,MIN(id) id FROM (SELECT id,nome_completo nome FROM politicos UNION SELECT id,nome_urna FROM politicos) GROUP BY nome HAVING COUNT(DISTINCT id)=1
+             ), despesas AS (
+                SELECT COALESCE(d.parlamentar_id,n.id) politico_id,
+                  CASE length(doc) WHEN 14 THEN substr(doc,1,8) ELSE doc END chave,
+                  MIN(doc) documento,MIN(fornecedor_nome) nome,SUM(valor_liquido_centavos) centavos,MIN(data_emissao) data
+                FROM (SELECT *,REPLACE(REPLACE(REPLACE(REPLACE(fornecedor_cnpj_cpf,'.',''),'-',''),'/',''),' ','') doc FROM despesas_parlamentares) d
+                LEFT JOIN nomes n ON n.nome=d.parlamentar_nome
+                WHERE valor_liquido_centavos>0 AND valid_document(doc)
+                GROUP BY COALESCE(d.parlamentar_id,n.id),chave
+             ), receitas AS (
+                SELECT c.politico_id,c.ano_eleicao,
+                  CASE length(doc) WHEN 14 THEN substr(doc,1,8) ELSE doc END chave,
+                  MIN(doc) documento,MIN(doador_nome) nome,SUM(r.valor_centavos) centavos,MIN(data_receita) data
+                FROM (SELECT *,REPLACE(REPLACE(REPLACE(REPLACE(doador_cpf_cnpj,'.',''),'-',''),'/',''),' ','') doc FROM receitas_campanha) r
+                JOIN candidaturas c ON c.id=r.candidatura_id
+                WHERE r.valor_centavos>0 AND valid_document(doc)
+                GROUP BY c.politico_id,c.ano_eleicao,chave
+             )
+             SELECT p.id,p.nome_completo,d.documento,d.nome,r.documento,r.nome,d.centavos/100.0,r.centavos/100.0,r.ano_eleicao,COALESCE(d.data,''),COALESCE(r.data,'')
+             FROM despesas d JOIN receitas r ON r.politico_id=d.politico_id AND r.chave=d.chave
+             JOIN politicos p ON p.id=d.politico_id
+             WHERE d.centavos>=1000000 AND r.centavos>=100000",
+        )?;
+
             let rows = stmt.query_map([], |r| {
                 Ok(auditor::VinculoCeapDoacao {
                     politico_id: r.get(0)?,
@@ -1336,9 +1382,13 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                 })
             });
 
-            if let Ok(itens) = rows {
-                let dados: Vec<auditor::VinculoCeapDoacao> = itens.flatten().collect();
-                let alertas_circulares = auditor::auditar_doacoes_circulares(&dados, 10_000.0, 1_000.0);
+            {
+                let itens = rows?;
+
+                let dados: Vec<auditor::VinculoCeapDoacao> =
+                    itens.collect::<Result<Vec<_>, _>>()?;
+                let alertas_circulares =
+                    auditor::auditar_doacoes_circulares(&dados, 10_000.0, 1_000.0);
 
                 for a in alertas_circulares {
                     let detalhes = serde_json::json!({
@@ -1354,12 +1404,15 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                         "regra": "Fornecedor contratado com cota parlamentar realizou doação de campanha para o parlamentar"
                     });
 
-                    let _ = registrar_alerta(
+                    registrar_revisado(
                         conn,
                         &NovoAlerta {
                             tipo: "DOACAO_CIRCULAR".to_string(),
                             severidade: a.gravidade,
-                            titulo: format!("Doação Circular de Fornecedor - {}", a.fornecedor_nome),
+                            titulo: format!(
+                                "Doação Circular de Fornecedor - {}",
+                                a.fornecedor_nome
+                            ),
                             descricao: a.motivo,
                             alvo_nome: a.politico_nome,
                             alvo_documento: Some(a.fornecedor_cnpj_cpf),
@@ -1370,11 +1423,12 @@ pub fn sincronizar_alertas_sistema_com_parametros(
                             fonte_dado: "TSE/CÂMARA".to_string(),
                             detalhes_json: Some(detalhes.to_string()),
                         },
-                    );
+                    )?;
                 }
             }
         }
     }
+    conn.execute("DELETE FROM alertas_auditoria WHERE tipo IN ('EMPRESA_RECEM_CRIADA','FORNECEDOR_FANTASMA','POSSIVEL_PARENTESCO','FORNECEDOR_HUB','FRACIONAMENTO_DESPESAS','FORNECEDOR_EXCLUSIVO','DOACAO_CIRCULAR') AND COALESCE(CASE WHEN json_valid(detalhes_json) THEN json_extract(detalhes_json,'$.revisao_motor') END,'')<>?1",[&revisao])?;
 
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM alertas_auditoria WHERE id > ?1",
@@ -1747,7 +1801,7 @@ mod tests {
         assert_eq!(resp_2023.total, 1);
         assert_eq!(resp_2023.alertas[0].tipo, "CONFLITO_OAB");
 
-        // 4. Teste sincronização automática de combustível da CEAP (> 250L padrão)
+        // 4. Teste sincronização automática de combustível da CEAP (> 80 L padrão)
         conn.execute(
             "INSERT INTO despesas_parlamentares (
                 casa_legislativa, parlamentar_nome, parlamentar_cpf_mascarado,
@@ -1780,7 +1834,7 @@ mod tests {
 
         assert_eq!(resp_combustivel.total, 1);
         assert_eq!(resp_combustivel.alertas[0].alvo_nome, "DEPUTADO X");
-        assert_eq!(resp_combustivel.alertas[0].severidade, "ALTA");
+        assert_eq!(resp_combustivel.alertas[0].severidade, "CRITICA");
     }
 
     #[tokio::test]
@@ -2004,7 +2058,8 @@ mod tests {
             "INSERT INTO candidaturas (politico_id, ano_eleicao, cargo, sigla_partido, uf)
              VALUES (?1, 2024, 'DEPUTADO FEDERAL', 'PARTIDO', 'MG')",
             [pol_id],
-        ).unwrap();
+        )
+        .unwrap();
         let cand_id = conn.last_insert_rowid();
 
         // 2. Empresa fornecedora contratada pelo deputado via CEAP
@@ -2023,7 +2078,8 @@ mod tests {
                 '2024-03-10', 'CONSULTORIA', 15000.0
              )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 3. Doador incompatível que tem CPF armazenado como dígitos puros no TSE
         conn.execute(
@@ -2052,11 +2108,18 @@ mod tests {
                 limit: Some(100),
                 offset: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let tipos: Vec<String> = alertas.alertas.iter().map(|a| a.tipo.clone()).collect();
-        assert!(tipos.contains(&"POSSIVEL_PARENTESCO".to_string()), "Deve detectar parentesco com sócio de fornecedor CEAP");
-        assert!(tipos.contains(&"DOADOR_INCOMPATIVEL".to_string()), "Deve detectar doador com CPF desmascarado/dígitos");
+        assert!(
+            tipos.contains(&"POSSIVEL_PARENTESCO".to_string()),
+            "Deve detectar parentesco com sócio de fornecedor CEAP"
+        );
+        assert!(
+            tipos.contains(&"DOADOR_INCOMPATIVEL".to_string()),
+            "Deve detectar doador com CPF desmascarado/dígitos"
+        );
     }
 }
 

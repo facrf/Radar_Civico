@@ -2,14 +2,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use graph::GrafoSincronizado;
 use ingestion::{
-    mascarar_cpf, ExcerptDiario, OabConsultaResult, OabScraperClient,
-    QueridoDiarioApiResponse, QueridoDiarioClient,
+    mascarar_cpf, ExcerptDiario, OabConsultaResult, OabScraperClient, QueridoDiarioApiResponse,
+    QueridoDiarioClient,
 };
 use server::alertas::AlertasResponse;
+use server::criar_router;
 use server::grafo::SubgrafoResponse;
 use server::investigar::{executar_investigacao, identificar_doador, InvestigarParams};
 use server::politico::DossiePolitico;
-use server::criar_router;
 use storage::rusqlite::params;
 use storage::{run_migrations, DbPool};
 use tower::ServiceExt;
@@ -41,10 +41,11 @@ async fn test_pipeline_completo_ingestao_auditoria_e_grafo() {
         "INSERT INTO bens_candidato (candidatura_id, tipo_bem, descricao, valor_declarado)
          VALUES (?1, 'IMOVEL', 'Apartamento residencial', 750000.00)",
         params![candidatura_id],
-    ).expect("falha ao inserir bem");
+    )
+    .expect("falha ao inserir bem");
 
     // 3. Ingestão simulada: Receita de Campanha oriunda de Doador Advogado
-    let doc_advogado = "12345678901";
+    let doc_advogado = "52998224725";
     let doc_mascarado = mascarar_cpf(doc_advogado);
     let nome_advogado = "DR. ANTONIO CARLOS ADVOGADO";
 
@@ -67,16 +68,18 @@ async fn test_pipeline_completo_ingestao_auditoria_e_grafo() {
         "INSERT INTO nos_rede (uuid, tipo, documento, nome, esfera, uf, municipio)
          VALUES ('doador-10', 'PESSOA_FISICA', ?1, ?2, 'MUNICIPAL', 'SP', 'Campinas')",
         params![doc_advogado, nome_advogado],
-    ).expect("falha ao inserir no do doador");
+    )
+    .expect("falha ao inserir no do doador");
     let no_doador_id = conn.last_insert_rowid();
 
     conn.execute(
         "INSERT INTO conexoes_rede (origem_id, destino_id, tipo_relacao, valor, ano, fonte_dado)
          VALUES (?1, ?2, 'DOACAO_CAMPANHA', 30000.00, 2024, 'TSE')",
         params![no_doador_id, no_politico_id],
-    ).expect("falha ao inserir conexao doacao");
+    )
+    .expect("falha ao inserir conexao doacao");
 
-    // 5. Ingestão simulada: Cache do Querido Diário comprovando nomeação como Secretário Municipal
+    // 5. Trecho do diário é evidência possível; o cargo verificado é carregado separadamente.
     let trecho_nomeacao = format!(
         "PREFEITURA MUNICIPAL DE CAMPINAS. DECRETO Nº 21.000: O PREFEITO MUNICIPAL, NO USO DE SUAS ATRIBUIÇÕES LEGAIS, RESOLVE: NOMEAR {} PARA EXERCER O CARGO DE SECRETÁRIO MUNICIPAL DE ASSUNTOS JURÍDICOS.",
         nome_advogado
@@ -92,13 +95,14 @@ async fn test_pipeline_completo_ingestao_auditoria_e_grafo() {
         }],
     };
     QueridoDiarioClient::salvar_cache(
-        &mut conn,
+        &conn,
         doc_advogado,
         nome_advogado,
         "Campinas-SP",
         1,
         &serde_json::to_string(&gazette_resp).unwrap(),
-    ).expect("falha ao salvar cache do querido diario");
+    )
+    .expect("falha ao salvar cache do querido diario");
 
     // 6. Ingestão simulada: Registro Profissional no CNA/OAB com situação "REGULAR" (Incompatível!)
     let oab_rec = OabConsultaResult {
@@ -111,6 +115,20 @@ async fn test_pipeline_completo_ingestao_auditoria_e_grafo() {
     };
     OabScraperClient::salvar_registro_oab(&mut conn, &oab_rec, Some(&doc_mascarado))
         .expect("falha ao salvar registro oab");
+
+    // A identidade e a vigência vêm de fontes explícitas, nunca da busca nominal.
+    conn.execute(
+        "INSERT INTO politicos(nome_completo,nome_urna,cpf_mascarado) VALUES(?1,?1,?2)",
+        params![nome_advogado, doc_advogado],
+    )
+    .unwrap();
+    let autoridade_id = conn.last_insert_rowid();
+    conn.execute("INSERT INTO cargos_autoridades(politico_id,orgao,cargo,esfera,data_posse,origem_dado,fonte_url,conferido_em,evidencia_verificada) VALUES(?1,'PREFEITURA DE CAMPINAS','SECRETÁRIO MUNICIPAL DE ASSUNTOS JURÍDICOS','MUNICIPAL','2025-01-02','ATO_OFICIAL','https://diario.campinas.sp.gov.br/atos/2025/decreto-21000.pdf',?2,1)",params![autoridade_id,chrono::Utc::now().to_rfc3339()]).unwrap();
+    conn.execute(
+        "UPDATE registros_profissionais SET cpf_mascarado=?1 WHERE numero_registro='345678'",
+        [doc_advogado],
+    )
+    .unwrap();
 
     // 7. Execução do Motor de Auditoria / Investigação Sob Demanda
     let doador_identificado = identificar_doador(&conn, &receita_id.to_string())
@@ -125,7 +143,9 @@ async fn test_pipeline_completo_ingestao_auditoria_e_grafo() {
             uf: Some("SP".to_string()),
             forcar: Some(false),
         },
-    ).await.expect("falha ao executar investigacao");
+    )
+    .await
+    .expect("falha ao executar investigacao");
 
     // Valida detecção do conflito de interesses (Art. 28 da Lei 8.906/94)
     assert_eq!(investigacao_res.status, "ALERTA_GERADO");
@@ -136,9 +156,9 @@ async fn test_pipeline_completo_ingestao_auditoria_e_grafo() {
     assert!(alerta_oab.cargo.contains("SECRETÁRIO MUNICIPAL"));
 
     // 8. Validação do Grafo em Memória
-    let grafo = GrafoSincronizado::carregar_do_sqlite(&conn)
-        .expect("falha ao sincronizar grafo");
-    let subgrafo = grafo.extrair_subgrafo_vizinhanca("cand-45", 1)
+    let grafo = GrafoSincronizado::carregar_do_sqlite(&conn).expect("falha ao sincronizar grafo");
+    let subgrafo = grafo
+        .extrair_subgrafo_vizinhanca("cand-45", 1)
         .expect("subgrafo não encontrado");
     assert_eq!(subgrafo.nos.len(), 2);
     assert_eq!(subgrafo.arestas.len(), 1);
@@ -154,7 +174,9 @@ async fn test_pipeline_completo_ingestao_auditoria_e_grafo() {
         .unwrap();
     let resp_dossie = app.clone().oneshot(req_dossie).await.unwrap();
     assert_eq!(resp_dossie.status(), StatusCode::OK);
-    let bytes_dossie = axum::body::to_bytes(resp_dossie.into_body(), 1024 * 1024).await.unwrap();
+    let bytes_dossie = axum::body::to_bytes(resp_dossie.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
     let dossie_json: DossiePolitico = serde_json::from_slice(&bytes_dossie).unwrap();
     assert_eq!(dossie_json.nome_urna, "JOAO PREFEITO");
     assert_eq!(dossie_json.historico_bens.len(), 1);
@@ -170,7 +192,9 @@ async fn test_pipeline_completo_ingestao_auditoria_e_grafo() {
         .unwrap();
     let resp_alertas = app.clone().oneshot(req_alertas).await.unwrap();
     assert_eq!(resp_alertas.status(), StatusCode::OK);
-    let bytes_alertas = axum::body::to_bytes(resp_alertas.into_body(), 1024 * 1024).await.unwrap();
+    let bytes_alertas = axum::body::to_bytes(resp_alertas.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
     let alertas_json: AlertasResponse = serde_json::from_slice(&bytes_alertas).unwrap();
     assert!(alertas_json.total >= 1);
     assert_eq!(alertas_json.alertas[0].severidade, "CRITICA");
@@ -183,7 +207,9 @@ async fn test_pipeline_completo_ingestao_auditoria_e_grafo() {
         .unwrap();
     let resp_grafo = app.oneshot(req_grafo).await.unwrap();
     assert_eq!(resp_grafo.status(), StatusCode::OK);
-    let bytes_grafo = axum::body::to_bytes(resp_grafo.into_body(), 1024 * 1024).await.unwrap();
+    let bytes_grafo = axum::body::to_bytes(resp_grafo.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
     let grafo_json: SubgrafoResponse = serde_json::from_slice(&bytes_grafo).unwrap();
     assert_eq!(grafo_json.raiz_id, "cand-45");
     assert_eq!(grafo_json.total_nos, 2);

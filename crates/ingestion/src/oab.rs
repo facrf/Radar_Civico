@@ -35,11 +35,19 @@ pub struct OabScraperClient {
     pub base_url: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RegistroOabLocal {
+    pub registro: OabConsultaResult,
+    pub documento: Option<String>,
+    pub recente: bool,
+}
+
 impl OabScraperClient {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
                 .user_agent("Mozilla/5.0 (compatible; RadarCivico/1.0)")
+                .timeout(std::time::Duration::from_secs(8))
                 .build()
                 .unwrap_or_default(),
             base_url: "https://cna.oab.org.br/api".to_string(),
@@ -97,7 +105,8 @@ impl OabScraperClient {
             .get(&url)
             .send()
             .await
-            .map_err(IngestionError::Reqwest)?;
+            .map_err(IngestionError::Reqwest)?
+            .error_for_status()?;
 
         let texto = resp.text().await.map_err(IngestionError::Reqwest)?;
         let trimmed = texto.trim_start();
@@ -114,52 +123,44 @@ impl OabScraperClient {
         nome: &str,
         uf: Option<&str>,
     ) -> Result<Option<OabConsultaResult>> {
-        let nome_upper = nome.trim().to_uppercase();
+        Ok(Self::buscar_registros_banco(conn, nome, uf)?
+            .into_iter()
+            .next()
+            .map(|r| r.registro))
+    }
 
-        let query = if uf.is_some() {
-            "SELECT pessoa_nome, numero_registro, seccional_uf, situacao_registro, tipo_inscricao, payload_json
-                 FROM registros_profissionais
-                 WHERE orgao_emissor = 'OAB' AND pessoa_nome = ?1 AND seccional_uf = ?2
-                 LIMIT 1".to_string()
-        } else {
-            "SELECT pessoa_nome, numero_registro, seccional_uf, situacao_registro, tipo_inscricao, payload_json
-                 FROM registros_profissionais
-                 WHERE orgao_emissor = 'OAB' AND pessoa_nome = ?1
-                 LIMIT 1".to_string()
-        };
-
-        let mut stmt = conn.prepare_cached(&query)?;
-
-        let res = if let Some(uf_val) = uf {
-            stmt.query_row(
-                storage::rusqlite::params![nome_upper, uf_val.trim().to_uppercase()],
-                |row| {
-                    Ok(OabConsultaResult {
+    /// Retorna todas as inscrições, sem eleger um homônimo nem ocultar erros SQL.
+    /// O documento é o que veio da fonte local; nunca é inferido do nome consultado.
+    pub fn buscar_registros_banco(
+        conn: &Connection,
+        nome: &str,
+        uf: Option<&str>,
+    ) -> Result<Vec<RegistroOabLocal>> {
+        let mut stmt = conn.prepare_cached("SELECT pessoa_nome,numero_registro,seccional_uf,situacao_registro,tipo_inscricao,payload_json,cpf_mascarado,COALESCE(julianday(data_consulta) BETWEEN julianday('now','-30 days') AND julianday('now'),0) FROM registros_profissionais WHERE orgao_emissor='OAB' AND TRIM(UPPER(pessoa_nome))=?1 AND (?2 IS NULL OR seccional_uf=?2) ORDER BY seccional_uf,numero_registro")?;
+        let rows = stmt.query_map(
+            storage::rusqlite::params![
+                nome.trim().to_uppercase(),
+                uf.map(|v| v.trim().to_uppercase())
+            ],
+            |row| {
+                Ok(RegistroOabLocal {
+                    registro: OabConsultaResult {
                         nome: row.get(0)?,
                         inscricao: row.get(1)?,
                         uf: row.get(2)?,
                         situacao: row.get(3)?,
-                        tipo: row.get(4)?,
-                        payload_json: row.get(5)?,
-                    })
-                },
-            )
-            .ok()
-        } else {
-            stmt.query_row(storage::rusqlite::params![nome_upper], |row| {
-                Ok(OabConsultaResult {
-                    nome: row.get(0)?,
-                    inscricao: row.get(1)?,
-                    uf: row.get(2)?,
-                    situacao: row.get(3)?,
-                    tipo: row.get(4)?,
-                    payload_json: row.get(5)?,
+                        tipo: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                        payload_json: row
+                            .get::<_, Option<String>>(5)?
+                            .unwrap_or_else(|| "{}".into()),
+                    },
+                    documento: row.get(6)?,
+                    recente: row.get(7)?,
                 })
-            })
-            .ok()
-        };
-
-        Ok(res)
+            },
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(IngestionError::Sqlite)
     }
 
     pub fn salvar_registro_oab(
@@ -264,9 +265,10 @@ mod tests {
         atualizado.situacao = "LICENCIADO".to_string();
         OabScraperClient::salvar_registro_oab(&mut conn, &atualizado, None).unwrap();
 
-        let verificado = OabScraperClient::buscar_registro_banco(&conn, "DR ADVOGADO TESTE", Some("SP"))
-            .unwrap()
-            .unwrap();
+        let verificado =
+            OabScraperClient::buscar_registro_banco(&conn, "DR ADVOGADO TESTE", Some("SP"))
+                .unwrap()
+                .unwrap();
 
         assert_eq!(verificado.situacao, "LICENCIADO");
     }

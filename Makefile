@@ -1,4 +1,4 @@
-.PHONY: all version build check test docker-build run
+.PHONY: all version build check test docker-build docker-up run
 
 all: check test
 
@@ -25,6 +25,10 @@ test:
 # Build de imagem Docker com injeção automática de versão
 docker-build: version
 	docker compose build
+
+# Atualiza metadados antes de reconstruir e recriar o serviço local.
+docker-up: version
+	docker compose up --build -d
 
 # Execução do servidor em modo dev
 run:

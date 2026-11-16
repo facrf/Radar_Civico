@@ -4,9 +4,35 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-env-changed=APP_VERSION");
     println!("cargo:rerun-if-env-changed=APP_COMMIT");
-    println!("cargo:rerun-if-env-changed=../../version.json");
-    if Path::new("../../.git/HEAD").exists() {
-        println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-env-changed=APP_COUNT");
+    println!("cargo:rerun-if-changed=../../version.json");
+    // HEAD contém o nome da branch; novos commits alteram o arquivo da ref.
+    // --git-path também funciona em worktrees, onde .git é um arquivo.
+    let branch = Command::new("git")
+        .args(["symbolic-ref", "--quiet", "HEAD"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+    for referencia in [
+        Some("HEAD".to_string()),
+        Some("packed-refs".to_string()),
+        branch,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(out) = Command::new("git")
+            .args(["rev-parse", "--git-path", &referencia])
+            .output()
+        {
+            if out.status.success() {
+                println!(
+                    "cargo:rerun-if-changed={}",
+                    String::from_utf8_lossy(&out.stdout).trim()
+                );
+            }
+        }
     }
 
     // Variáveis de ambiente com limpeza de strings vazias
@@ -137,7 +163,9 @@ fn serde_json_lite(json: &str) -> Result<(String, String, u64), ()> {
 fn extract_string_value(line: &str) -> Option<String> {
     let parts: Vec<&str> = line.split(':').collect();
     if parts.len() >= 2 {
-        let val = parts[1].trim().trim_matches(|c| c == ',' || c == '"' || c == ' ' || c == '\r');
+        let val = parts[1]
+            .trim()
+            .trim_matches(|c| c == ',' || c == '"' || c == ' ' || c == '\r');
         return Some(val.to_string());
     }
     None
@@ -146,7 +174,9 @@ fn extract_string_value(line: &str) -> Option<String> {
 fn extract_number_value(line: &str) -> Option<u64> {
     let parts: Vec<&str> = line.split(':').collect();
     if parts.len() >= 2 {
-        let val = parts[1].trim().trim_matches(|c| c == ',' || c == ' ' || c == '\r');
+        let val = parts[1]
+            .trim()
+            .trim_matches(|c| c == ',' || c == ' ' || c == '\r');
         return val.parse().ok();
     }
     None

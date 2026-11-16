@@ -97,7 +97,7 @@ pub struct ParametrosAuditoria {
 impl Default for ParametrosAuditoria {
     fn default() -> Self {
         Self {
-            limite_combustivel_litros: 250.0,
+            limite_combustivel_litros: auditor::LIMITE_TANQUE_VEICULO_LEVE,
             preco_combustivel_referencia: 5.80,
             sobrepreco_combustivel_percentual: 50.0,
             estimar_volume_combustivel: true,
@@ -105,7 +105,7 @@ impl Default for ParametrosAuditoria {
             referencia_combustivel_local: "Não informado".into(),
             referencia_combustivel_url: None,
             janela_triangulacao_dias: 180,
-            concentracao_fornecedor_percentual: 60.0,
+            concentracao_fornecedor_percentual: graph::LIMITE_CONCENTRACAO_COLIGACAO,
         }
     }
 }
@@ -211,7 +211,7 @@ pub fn carregar_parametros_auditoria(conn: &rusqlite::Connection) -> ParametrosA
         )
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(250.0);
+        .unwrap_or(auditor::LIMITE_TANQUE_VEICULO_LEVE);
 
     let janela_triangulacao = conn
         .query_row(
@@ -231,7 +231,7 @@ pub fn carregar_parametros_auditoria(conn: &rusqlite::Connection) -> ParametrosA
         )
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(60.0);
+        .unwrap_or(graph::LIMITE_CONCENTRACAO_COLIGACAO);
 
     ParametrosAuditoria {
         limite_combustivel_litros: limite_combustivel,
@@ -2448,10 +2448,7 @@ fn processar_csv_records<R: std::io::Read>(
                         .unwrap_or("OAB");
                     let reg = required_field(&record, col_reg, "registro")?;
                     let uf = col_uf.and_then(|i| record.get(i)).unwrap_or("BR").trim();
-                    let sit = col_sit
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("REGULAR")
-                        .trim();
+                    let sit = required_field(&record, col_sit, "situacao_registro")?;
                     let tipo_ins = col_tipo
                         .and_then(|i| record.get(i))
                         .unwrap_or("ADVOGADO")
@@ -4374,7 +4371,7 @@ mod tests {
             let mut conn = pool.get().unwrap();
             run_migrations(&mut conn).unwrap();
 
-            // Insere uma despesa com 120 litros (acima dos 80L antigos, mas abaixo do novo padrão de 250L)
+            // Insere uma despesa com 120 litros (acima do padrão de 80 L)
             conn.execute(
                 "INSERT INTO despesas_parlamentares (
                     casa_legislativa, parlamentar_nome, data_emissao, categoria_despesa,
@@ -4389,7 +4386,7 @@ mod tests {
 
         let app = crate::criar_router(pool.clone());
 
-        // 1. GET /api/settings/audit-rules deve retornar valores padrão (250 L, 180 dias, 60%)
+        // 1. GET /api/settings/audit-rules deve retornar valores padrão (80 L, 180 dias, 70%)
         let req_get = Request::builder()
             .uri("/api/settings/audit-rules")
             .body(Body::empty())
@@ -4400,9 +4397,9 @@ mod tests {
             .await
             .unwrap();
         let rules_init: ParametrosAuditoria = serde_json::from_slice(&bytes_get).unwrap();
-        assert_eq!(rules_init.limite_combustivel_litros, 250.0);
+        assert_eq!(rules_init.limite_combustivel_litros, 80.0);
         assert_eq!(rules_init.janela_triangulacao_dias, 180);
-        assert_eq!(rules_init.concentracao_fornecedor_percentual, 60.0);
+        assert_eq!(rules_init.concentracao_fornecedor_percentual, 70.0);
 
         // 2. POST /api/settings/audit-rules com valores customizados válidos
         let app2 = crate::criar_router(pool.clone());
