@@ -2,6 +2,9 @@
 
 Este documento registra os diagnósticos arquiteturais, as estratégias de otimização priorizadas e o histórico de execução de melhorias no ecossistema do Radar Cívico.
 
+> [!NOTE]
+> Registro histórico. O estado atual de build, endpoints e validação está no [README](README.md) e em [`docs/MELHORIAS_E_OPERACAO.md`](docs/MELHORIAS_E_OPERACAO.md). Onde o código evoluiu depois da melhoria registrada, o texto foi ajustado para descrever o comportamento vigente.
+
 ---
 
 ## Estado de Execução e Otimizações Concluídas em 23/10/2026
@@ -25,8 +28,8 @@ Todas as melhorias arquiteturais e de performance diagnosticadas foram implement
 
 - [x] **Melhoria 4: Reatividade e Ciclo de Vida do Grafo de Rede Cytoscape**
   - **Diagnóstico:** No componente `web/src/lib/components/GrafoRede.svelte`, a instância do Cytoscape era inicializada no `onMount`, mas alterações na prop `dados` causadas pela navegação entre diferentes parlamentares não destruíam nem recarregavam os elementos do grafo reativamente.
-  - **Ação:** Implementada declaração reativa `$: if (cyInstance && dados && dados.raiz_id !== ultimoRaizId)` que atualiza os nós e arestas, ajusta o layout concêntrico e centraliza a visualização no nó focal do político consultado.
-  - **Resultado:** Alternância dinâmica instantânea entre dossiês e grafos sem necessidade de reload da página.
+  - **Ação:** Implementada declaração reativa `$: if (cyInstance && dados && dados.raiz_id !== ultimoRaizId)` que atualiza os nós e arestas e reaplica o layout `cose` (não concêntrico).
+  - **Resultado:** Alternância dinâmica entre dossiês e grafos sem necessidade de reload da página. Limitação atual: a reação depende de `raiz_id`, então trocar apenas o `grau` com a mesma raiz não redesenha o canvas, e não há chamada explícita de centralização após a atualização.
 
 - [x] **Melhoria 5: Integração de Novas Heurísticas ao Pipeline de Alertas**
   - **Diagnóstico:** A heurística de fornecedor concentrador (`detectar_fornecedores_hub_com_limite` da crate `graph`) e a detecção de pagamentos a empresas inaptas/baixadas/suspensas na Receita Federal estavam sem integração ativa na rotina de sincronização de alertas do servidor.
@@ -46,7 +49,7 @@ Todas as melhorias arquiteturais e de performance diagnosticadas foram implement
    - `cargo check --workspace` concluído sem erros.
    - `cargo clippy --workspace -- -D warnings` aprovado com 0 warnings.
 2. **Suíte Completa de Testes:**
-   - `cargo test --all` executado com 181+ testes aprovados nas crates `storage`, `auditor`, `graph`, `ingestion` e `server`.
+   - `cargo test --all` executado com 181+ testes aprovados nas crates `storage`, `auditor`, `graph`, `ingestion` e `server` (suíte ampliada para 290 testes na validação de 19/11/2026).
 3. **Rebuild e Runtime em Docker:**
    - Imagem reconstruída via `docker compose up --build -d`.
    - Contêiner `radar_civico` validado em estado `healthy`.

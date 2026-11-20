@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Configurar Rust estável
-        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+      - name: Configurar Rust 1.99
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt clippy && rustup default 1.99.0
       - id: compiler
         run: echo "version=$(rustc -V | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
@@ -59,6 +59,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Gerar metadados de versão
+        env:
+          APP_VERSION: ci
+          APP_COMMIT: ${{ github.sha }}
+          APP_COUNT: ${{ github.run_number }}
+        run: ./scripts/gerar_versao.sh
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
@@ -69,6 +75,7 @@ jobs:
           build-args: |
             APP_VERSION=ci
             APP_COMMIT=${{ github.sha }}
+            APP_COUNT=${{ github.run_number }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Conferir runtime em banco temporário

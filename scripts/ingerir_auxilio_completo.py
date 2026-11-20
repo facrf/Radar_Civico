@@ -10,7 +10,7 @@ Uso:
 
 Exemplos:
     # 1. Jogar tudo no banco (carga completa):
-    python3 scripts/ingerir_auxilio_completo.py --arquivo /home/facrf/Downloads/basedados/auxilio_emergencial.csv
+    python3 scripts/ingerir_auxilio_completo.py --arquivo ./data/auxilio_emergencial.csv
 
     # 2. Jogar apenas de uma cidade específica:
     python3 scripts/ingerir_auxilio_completo.py --municipio "Campinas" --uf "SP"
@@ -22,6 +22,7 @@ Exemplos:
 import os
 import sys
 import time
+import csv
 import sqlite3
 import argparse
 from typing import Optional, Set
@@ -35,16 +36,14 @@ DEFAULT_DB = os.path.join(PROJECT_ROOT, "data", "radar_civico.db")
 BATCH_SIZE = 50_000
 
 
-def configurar_pragmas(conn: sqlite3.Connection, rapido: bool = True):
+def configurar_pragmas(conn: sqlite3.Connection):
+    """Aplica os PRAGMAs obrigatórios do protocolo do repositório."""
     cursor = conn.cursor()
     cursor.execute("PRAGMA journal_mode = WAL;")
-    if rapido:
-        cursor.execute("PRAGMA synchronous = OFF;")
-    else:
-        cursor.execute("PRAGMA synchronous = NORMAL;")
-    cursor.execute("PRAGMA cache_size = -128000;")  # ~128 MB cache
+    cursor.execute("PRAGMA synchronous = NORMAL;")
+    cursor.execute("PRAGMA cache_size = -64000;")  # ~64 MB
     cursor.execute("PRAGMA temp_store = MEMORY;")
-    cursor.execute("PRAGMA foreign_keys = OFF;")
+    cursor.execute("PRAGMA foreign_keys = ON;")
     cursor.execute("PRAGMA busy_timeout = 60000;")
     cursor.close()
 
@@ -98,6 +97,22 @@ def formatar_bytes(num_bytes: int) -> str:
     return f"{num_bytes:.1f} PB"
 
 
+def parse_valor(texto: str) -> Optional[float]:
+    """Converte a coluna VALOR sem atribuir valores inventados a linhas inválidas."""
+    texto = texto.strip().replace(" ", "")
+    if not texto:
+        return None
+    if "," in texto and "." in texto:
+        texto = texto.replace(".", "").replace(",", ".")
+    elif "," in texto:
+        texto = texto.replace(",", ".")
+    try:
+        valor = float(texto)
+    except ValueError:
+        return None
+    return valor if valor > 0 else None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Radar Cívico - Ingestor de Alta Performance para Auxílio Emergencial"
@@ -112,6 +127,10 @@ def main():
     parser.add_argument("--sem-recriar-indices", dest="recriar_indices", action="store_false")
 
     args = parser.parse_args()
+
+    if args.lote < 1:
+        print("❌ Erro: --lote deve ser maior que zero.")
+        sys.exit(1)
 
     if not os.path.exists(args.arquivo):
         print(f"❌ Erro: Arquivo CSV não encontrado: {args.arquivo}")
@@ -137,7 +156,7 @@ def main():
     print("-" * 70)
 
     conn = sqlite3.connect(args.banco)
-    configurar_pragmas(conn, rapido=True)
+    configurar_pragmas(conn)
 
     cpfs_politicos = set()
     nomes_politicos = set()
@@ -162,6 +181,8 @@ def main():
     cursor = conn.cursor()
     total_linhas = 0
     total_inseridos = 0
+    total_valores_invalidos = 0
+    total_banco = -1
     lote = []
     inicio = time.time()
     ultimo_log = inicio
@@ -169,9 +190,12 @@ def main():
     print("⏳ Iniciando leitura em streaming e inserção em lotes atômicos...")
 
     try:
-        with open(args.arquivo, "r", encoding="utf-8", errors="replace") as f:
-            header_line = f.readline()
-            headers = [h.strip().upper() for h in header_line.split(",")]
+        with open(args.arquivo, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f)
+            headers = [h.strip().upper() for h in next(reader, [])]
+            if not headers:
+                print("❌ Erro: CSV sem cabeçalho.")
+                return
 
             # Mapeamento dinâmico de colunas
             col_ano_mes = headers.index("ANO_MES") if "ANO_MES" in headers else 0
@@ -183,9 +207,8 @@ def main():
             col_parcela = headers.index("PARCELA") if "PARCELA" in headers else 11
             col_valor = headers.index("VALOR") if "VALOR" in headers else 13
 
-            for line in f:
+            for parts in reader:
                 total_linhas += 1
-                parts = line.rstrip("\r\n").split(",")
                 if len(parts) <= max(col_cpf, col_nome, col_valor):
                     continue
 
@@ -209,11 +232,10 @@ def main():
                 parcela = parts[col_parcela].strip() if col_parcela < len(parts) else "1"
                 enq = parts[col_enq].strip() if col_enq < len(parts) else "EXTRA CADUN"
                 
-                try:
-                    val_str = parts[col_valor].strip().replace(",", ".")
-                    valor = float(val_str)
-                except (ValueError, IndexError):
-                    valor = 600.0
+                valor = parse_valor(parts[col_valor])
+                if valor is None:
+                    total_valores_invalidos += 1
+                    continue
 
                 lote.append((
                     raw_cpf,
@@ -243,39 +265,35 @@ def main():
                         )
                         ultimo_log = agora
 
-        # Inserir o restante
+        # O lote restante, os índices e o checkpoint são finalizados no finally.
+    except KeyboardInterrupt:
+        print("\n⚠️ Interrupção manual solicitada pelo usuário!")
+    except Exception:
+        print("\n❌ Falha na ingestão; finalizando lote e índices antes de sair.")
+        raise
+    finally:
         if lote:
             cursor.executemany(sql_insert, lote)
             conn.commit()
             total_inseridos += len(lote)
             lote.clear()
 
-    except KeyboardInterrupt:
-        print("\n⚠️ Interrupção manual solicitada pelo usuário! Salvando lote atual...")
-        if lote:
-            cursor.executemany(sql_insert, lote)
-            conn.commit()
-            total_inseridos += len(lote)
+        if reconstruir_depois:
+            recriar_indices(conn)
+
+        print("\n🧹 Executando PRAGMA wal_checkpoint(TRUNCATE)...")
+        cursor.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        conn.commit()
+        cursor.execute("SELECT count(*) FROM beneficios_emergenciais;")
+        total_banco = cursor.fetchone()[0]
+        cursor.close()
+        conn.close()
 
     tempo_total = time.time() - inicio
     print(f"\n\n🏁 Ingestão concluída em {tempo_total:.2f} segundos!")
-    print(f"📊 Total de Linhas Lidas:     {total_linhas:,}")
-    print(f"💾 Total de Registros Salvos: {total_inseridos:,}")
-
-    if reconstruir_depois:
-        recriar_indices(conn)
-
-    # Executa checkpoint do WAL para sincronizar
-    print("🧹 Executando PRAGMA wal_checkpoint(TRUNCATE)...")
-    cursor.execute("PRAGMA synchronous = NORMAL;")
-    cursor.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-    conn.commit()
-
-    cursor.execute("SELECT count(*) FROM beneficios_emergenciais;")
-    total_banco = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-
+    print(f"📊 Total de Linhas Lidas:      {total_linhas:,}")
+    print(f"💾 Total de Registros Salvos:  {total_inseridos:,}")
+    print(f"⚠️ Linhas com valor inválido: {total_valores_invalidos:,}")
     print("-" * 70)
     print(f"🎉 SUCESSO! Total atual de benefícios emergenciais no SQLite: {total_banco:,}")
     print("=" * 70)

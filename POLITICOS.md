@@ -1,6 +1,9 @@
 # Projeto: Radar Cívico (Especificação Técnica e Arquitetura)
 Documento mestre de arquitetura para ingestão massiva de dados abertos governamentais, data lake relacional em SQLite, motor de grafos e auditoria algorítmica para detecção de anomalias e irregularidades em gastos públicos e campanhas eleitorais.
 
+> [!NOTE]
+> Este é o registro da especificação original. Para o estado atual de configuração, endpoints, dependências e comandos, use o [README](README.md) e os guias em [`docs/`](docs/). Seções marcadas como históricas descrevem o plano inicial, não a implantação vigente.
+
 ---
 
 ## 1. Visão Geral e Diretrizes de Engenharia
@@ -230,29 +233,46 @@ Ranking de Anomalias: Lista consolidada de despesas parlamentares ranqueadas por
 
 ## 7. Configuração e Execução via Docker
 
-### docker-compose.yml
-version: '3.8'
+### docker-compose.yml (configuração vigente)
 
+```yaml
 services:
-  radar-app:
+  app:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-}
+        APP_COMMIT: ${APP_COMMIT:-}
+        APP_COUNT: ${APP_COUNT:-}
+    image: radar_civico:latest
     container_name: radar_civico
     ports:
-      - "18080:8080"
+      - "127.0.0.1:28080:8080"
     volumes:
-      # O banco de dados SQLite e os artefatos baixados residem no volume persistente
       - ./data:/app/data
     environment:
-      - DATABASE_PATH=/app/data/radar_civico.sqlite
+      - DATA_DIR=/app/data
+      - PORT=8080
+      - HOST=0.0.0.0
+      - WEB_DIR=/app/web/build
       - RUST_LOG=info
-      - BIND_ADDR=0.0.0.0:8080
+      - RADAR_ADMIN_PASSWORD=${RADAR_ADMIN_PASSWORD:-}
+      - RADAR_API_KEY=${RADAR_API_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
+```
+
+O progresso é acompanhado por polling das rotas `/api/v1/config/jobs/:job_id` e `/api/importers/:id/status`; a versão atual usa Axum e não expõe WebSockets.
 
 ---
 
-## 8. Cronograma e Próximos Passos de Implementação
+## 8. Cronograma original (histórico — etapas já implementadas)
 1. Inicialização do schema SQLite e script de criação de índices.
 2. Construção do pipeline de download e ingestão do histórico eleitoral (TSE) de 1994 a 2026 em streaming.
 3. Ingestão dos dumps da CEAP (Câmara) e extração de volumes de notas fiscais de combustível.

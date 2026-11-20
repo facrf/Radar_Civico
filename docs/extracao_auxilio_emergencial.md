@@ -35,7 +35,7 @@ O repositório já inclui o utilitário [`scripts/extrair_auxilio_municipio.sh`]
 
 * **`<NOME_DO_MUNICIPIO>`** *(obrigatório)*: Nome do município (não diferencia maiúsculas de minúsculas).
 * **`"<UF>"`** *(opcional, recomendado)*: Sigla do estado (ex.: `SP`, `MG`, `RJ`, `BA`).
-* **`"<CAMINHO_DO_CSV_ORIGEM>"`** *(opcional)*: Caminho para o arquivo CSV bruto. Padrão: `/home/facrf/Downloads/basedados/auxilio_emergencial.csv`.
+* **`"<CAMINHO_DO_CSV_ORIGEM>"`** *(opcional)*: Caminho para o arquivo CSV bruto. Padrão: `./data/auxilio_emergencial.csv`, sobrescrito pela variável de ambiente `AUXILIO_CSV_PATH`.
 
 ---
 
@@ -60,10 +60,10 @@ O repositório já inclui o utilitário [`scripts/extrair_auxilio_municipio.sh`]
 ======================================================================
 🎯 RADAR CÍVICO - EXTRAÇÃO CIRÚRGICA DE AUXÍLIO EMERGENCIAL
 ======================================================================
-📂 Arquivo de Origem: /home/facrf/Downloads/basedados/auxilio_emergencial.csv (30G)
+📂 Arquivo de Origem: ./data/auxilio_emergencial.csv (30G)
 🏙️ Município Alvo:    Campinas
 📍 UF:               SP
-💾 Arquivo de Saída:  /home/facrf/Downloads/basedados/auxilio_campinas.csv
+💾 Arquivo de Saída:  ./data/auxilio_campinas.csv
 ----------------------------------------------------------------------
 ⏳ Extraindo cabeçalho e filtrando registros em alta velocidade...
 ----------------------------------------------------------------------
@@ -109,14 +109,15 @@ Para ingerir a base inteira (todos os 30 GB) ou aplicar filtros diretamente no S
 ./scripts/ingerir_auxilio_completo.sh --apenas-candidatos
 
 # 4. Ingerir um arquivo CSV filtrado previamente:
-./scripts/ingerir_auxilio_completo.sh --arquivo /home/facrf/Downloads/basedados/auxilio_campinas.csv
+./scripts/ingerir_auxilio_completo.sh --arquivo ./data/auxilio_campinas.csv
 ```
 
 * **Vantagens Técnicas:**
-  * Executa transações em lotes de 50.000 registros com `PRAGMA journal_mode = WAL` e `synchronous = OFF/NORMAL`.
-  * Desativa índices secundários temporariamente para carga massiva e os reconstrói ao término.
+  * Executa transações em lotes de 50.000 registros com `journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON` e `cache_size = -64000`, conforme o protocolo do repositório.
+  * Desativa índices secundários apenas em cargas acima de 500 MB e os reconstrói ao final, inclusive após interrupção manual.
   * Exibe taxa de transferência em tempo real (linhas por segundo, progresso e tempo decorrido).
   * Consumo fixo de RAM (< 50 MB), permitindo processar dezenas de gigabytes sem risco de travamento.
+  * Campos entre aspas com vírgula são lidos corretamente. Linhas com valor monetário inválido são ignoradas em vez de receber um valor inventado. O CSV deve estar em UTF-8; a conversão de codificações antigas deve ser feita antes da carga.
 
 ---
 
@@ -126,7 +127,7 @@ Se preferir enviar o CSV filtrado via chamada REST ao servidor Axum:
 
 ```bash
 curl -X POST "http://localhost:28080/api/v1/config/ingestao/upload?tipo=AUXILIO_EMERGENCIAL" \
-  -F "arquivo=@/home/facrf/Downloads/basedados/auxilio_campinas.csv"
+  -F "arquivo=@./data/auxilio_campinas.csv"
 ```
 
 ---
@@ -156,29 +157,37 @@ Se desejar auditar o banco SQLite diretamente via terminal:
 sqlite3 ./data/radar_civico.db
 ```
 
+> [!WARNING]
+> Não cruze por nome nem por CPF mascarado: homônimos e máscaras geram falsos positivos. O motor de auditoria exige documento completo com dígitos verificadores válidos; a consulta abaixo segue a mesma regra. Se a base de benefícios trouxer apenas CPF mascarado, o cruzamento não deve gerar alerta.
+
 ```sql
 -- 1. Contar total de benefícios carregados por município
-SELECT municipio, uf, COUNT(*) as total_parcelas, SUM(valor) as montante_total
+SELECT municipio, uf,
+       COUNT(*) AS total_parcelas,
+       SUM(valor_centavos) / 100.0 AS montante_total
 FROM beneficios_emergenciais
 GROUP BY municipio, uf
 ORDER BY montante_total DESC;
 
--- 2. Cruzar benefícios com políticos eleitos
-SELECT 
-    p.nome_completo,
-    c.cargo,
-    c.ano_eleicao,
-    c.total_bens_declarados,
-    b.mes_disponibilizacao,
-    b.parcela,
-    b.valor
-FROM politicos p
-JOIN candidaturas c ON c.politico_id = p.id
-JOIN beneficios_emergenciais b ON (
-    REPLACE(REPLACE(REPLACE(b.cpf_mascarado, '*', ''), '.', ''), '-', '') = 
-    REPLACE(REPLACE(REPLACE(p.cpf_mascarado, '*', ''), '.', ''), '-', '')
-    OR UPPER(b.nome_beneficiario) = UPPER(p.nome_completo)
+-- 2. Cruzar benefícios com políticos eleitos usando somente documento completo (11 dígitos)
+WITH politicos_documento AS (
+    SELECT p.id,
+           p.nome_completo,
+           REPLACE(REPLACE(REPLACE(p.cpf_mascarado, '*', ''), '.', ''), '-', '') AS cpf_digitos
+    FROM politicos p
+    WHERE REPLACE(REPLACE(REPLACE(p.cpf_mascarado, '*', ''), '.', ''), '-', '')
+          GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
 )
-WHERE c.situacao_totalizacao LIKE '%ELEITO%'
+SELECT pd.nome_completo,
+       c.cargo,
+       c.ano_eleicao,
+       c.total_bens_declarados,
+       b.mes_disponibilizacao,
+       b.parcela,
+       b.valor
+FROM politicos_documento pd
+JOIN candidaturas c ON c.politico_id = pd.id AND c.situacao_totalizacao LIKE '%ELEITO%'
+JOIN beneficios_emergenciais b
+  ON REPLACE(REPLACE(REPLACE(b.cpf_mascarado, '*', ''), '.', ''), '-', '') = pd.cpf_digitos
 ORDER BY c.total_bens_declarados DESC;
 ```

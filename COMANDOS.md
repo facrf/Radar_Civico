@@ -1,5 +1,8 @@
 # COMANDOS.MD - Plano de Execução Sequencial (Radar Cívico)
 
+> [!NOTE]
+> Registro histórico com todas as fases concluídas. Este arquivo é a fonte canônica; a cópia `comandos.md` foi removida por duplicação. Para o estado atual do projeto, consulte o [README](README.md) e [`docs/`](docs/).
+
 Diretrizes para o agente autônomo (YOLO Mode):
 1. Localize a primeira tarefa marcada como `[ ]`.
 2. Modifique ou crie estritamente os arquivos descritos na tarefa.

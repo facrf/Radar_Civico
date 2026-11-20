@@ -2,7 +2,7 @@
 
 ## Escopo
 
-Projeto de estudos sem autenticação, conforme decisão do mantenedor. Esta entrega implementa as seis sugestões de revisão: totais completos, grafo por vizinhança, validação de números, centavos, tarefas duráveis e CI/cache Docker.
+Este registro descreve melhorias de confiabilidade, escala e operação já entregues. Por padrão o servidor roda em modo local sem autenticação; em redes compartilhadas configure `RADAR_ADMIN_PASSWORD` e/ou `RADAR_API_KEY` para proteger escritas e exportações (veja "Administração e fotos" e o README).
 
 ## Dossiês e paginação
 
@@ -62,17 +62,17 @@ A tabela `tarefas_importacao` mantém namespace, identificação, payload JSON, 
 
 ## CI e cache
 
-`.github/workflows/ci.yml` roda em push, pull request e execução manual:
+`.github/workflows/ci.yml` roda em push, pull request e execução manual, com Rust 1.99 e Node 22.17.0 (`.nvmrc`) fixados:
 
-1. `cargo check --workspace --locked` e `cargo test --all --locked`, com cache Cargo/target separado por compilador e lockfile;
-2. `npm ci`, `npm run check` e `npm run build`, com cache npm;
-3. build da imagem, sem publicação, seguido de inicialização em banco temporário e verificação de `/health`.
+1. job `rust`: `cargo fmt --check -p radar-mcp`, `cargo clippy -p radar-mcp --all-targets -- -D warnings`, `cargo test -p radar-mcp`, build release do `radar-mcp` e smoke test JSON-RPC `ping`;
+2. job `rust`: `cargo check --workspace --locked`, `cargo test --all --locked` e `cargo clippy --workspace --all-targets --locked -- -D warnings`;
+3. job `web`: `npm ci`, `npm run check`, `npm test` e `npm run build`;
+4. job `docker` (depende dos anteriores): gera `version.json`, constrói a imagem sem publicar, sobe o contêiner em banco temporário e valida `/ready` e o commit devolvido por `/api/v1/config/versao`.
 
 `.github/workflows/publish-ghcr.yml` publica as imagens no GitHub Container Registry (`ghcr.io`):
-- Executado automaticamente após o espelhamento do Gitea no GitHub (`main` e tags `v*`).
-- Suporte a multi-arquitetura nativa (`linux/amd64`, `linux/arm64`) utilizando Buildx e QEMU.
-- Otimização com `BUILDPLATFORM` no build de assets web e isolamento de cache de compilação Rust por arquitetura (`TARGETARCH`).
-- Publicação com tags de versão semântica, branch, commit SHA e `latest`.
+- Executado em `main`, tags `v*` e execução manual, com trava que impede a execução no espelho Gitea.
+- Multi-arquitetura (`linux/amd64`, `linux/arm64`) via Buildx; QEMU emula as etapas Rust/CLI, enquanto os assets web usam `BUILDPLATFORM` nativo.
+- Cache de compilação Rust isolado por `TARGETARCH`, metadados de versão gerados antes do build e tags de versão semântica, branch, SHA e `latest`.
 
 O Dockerfile requer BuildKit/Buildx. Os caches de registry, Git e target Cargo persistem no builder local, com trava de compartilhamento. O binário é copiado para fora do mount antes de construir a imagem final. O contexto Rust inclui apenas manifests, crates, testes e versão; editar documentação ou frontend não invalida sua camada. No GitHub, o cache externo preserva camadas da imagem; mounts locais do BuildKit dependem do ciclo de vida do builder.
 
@@ -86,12 +86,15 @@ cargo test --all --locked
 cd web
 npm ci
 npm run check
+npm test
 npm run build
 cd ..
-docker compose up --build -d
+make docker-up
 docker compose ps
 docker logs --tail 100 radar_civico
 curl -f http://localhost:28080/health
+curl -f http://localhost:28080/ready
+curl -s http://localhost:28080/api/v1/config/versao
 ```
 
 Em ambientes onde a rede padrão de build não alcança os repositórios de pacotes:
@@ -103,23 +106,26 @@ docker compose up -d --force-recreate --no-build
 
 A migração roda no arranque. O diretório `data/` permanece montado; conferir a versão em `_migrations` e a saúde do contêiner após atualizar. Este documento descreve o comportamento entregue; executar o workflow remoto depende de enviar o commit para um repositório GitHub com Actions habilitado.
 
-## Registro de validação desta entrega
+## Registro de validação
 
-Validação local em 13/10/2026 (America/Sao_Paulo):
+Validação histórica em 13/10/2026 (America/Sao_Paulo):
 
-- `cargo clippy --workspace --all-targets -- -D warnings`: zero avisos e zero erros em todo o workspace.
-- `cargo test --all`: 173 testes aprovados sem nenhuma falha.
-- Regra de auxílio emergencial (`auxilio_indevido.rs`): teste determinístico de rejeição de homônimos de sobrenome comum (`test_auxilio_indevido_rejeita_homonimo_apenas_sobrenome_comum`) aprovado.
-- Grafo (`graph/hub.rs`): algoritmo de Betweenness Centrality amostrado e sem `unwrap()` aprovado em todos os testes unitários.
-- Imagem Docker reconstruída com sucesso (`docker compose up --build -d`), contêiner `radar_civico` em estado `Up (healthy)`.
-- Verificação de runtime: endpoint `/api/health` retornando HTTP 200 e rede de relacionamentos carregada com 2.658.891 arestas.
-- Frontend: interface web sem chamadas bloqueantes `window.alert()`, com notificações Toast ativas.
+- `cargo clippy --workspace --all-targets -- -D warnings`: zero avisos e zero erros em todo o workspace (173 testes naquela data; a suíte cresceu para 290).
+- Regra de auxílio emergencial (`auxilio_indevido.rs`): teste determinístico de rejeição de homônimos de sobrenome comum aprovado.
+- Grafo (`graph/hub.rs`): algoritmo de Betweenness Centrality amostrado aprovado em todos os testes unitários.
+- Imagem Docker reconstruída, contêiner `radar_civico` `Up (healthy)`; naquele momento a rede tinha 2.658.891 arestas.
+
+Validação atual em 19/11/2026:
+
+- `cargo check --workspace --locked`: sem erros; `cargo test --all --locked`: 290 testes aprovados, 0 falhas.
+- `npm run check`: 0 erros e 0 avisos; `npm test`: 5 testes aprovados.
+- Imagem reconstruída com `make docker-up`, contêiner `healthy`; `/health`, `/ready` e `/api/v1/config/versao` respondendo. A projeção carregada contém 11.800.631 relações.
 
 ## Administração e fotos
 
-- As consultas públicas permanecem abertas. Importações, alterações, investigações e exportações exigem autenticação.
-- Acesse `/admin/login`, com usuário `admin`. No primeiro arranque, a senha é gerada em `DATA_DIR/admin_password` (permissão 0600). Alternativamente, configure `RADAR_ADMIN_PASSWORD` com pelo menos 16 caracteres. Não publique esse arquivo.
-- A sessão dura oito horas e é invalidada ao reiniciar o servidor. Integrações podem usar HTTP Basic. Publique atrás de HTTPS quando houver acesso remoto.
+- Consultas públicas permanecem abertas. Sem credenciais configuradas, o modo local também libera escritas e exportações; configure as variáveis abaixo antes de expor o serviço em rede.
+- Defina `RADAR_ADMIN_PASSWORD` (HTTP Basic com usuário `admin`, ou `Authorization: Bearer <senha>`) e/ou `RADAR_API_KEY` (`X-API-Key` ou Bearer). Use valores longos e exclusivos e não os commite; um modelo está em `.env.example`.
+- Não existe fluxo de sessão no navegador: `/admin/login` apenas redireciona para `/` e o servidor não emite cookie `radar_session`. Cada requisição autenticada deve enviar a credencial, preferencialmente atrás de HTTPS.
 - Webhooks e fotos externas recusam destinos internos/reservados e redirects; DNS é validado e fixado para cada cliente HTTP.
 - Importadores QSA/OAB sem arquivo e conectores PNCP/Querido Diário sem integração configurada retornam erro, sem gerar dados de demonstração. Para QSA/OAB use upload de arquivo oficial; para diários use a sincronização existente ou investigação por nome.
 - Retratos de presidentes e ministros são distribuídos em `web/static/autoridades`, associados por nome completo exato e armazenados no SQLite quando não existe imagem válida. Fontes, autores e licenças estão em `/fontes-fotos` e `/autoridades/fontes.json`. Fotos manuais válidas são preservadas.

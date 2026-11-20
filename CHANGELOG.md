@@ -4,6 +4,17 @@ Todas as alterações relevantes neste projeto são documentadas neste arquivo.
 
 ## [Unreleased]
 
+### Documentação e higiene — 19/11/2026
+
+- Atualiza o README com a crate `radar-mcp`, os cinco pipelines de integração, os endpoints `/ready`, `/api/v1/config/versao`, importadores e backups, a contagem real de testes e a licença GPL-3.0.
+- Alinha `docs/MELHORIAS_E_OPERACAO.md`, `docs/extracao_auxilio_emergencial.md`, `POLITICOS.md` e `FAZER.md` ao comportamento vigente: autenticação opcional sem sessão no navegador, CI atual, caminhos padrão dos scripts e cruzamento apenas por documento completo.
+- Corrige o SQL do guia do auxílio emergencial: remove correspondência por nome ou CPF mascarado e passa a usar `valor_centavos` e documento de 11 dígitos.
+- Remove o duplicado `comandos.md`, mantendo `COMANDOS.md` como fonte canônica.
+- Gera `version.json` nos workflows antes do build Docker, inclui `APP_COUNT` nos metadados e corrige o rótulo de licença da imagem para GPL-3.0.
+- Fixa Rust 1.99 e Node 22.17 nas imagens e no CI, adiciona `.env.example`, alvos `fmt`/`clippy`/`logs` no Makefile e `/.env` ao `.gitignore`.
+- Endurece `scripts/gerar_versao.sh` (parser de JSON) e `scripts/ingerir_auxilio_completo.py` (PRAGMAs obrigatórios, CSV com aspas, ausência de valores inventados e reconstrução de índices mesmo após interrupção).
+- Remove a referência estática a `favicon.png` e a dependência `@opentelemetry/api`, não utilizada no frontend.
+
 ### Correções de confiabilidade — 16/11/2026
 
 - Corrige multiplicação de valores no cruzamento de doações e despesas e retira resultados que deixaram de satisfazer as regras.

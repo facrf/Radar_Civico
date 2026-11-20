@@ -25,16 +25,16 @@ O projeto é estruturado em um **Cargo Workspace** modular em Rust e uma interfa
 ```text
 radar-civico/
 ├── crates/
-│   ├── storage/    # Mini Data Lake em SQLite, PRAGMAs de alta performance, WAL e migrações SQL
-│   ├── ingestion/  # Streams assíncronos (csv-async), normalização de CPF/CNPJ e scrapers (OAB/Diários)
-│   ├── auditor/    # Regras determinísticas de detecção de fraudes, anomalias e conflito de interesses
-│   ├── graph/      # Modelagem e travessia de redes (petgraph), caminhos até 3 graus e nós Hub
-│   └── server/     # API HTTP Axum com compressão, CORS, graceful shutdown e servidor web SPA
-├── scripts/        # Utilitários de linha de comando de alta velocidade (ex.: extrator cirúrgico de auxílio)
-├── docs/           # Guias de auditoria, ingestão e documentação do sistema
-├── tests/
-│   └── e2e_pipeline.rs # Teste de integração ponta a ponta (Ingestão -> Auditoria -> Grafo -> API)
-├── web/            # Interface SPA em SvelteKit, Tailwind CSS e Cytoscape.js
+│   ├── storage/    # Mini Data Lake em SQLite, PRAGMAs de alta performance, WAL e 35 migrações
+│   ├── ingestion/  # Streams CSV/JSON/ZIP, normalização de CPF/CNPJ e conectores (TSE/CEAP/PNCP/OAB)
+│   ├── auditor/    # Regras determinísticas de fraude, anomalias e conflito de interesses
+│   ├── graph/      # Grafos (petgraph), caminhos, ciclos, hubs e concentração via SQL
+│   ├── server/     # API Axum, autenticação opcional, jobs, backups e servidor da SPA
+│   └── radar-mcp/  # Servidor MCP stdio (7 ferramentas, 3 prompts e 2 resources)
+├── scripts/        # Utilitários CLI (auxílio emergencial, versão, entrypoint do contêiner)
+├── docs/           # Guias de auditoria, ingestão, confiabilidade e operação
+├── tests/          # 5 pipelines de integração (e2e, ingestion, camara, config, dossie)
+├── web/            # SPA SvelteKit 3 + Svelte 5 + Tailwind 4, Cytoscape.js e Leaflet
 ├── Dockerfile      # Empacotamento multi-stage de produção
 └── docker-compose.yml
 ```
@@ -62,8 +62,8 @@ radar-civico/
 ## 🚀 Como Executar
 
 ### 1. Pré-requisitos
-* **Rust 1.75+** (`cargo`)
-* **Node.js 22.17+** e `npm` (para o frontend)
+* **Rust 1.99** (`cargo`) — versão validada no CI e na imagem Docker
+* **Node.js 22.17+** e `npm` (para o frontend; `.nvmrc` fixa 22.17.0)
 * *(Opcional)* **Docker** e **Docker Compose**
 
 ### 2. Modo Servidor e Interface Web
@@ -71,7 +71,7 @@ Compile o frontend e inicie a API:
 ```bash
 # 1. Compilar o frontend estático
 cd web
-npm install
+npm ci
 npm run build
 cd ..
 
@@ -91,7 +91,7 @@ cargo run -p server -- auditar
 
 O Radar Cívico opera por padrão em **modo local**, dispensando login para consultas e operações na porta de loopback (`127.0.0.1:28080`).
 
-Para ambientes de rede compartilhada ou servidores remotos, é possível habilitar **Autenticação Administrativa Configurável** definindo as variáveis `RADAR_ADMIN_PASSWORD` e/ou `RADAR_API_KEY`. Quando ativadas, endpoints mutantes (uploads, sincronizações, disparos de auditoria, restaurações de backups) e exportações completas da base de dados exigem autenticação.
+Para ambientes de rede compartilhada ou servidores remotos, é possível habilitar **Autenticação Administrativa Configurável** definindo as variáveis `RADAR_ADMIN_PASSWORD` e/ou `RADAR_API_KEY`. Quando ativadas, endpoints mutantes (uploads, sincronizações, disparos de auditoria, restaurações de backups) e exportações completas da base de dados exigem autenticação. Não há fluxo de login com sessão no navegador: `/admin/login` apenas redireciona para a página inicial. Clientes devem enviar a credencial por HTTP Basic (`admin:<senha>`), `Authorization: Bearer <chave>` ou `X-API-Key: <chave>`.
 
 O contêiner executa internamente sob o usuário não-root **`radar`** (UID 10001), garantindo isolamento e segurança em nível de sistema operacional.
 
@@ -209,7 +209,8 @@ Exportações CSV/JSON são geradas linha a linha em arquivo temporário e trans
 
 ## 📡 Endpoints da API REST
 
-* `GET /health` - Verificação de saúde da aplicação (utilizado pelo healthcheck do Docker).
+* `GET /health` - Verificação de saúde do processo (utilizado pelo healthcheck do Docker).
+* `GET /ready` - Prontidão: responde 503 enquanto a projeção do grafo está suja ou incompatível. Use em sondas de prontidão.
 * `GET /api/v1/busca?q={termo}` - Busca unificada de alta performance cobrindo:
   - Políticos (`politicos_fts` e identificadores TSE).
   - Fornecedores de campanha e CEAP (`fornecedores_fts`).
@@ -224,13 +225,20 @@ Exportações CSV/JSON são geradas linha a linha em arquivo temporário e trans
 * `GET /api/v1/investigar/nomeacao/{doador_id}` - Disparo sob demanda na API do Querido Diário e CNA/OAB com checagem do Art. 28 da Lei 8.906/94.
 * `GET /api/v1/config/arquivos-ingeridos` - Rastreamento e histórico de arquivos ingeridos com seus respectivos hashes SHA-256 e detecção de retificações.
 * `POST /api/v1/config/verificar-hash` - Verificação de integridade criptográfica de arquivos e backups contra hash SHA-256 esperado.
+* `GET /api/v1/config/versao` - Versão, commit e contador de commits da imagem em execução.
+* `GET|POST /api/importers` - Importadores unificados (`.../:id/status`, `.../:id/start`, `.../:id/cancel`).
+* `GET /api/v1/config/backups`, `POST /api/v1/config/backup`, `GET /api/v1/config/backups/:nome_arquivo` - Backups SQLite com sidecar SHA-256.
+
+### Servidor MCP
+
+O binário `radar-mcp`, incluído na imagem, expõe via stdio as ferramentas `buscar`, `dossie_cnpj`, `listar_politicos`, `detalhe_politico`, `dossie_cpf`, `subgrafo` e `listar_alertas`, além de 3 prompts investigativos e 2 resources. Configuração e exemplos em [`crates/radar-mcp/README.md`](crates/radar-mcp/README.md).
 
 ---
 
 ## 🧪 Suíte de Testes e Validação
 
 ```bash
-# Executa todos os testes unitários e de integração do workspace Rust (> 90 testes)
+# Executa todos os testes unitários e de integração do workspace Rust (290 testes)
 cargo test --all
 
 # Executa as suítes de pipeline ponta a ponta
@@ -240,14 +248,14 @@ cargo test --test config_pipeline
 cargo test --test dossie_pipeline
 cargo test --test ingestion_pipeline
 
-# Valida tipagem TypeScript e build do frontend
-cd web && npm run check && npm run build
+# Valida tipagem, testes e build do frontend
+cd web && npm ci && npm run check && npm test && npm run build
 ```
 
 ---
 
 ## 📄 Licença
-Distribuído sob licença aberta para fortalecimento da transparência pública e controle social.
+Distribuído sob a **GNU General Public License v3.0** (`LICENSE.md`, com traduções em `LICENSE.pt-BR.md` e `LICENSE.es.md`) para fortalecimento da transparência pública e controle social.
 
 ## Melhorias e operação
 

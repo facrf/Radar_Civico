@@ -2,7 +2,7 @@
 # Multi-stage Dockerfile para Radar Cívico
 
 # Stage 1: Build frontend SPA (SvelteKit + Tailwind CSS)
-FROM --platform=$BUILDPLATFORM node:22-slim AS web-builder
+FROM --platform=$BUILDPLATFORM node:22.17-slim AS web-builder
 WORKDIR /app
 
 ARG APP_VERSION
@@ -16,13 +16,14 @@ WORKDIR /app/web
 COPY web/package*.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
-# Copia version.json se presente no contexto da raiz
-COPY version.json* /app/
+# version.json é gerado por scripts/gerar_versao.sh (via make docker-up/docker-build
+# ou pelos workflows) e precisa existir no contexto antes do build.
+COPY version.json /app/version.json
 COPY web/ ./
 RUN npm run check && npm run build
 
 # Stage 2: Build Rust backend
-FROM rust:slim-bookworm AS builder
+FROM rust:1.99-slim-bookworm AS builder
 WORKDIR /app
 
 ARG TARGETARCH
@@ -42,7 +43,7 @@ RUN apt-get -o Acquire::ForceIPv4=true update && apt-get -o Acquire::ForceIPv4=t
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY tests/ ./tests/
-COPY version.json* ./
+COPY version.json ./
 # COPY preserva mtimes: fontes copiadas podem ser mais antigas que um binário do
 # target compartilhado. Atualizar os mtimes força o Cargo a validar o código local.
 RUN --mount=type=cache,id=radar-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
